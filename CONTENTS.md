@@ -50,6 +50,10 @@ from holonomy_lib.info_geometry import (
     kl_divergence_gaussian,
 )
 from holonomy_lib.optimization import RiemannianSGD, riemannian_sgd_step
+from holonomy_lib.simplicial import (
+    DenseSimplicialComplex, SparseSimplicialComplex,
+    pairwise_distances, vietoris_rips_dense, vietoris_rips_sparse,
+)
 from holonomy_lib import provenance
 ```
 
@@ -314,6 +318,37 @@ Closed-form KL between two multivariate Gaussians. Cholesky-stable:
 factors `Σ_q` once and reuses the factorization for the trace and
 Mahalanobis terms; pulls `log det Σ` directly from the Cholesky
 diagonal. Ref: Petersen-Pedersen Matrix Cookbook eq. 380.
+
+---
+
+## §Simplicial: `holonomy_lib.simplicial`
+
+Simplicial complex data structures + boundary operators. Foundation
+for `holonomy_lib.topology` (Hodge Laplacians + persistent homology).
+Two representations:
+
+### `DenseSimplicialComplex(simplices_by_dim, valid_mask, n_vertices, ...)`
+Batched, padded simplex tables. `simplices_by_dim[k]` is
+`(B, n_k_max, k+1)` int with a `(B, n_k_max)` validity mask.
+`boundary(k) → (B, n_{k-1}_max, n_k_max)` dense Tensor with the
+Koszul signs.
+
+### `SparseSimplicialComplex(simplices_by_dim, n_vertices, ...)`
+Single-instance, no batch dim. `boundary(k) → sparse-CSC`. Used by
+persistent homology where the matrix-reduction kernel walks the
+sparse boundary column by column.
+
+### `vietoris_rips_sparse(distances, max_radius, max_dim) → SparseSimplicialComplex`
+VR complex from a single `(n, n)` distance matrix. Incremental
+k-simplex construction via shared-(k-1)-face extension.
+
+### `vietoris_rips_dense(distances, max_radius, max_dim, dtype=…) → DenseSimplicialComplex`
+Batched VR construction from `(B, n, n)` distance matrices. Pads
+per-dim to the max simplex count across the batch.
+
+### `pairwise_distances(points) → Tensor`
+Euclidean distance matrix from `(n, d)` or `(B, n, d)` points.
+Refs: Munkres (1984), §1; Hausmann (1995); Bauer (2021).
 
 ---
 
