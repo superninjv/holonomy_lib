@@ -34,6 +34,14 @@ References (program-level):
     Perelman's surgery in 3-D, on simplicial complexes.
 """
 
-from synoros_lib.discrete_geometry.ricci import ollivier_ricci_curvature
+from synoros_lib.discrete_geometry.ricci import (
+    discrete_ricci_flow,
+    ollivier_ricci_curvature,
+    ricci_flow_with_surgery,
+)
 
-__all__ = ["ollivier_ricci_curvature"]
+__all__ = [
+    "discrete_ricci_flow",
+    "ollivier_ricci_curvature",
+    "ricci_flow_with_surgery",
+]

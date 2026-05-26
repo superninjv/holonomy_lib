@@ -86,6 +86,19 @@ SINKHORN_N_ITER_DEFAULT: int = 100
 # disincentivizing transport across disconnected components.
 DISCONNECTED_DISTANCE_MULTIPLIER: float = 1000.0
 
+# Default surgery period for `ricci_flow_with_surgery` — perform surgery
+# every N Ricci-flow steps. Ni-Lin-Luo-Gao (2019) §3.2 use values in
+# [10, 15] for community detection; we default to 10 as the more
+# aggressive choice. Catalog: `ricci_flow_surgery_period_default`.
+RICCI_FLOW_SURGERY_PERIOD_DEFAULT: int = 10
+
+# Default surgery threshold — edges whose weight grows past this value
+# are removed as "neckpinches forming". Sia-Jonckheere-Bogdan (2019)
+# and Ni et al. (2019) both use thresholds around 2-3× initial weight.
+# Conservative default at 3.0 lets only clearly-stretched edges go.
+# Catalog: `ricci_flow_surgery_threshold_default`.
+RICCI_FLOW_SURGERY_THRESHOLD_DEFAULT: float = 3.0
+
 
 @with_provenance("synoros_lib.discrete_geometry.ollivier_ricci_curvature", op_version="0.1")
 def ollivier_ricci_curvature(
@@ -151,13 +164,201 @@ def ollivier_ricci_curvature(
 
     # 4. Curvature κ(x, y) = 1 - W_1 / d_G.
     # Diagonal: d_G is 0 there; set κ to 1 by convention (vacuous).
-    eps = 1e-9  # numerical floor
-    safe_dG = torch.where(d_G > eps, d_G, torch.full_like(d_G, eps))
+    safe_dG = torch.where(d_G > 1e-9, d_G, torch.full_like(d_G, 1e-9))
     kappa = 1.0 - W1 / safe_dG
     # Diagonal entries: 1 by convention.
     eye = torch.eye(n, device=A.device, dtype=A.dtype).expand(*batch, n, n)
     kappa = torch.where(eye > 0, torch.ones_like(kappa), kappa)
     return kappa
+
+
+# ============================================================
+# Discrete Ricci flow (Perelman-on-networks)
+# ============================================================
+
+
+@with_provenance(
+    "synoros_lib.discrete_geometry.discrete_ricci_flow", op_version="0.1",
+)
+def discrete_ricci_flow(
+    A: torch.Tensor,
+    n_steps: int,
+    dt: float = 1.0,
+    alpha: float = 0.0,
+    normalize: bool = True,
+    reg: float = SINKHORN_REG_DEFAULT,
+    n_sinkhorn_iters: int = SINKHORN_N_ITER_DEFAULT,
+) -> torch.Tensor:
+    """Discrete Ricci flow on edge weights (Sia 2019, Ni 2019).
+
+    Iterates the edge-weight update
+
+        w_ij(t+1) = (1 − dt · κ_ij(t)) · w_ij(t)
+
+    where κ_ij is the Ollivier-Ricci curvature at edge (i, j). Edges
+    with negative curvature (κ < 0) get stretched (multiplier > 1);
+    edges with positive curvature (κ > 0) get shortened. Over many
+    steps this is the discrete analog of Perelman's smooth Ricci flow
+    on networks: bottleneck edges between communities elongate while
+    intra-community edges contract.
+
+    Args:
+      A: (B, n, n) symmetric weighted adjacency. Non-negative weights.
+      n_steps: number of flow iterations.
+      dt: step size. Smaller → more numerically stable, slower convergence.
+      alpha: laziness parameter forwarded to `ollivier_ricci_curvature`.
+      normalize: if True, rescale edge weights after each step so the
+        Frobenius norm of A stays constant. Prevents global scaling
+        from running away, isolating the *structural* effect of the flow.
+      reg, n_sinkhorn_iters: Sinkhorn parameters for curvature
+        computation.
+
+    Returns:
+      (B, n, n) adjacency after `n_steps` of flow.
+
+    References:
+      Sia, J., Jonckheere, E., Bogdan, P. (2019). Ollivier-Ricci
+        curvature-based method to community detection in complex
+        networks. Scientific Reports 9:9800, eq. 3.
+      Ni, C.-C., Lin, Y.-Y., Luo, F., Gao, J. (2019). Community
+        detection on networks with Ricci flow. Scientific Reports
+        9:9984.
+    """
+    if n_steps < 0:
+        raise ValueError(f"n_steps must be >= 0, got {n_steps}")
+    if dt <= 0:
+        raise ValueError(f"dt must be > 0, got {dt}")
+
+    W = A.clone()
+    if normalize:
+        initial_norm = torch.linalg.matrix_norm(W, dim=(-2, -1), keepdim=True)
+        initial_norm = initial_norm.clamp(min=1e-9)
+
+    for _ in range(n_steps):
+        # Compute curvature on current edge weights
+        kappa = ollivier_ricci_curvature(
+            W, alpha=alpha, reg=reg, n_iter=n_sinkhorn_iters,
+        )
+        # Update: w *= (1 - dt * kappa). Mask to existing edges only;
+        # non-edges (W == 0) stay zero — surgery is separate.
+        edge_mask = (W > 1e-9).to(W.dtype)
+        update = (1.0 - dt * kappa) * edge_mask
+        W = W * update + W * (1.0 - edge_mask)  # leave non-edges alone
+        # Clamp negative weights to zero (edge would have flipped sign)
+        W = W.clamp(min=0)
+        # Maintain symmetry (curvature is symmetric, but float drift)
+        W = 0.5 * (W + W.mT)
+        if normalize:
+            current_norm = torch.linalg.matrix_norm(
+                W, dim=(-2, -1), keepdim=True,
+            ).clamp(min=1e-9)
+            W = W * (initial_norm / current_norm)
+    return W
+
+
+@with_provenance(
+    "synoros_lib.discrete_geometry.ricci_flow_with_surgery", op_version="0.1",
+)
+def ricci_flow_with_surgery(
+    A: torch.Tensor,
+    n_steps: int,
+    surgery_period: int = RICCI_FLOW_SURGERY_PERIOD_DEFAULT,
+    surgery_threshold: float = RICCI_FLOW_SURGERY_THRESHOLD_DEFAULT,
+    dt: float = 1.0,
+    alpha: float = 0.0,
+    normalize: bool = True,
+    reg: float = SINKHORN_REG_DEFAULT,
+    n_sinkhorn_iters: int = SINKHORN_N_ITER_DEFAULT,
+) -> torch.Tensor:
+    """Discrete Ricci flow with surgery — Perelman-on-networks.
+
+    Alternates Ricci-flow steps (edges evolve by their curvature) with
+    surgery passes (heavily-stretched edges are removed). The standard
+    use case is community detection: after enough flow steps with
+    surgery, the bottleneck edges between communities are gone and the
+    graph splits into geometric pieces — the discrete analog of
+    Thurston's geometrization that Perelman (2003) proved smoothly
+    for 3-manifolds.
+
+    Algorithm (Ni-Lin-Luo-Gao 2019, §3.2):
+      Repeat `n_steps` times:
+        1. Take one Ricci-flow step: w ← (1 − dt · κ) · w.
+        2. Renormalize if requested.
+        3. Every `surgery_period` steps, surgery: set w_ij = 0 for any
+           edge whose current weight exceeds `surgery_threshold` ×
+           initial mean edge weight. These are the "necks" forming
+           around forming singularities.
+
+    Args:
+      A: (B, n, n) symmetric weighted adjacency.
+      n_steps: total flow iterations.
+      surgery_period: perform surgery every N steps. Catalog default.
+      surgery_threshold: edge-removal threshold, as a multiplier of
+        initial mean edge weight. Catalog default.
+      Other args: as in `discrete_ricci_flow`.
+
+    Returns:
+      (B, n, n) adjacency after flow + surgery. Disconnected components
+      indicate detected communities.
+
+    References:
+      Perelman, G. (2002, 2003). The entropy formula for the Ricci flow
+        and its geometric applications; Ricci flow with surgery on
+        three-manifolds; Finite extinction time. arXiv:math/0211159,
+        math/0303109, math/0307245. (Smooth original.)
+      Sia-Jonckheere-Bogdan (2019), Ni-Lin-Luo-Gao (2019). (Discrete
+        analog for network community detection.)
+      Liu, F., Wang, X., Yau, S.-T., Zeng, W. (2017). A realization of
+        Thurston's geometrization: discrete Ricci flow with surgery.
+        arXiv:1709.08494. (Discrete on 3D simplicial complexes — closest
+        in spirit to Perelman.)
+    """
+    if surgery_period <= 0:
+        raise ValueError(f"surgery_period must be > 0, got {surgery_period}")
+    if surgery_threshold <= 0:
+        raise ValueError(
+            f"surgery_threshold must be > 0, got {surgery_threshold}"
+        )
+
+    W = A.clone()
+    # Initial mean edge weight — the scale against which we threshold.
+    edge_mask_init = (W > 1e-9).to(W.dtype)
+    n_edges = edge_mask_init.sum(dim=(-2, -1), keepdim=True).clamp(min=1.0)
+    initial_mean = (W * edge_mask_init).sum(
+        dim=(-2, -1), keepdim=True,
+    ) / n_edges
+    cutoff = surgery_threshold * initial_mean
+
+    if normalize:
+        initial_norm = torch.linalg.matrix_norm(
+            W, dim=(-2, -1), keepdim=True,
+        ).clamp(min=1e-9)
+
+    for step in range(n_steps):
+        # One Ricci-flow step
+        kappa = ollivier_ricci_curvature(
+            W, alpha=alpha, reg=reg, n_iter=n_sinkhorn_iters,
+        )
+        edge_mask = (W > 1e-9).to(W.dtype)
+        update = (1.0 - dt * kappa) * edge_mask
+        W = W * update + W * (1.0 - edge_mask)
+        W = W.clamp(min=0)
+        W = 0.5 * (W + W.mT)
+        if normalize:
+            current_norm = torch.linalg.matrix_norm(
+                W, dim=(-2, -1), keepdim=True,
+            ).clamp(min=1e-9)
+            W = W * (initial_norm / current_norm)
+
+        # Surgery: remove edges that have stretched past the cutoff.
+        # `step + 1` because we want surgery after the FIRST flow step
+        # for surgery_period = 1 (i.e. surgery every step).
+        if (step + 1) % surgery_period == 0:
+            keep = W <= cutoff
+            W = W * keep.to(W.dtype)
+            W = 0.5 * (W + W.mT)
+
+    return W
 
 
 # ============================================================
