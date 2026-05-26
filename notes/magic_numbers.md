@@ -59,6 +59,14 @@ ALLOWED_LITERALS set:
 | `RANDOMIZED_SVD_OVERSAMPLE_DEFAULT` | 🔬 | `5` | Halko-Martinsson-Tropp (2011) §1.2 standard recommendation for the oversampling parameter `p` in randomized SVD. Five extra projection columns typically yield relative spectral error below 1e-3 for matrices with smoothly decaying singular values past the truncation rank. **Scale of validity**: adequate when σ_{r+1} is meaningfully smaller than σ_r; increase to 10 (also literature-standard) when the spectrum is flat near the truncation. Used in `src/synoros_lib/algebra/linear.py`. |
 | `RANDOMIZED_SVD_N_ITER_DEFAULT` | 🔬 | `2` | Halko-Martinsson-Tropp (2011) §4.5 standard recommendation for subspace-iteration power method steps. Two iterations amplify the singular-value gap by (σ_{r+1}/σ_r)^(2q+1), sufficient for typical low-rank truncation. **Scale of validity**: fine for σ_{r+1}/σ_r ≲ 0.5; increase to 4–7 when ratio is closer to 1. Used in `src/synoros_lib/algebra/linear.py`. (Note: value 2 is also in `ALLOWED_LITERALS` as a doubling identity; this entry documents the *semantic* role of the default.) |
 
+### discrete_geometry
+
+| Name | Status | Value | Justification |
+|---|---|---|---|
+| `SINKHORN_REG_DEFAULT` | 🔬 | `0.01` | Cuturi (2013) §4 — middle-ground entropic regularization ε for Sinkhorn OT. Small enough to keep the entropic bias on W₁ < 1% for typical graph-metric costs; large enough to converge in O(100) iterations without underflow. **Scale of validity**: shortest-path costs in [1, ~diameter]; scale proportionally if the graph's distance scale is much wider. Used in `src/synoros_lib/discrete_geometry/ricci.py`. |
+| `SINKHORN_N_ITER_DEFAULT` | 🔬 | `100` | Cuturi (2013) §4 — typical iteration count to reach relative-change < 1e-4 for graph-metric costs at default `reg=0.01`. **Scale of validity**: smaller `reg` requires proportionally more iterations. Used in `src/synoros_lib/discrete_geometry/ricci.py`. |
+| `DISCONNECTED_DISTANCE_MULTIPLIER` | 🔬 | `1000.0` | Replaces +inf in the shortest-path matrix with a large finite value (= 1000 × max-finite-distance) to keep Sinkhorn numerics stable across disconnected components. **Scale of validity**: any value much larger than the graph diameter works equivalently; 1000× chosen so that exp(−d/reg) for cross-component pairs underflows to zero at the default `reg=0.01`. Used in `src/synoros_lib/discrete_geometry/ricci.py`. |
+
 ### spectral
 
 (no entries yet)
