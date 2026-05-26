@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 534 passing](https://img.shields.io/badge/tests-534%20passing-brightgreen.svg)](#testing)
+[![tests: 543 passing](https://img.shields.io/badge/tests-543%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Nine modules, 534
+modern ML keeps reinventing project by project. Nine modules, 543
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -209,9 +209,10 @@ and citations.
 
 ## Performance
 
-Benchmarks: `notes/benchmark_baseline.md` (before optimization) and
-`notes/benchmark_optimized.md` (current). All times CPU, single-thread,
-PyTorch 2.12, float64.
+Benchmarks: `notes/benchmark_baseline.md` (before optimization),
+`notes/benchmark_optimized.md` (post-Phase-3 fixes), and
+`notes/benchmark_2026-05-26_roadmap_sweep.md` (v0.1 roadmap items).
+All times CPU, single-thread, PyTorch 2.12, float64.
 
 ### Highlight: discrete Ricci curvature
 
@@ -263,6 +264,42 @@ The same `lanczos_eigsh` accepts sparse-CSC inputs (via the dispatch
 added in Phase 3), so it's the natural top-k path on the sparse-Hodge
 Laplacians produced by the `topology` module.
 
+### Highlight: shift-and-invert Lanczos for smallest eigenvalues
+
+`lanczos_eigsh(A, k, which="SA", sigma=σ)` runs Lanczos on
+`(A − σI)^{-1}` so the dominant Ritz values converge to the
+eigenvalues of `A` closest to σ (Ericsson-Ruhe 1980). LU-factor is
+done once outside the iteration; each step is a `lu_solve`. Where the
+factorization cost is amortized over enough iterations, it beats both
+LA Lanczos (which has to do many iterations to converge on the small
+end of the spectrum) and dense `eigvalsh` (which always pays `O(n³)`):
+
+| n | dense `eigvalsh` | `lanczos_eigsh` LA, n_iter=60 | `lanczos_eigsh` SA, n_iter=40 |
+|---:|---:|---:|---:|
+| 64 | 0.23 ms | 2.83 ms | 2.56 ms |
+| 256 | 3.34 ms | 4.89 ms | 4.77 ms |
+| **1024** | **80.9 ms** | 24.5 ms | **18.9 ms** |
+
+SA mode raises `RuntimeError("shift-invert breakdown")` if σ coincides
+with an eigenvalue of `A` — for graph Laplacians (which have 0 in
+spectrum) use a small negative shift.
+
+### Highlight: sparse Laplacian backend
+
+All four Laplacian variants (combinatorial, symmetric-normalized,
+random-walk, signed) accept sparse-COO/CSR/CSC adjacency and return
+a sparse-COO Laplacian on the same device. Combined with the sparse
+`lanczos_eigsh` path, you get end-to-end sparse spectral chains
+without materializing the dense `(n, n)`. The crossover is at very
+small `n` because sparse construction time stays nearly flat while
+dense scales `O(n²)`:
+
+| n | density | dense `L = D − A` | sparse `L` |
+|---:|---:|---:|---:|
+| 256 | 0.05 | 0.25 ms | **0.21 ms** |
+| 1024 | 0.01 | 3.2 ms | **0.23 ms** (14×) |
+| 4096 | 0.003 | n/a (16 GB) | **0.30 ms** |
+
 ### Highlight: Batched persistent homology
 
 `topology.persistence_diagrams` computes H₀ + H₁ + H₂ for a batch of
@@ -276,6 +313,14 @@ recovers one persistent H₁ bar (the loop) with persistence > 0.2 in
 the default `max_radius` range; the bottleneck stability theorem
 (Cohen-Steiner-Edelsbrunner-Harer 2007) is verified under
 ε-perturbation in the test suite.
+
+The `reduction_backend="torch"` path runs end-to-end on the
+filtration's device (CPU or GPU) — but is **not yet a custom CUDA
+kernel**, just a torch-tensor port of the same sequential algorithm.
+For small inputs CPython sets are faster (43 ms vs 903 ms on an
+80-point circle); the torch path is a foundation for the v0.2 GPU
+kernel rather than an immediate win. The default backend stays
+`"python"`.
 
 ---
 
