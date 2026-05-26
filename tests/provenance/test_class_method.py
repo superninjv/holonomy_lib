@@ -20,6 +20,7 @@ still holds.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from holonomy_lib import provenance
@@ -174,6 +175,79 @@ class TestDeterminismAndSensitivity:
 # ---------------------------------------------------------------
 # DAG chaining through manifold methods
 # ---------------------------------------------------------------
+
+
+class TestReplayLimitations:
+    """Class-method calls record into the DAG correctly, but replay()
+    cannot reconstruct the manifold instance from its provenance
+    signature in v0.1. Verify a clear error fires instead of crashing
+    on a downstream attribute access."""
+
+    def test_replay_class_method_raises_clear_error(self):
+        """Chain two class-method calls and substitute the upstream
+        node's output. Replay walks the DAG and must hit the
+        class-method node downstream, triggering the clear error."""
+        mfd = SPDManifold(n=3)
+        S = mfd.random_point(batch_size=1, generator=_seeded(0))
+        Z = torch.randn(1, 3, 3, dtype=torch.float64, generator=_seeded(1))
+        with provenance.record(cache_tensors=True) as reg:
+            V = mfd.projection(S, Z)
+            mfd.exp(S, V)
+
+        nodes_by_id = {n.op_id: n for n in reg}
+        proj_hex = nodes_by_id[
+            "holonomy_lib.manifolds.SPDManifold.projection"
+        ].hex
+
+        # Substitute the projection output → exp downstream must replay.
+        V_new = mfd.projection(
+            S, torch.randn(1, 3, 3, dtype=torch.float64, generator=_seeded(2)),
+        )
+        with pytest.raises(NotImplementedError, match="class-method"):
+            reg.replay({proj_hex: V_new})
+
+    def test_replay_tuple_input_raises_clear_error(self):
+        """FixedRankPoint = (U, S, Vt) gets unpacked into per-element
+        hex keys at record time. Trigger replay through a class-method
+        node and verify the clear error covers it (either via the
+        class-method branch or via the tuple-input branch, both
+        register as NotImplementedError)."""
+        mfd = FixedRankManifold(m=5, n=4, r=2)
+        # Build a 2-step chain so substitute → replay walks the DAG.
+        point = mfd.random_point(batch_size=1, generator=_seeded(0))
+        with provenance.record(cache_tensors=True) as reg:
+            M = mfd.dense(point)
+            mfd.projection(point, M)
+
+        # Substitute the dense output → projection downstream replays.
+        nodes_by_id = {n.op_id: n for n in reg}
+        dense_hex = nodes_by_id[
+            "holonomy_lib.manifolds.FixedRankManifold.dense"
+        ].hex
+        M_new = mfd.dense(mfd.random_point(batch_size=1, generator=_seeded(2)))
+        with pytest.raises(NotImplementedError, match="class-method|tuple"):
+            reg.replay({dense_hex: M_new})
+
+
+class TestNestedDecorationEmitsBothNodes:
+    """`SPDManifold.norm` calls `SPDManifold.inner` internally. Both
+    are decorated, so a single `norm` call inside record() must emit
+    exactly two nodes (norm + inner). Document this so downstream DAG
+    cost models don't get surprised."""
+
+    def test_norm_emits_inner_and_norm(self):
+        mfd = SPDManifold(n=3)
+        S = mfd.random_point(batch_size=1, generator=_seeded(0))
+        V = mfd.projection(
+            S, torch.randn(1, 3, 3, dtype=torch.float64, generator=_seeded(1)),
+        )
+        with provenance.record() as reg:
+            mfd.norm(S, V)
+        op_ids = sorted(n.op_id for n in reg)
+        assert op_ids == [
+            "holonomy_lib.manifolds.SPDManifold.inner",
+            "holonomy_lib.manifolds.SPDManifold.norm",
+        ]
 
 
 class TestDagChaining:

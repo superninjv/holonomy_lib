@@ -412,11 +412,27 @@ def _lanczos_shift_invert_dense(
 
     # Pre-factor (A − σ·I). Done once outside the Lanczos loop. We
     # build the shifted matrix without an explicit `torch.eye` expand
-    # by subtracting σ from the diagonal in-place on a clone.
+    # by subtracting σ from the diagonal in-place on a clone. A
+    # `LinAlgError`-style failure from `lu_factor` means (A − σ·I)
+    # has an exact zero on its diagonal after pivoting — i.e. σ is
+    # an exact eigenvalue of A. Re-raise as our breakdown error so
+    # the caller sees a uniform message regardless of where the
+    # singularity surfaces.
     A_shifted = A.clone()
     diag_indices = torch.arange(n, device=device)
     A_shifted[..., diag_indices, diag_indices] -= sigma
-    LU, piv = torch.linalg.lu_factor(A_shifted)
+    try:
+        LU, piv = torch.linalg.lu_factor(A_shifted)
+    except RuntimeError as e:
+        if "zero" in str(e).lower() or "singular" in str(e).lower():
+            raise RuntimeError(
+                f"lanczos_eigsh shift-invert breakdown: "
+                f"(A - σ·I) appears singular at σ={sigma}. "
+                f"Pick σ outside the spectrum of A. For graph "
+                f"Laplacians (which have 0 in spectrum) use a small "
+                f"negative shift, e.g. σ=-1e-3."
+            ) from e
+        raise
 
     def solve(v: torch.Tensor) -> torch.Tensor:
         """One application of (A − σ·I)^{−1} to a batched vector."""
@@ -483,16 +499,25 @@ def _lanczos_shift_invert_dense(
     )
     top_vecs = torch.gather(approx_eigvecs, dim=-1, index=top_idx_expand)
 
-    # Recover original eigenvalues. Guard against breakdown (|μ| ~ 0)
-    # which would otherwise produce inf — clamp by the dtype tiny so
-    # the recovered λ_i is a large finite value the caller can detect.
-    floor = torch.finfo(dtype).tiny
-    safe_mu = torch.where(
-        top_mu.abs() < floor,
-        torch.full_like(top_mu, floor),
-        top_mu,
-    )
-    lambdas = sigma + 1.0 / safe_mu
+    # Recover original eigenvalues. A breakdown is `|μ| ≈ 0`, which
+    # means σ is very close to one of A's eigenvalues — the shifted
+    # operator `(A − σI)` is nearly singular and the recovered
+    # `λ = σ + 1/μ` blows up. The `finfo(dtype).tiny` floor (≈2e-308)
+    # is too small to catch this in practice: real breakdowns
+    # propagate as `inf`/`nan` through the `lu_solve`, not as tiny
+    # finite μ. Use a more practical threshold (`sqrt(eps)`, scaled by
+    # the typical μ magnitude) that fires on the actual failure mode.
+    eps = torch.finfo(dtype).eps
+    breakdown_threshold = eps ** 0.5 * top_mu.abs().max().clamp(min=1.0)
+    if (top_mu.abs() < breakdown_threshold).any() or not torch.isfinite(top_mu).all():
+        raise RuntimeError(
+            f"lanczos_eigsh shift-invert breakdown: "
+            f"(A - σ·I) appears singular at σ={sigma}. "
+            f"Pick σ outside the spectrum of A. For graph Laplacians "
+            f"(which have 0 in spectrum) use a small negative shift, "
+            f"e.g. σ=-1e-3."
+        )
+    lambdas = sigma + 1.0 / top_mu
 
     # SA convention: smallest first. Sort ascending across the k axis,
     # carrying the eigenvectors along.

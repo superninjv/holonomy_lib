@@ -327,3 +327,29 @@ class TestShiftInvertOnLaplacian:
         )
         ref = torch.linalg.eigvalsh(L)[..., :2]
         torch.testing.assert_close(vals, ref, atol=1e-7, rtol=0)
+
+
+class TestShiftInvertBreakdownDetection:
+    """When σ coincides with (or lies near) an eigenvalue of A, the
+    shifted operator (A − σI) is singular, the LU factor is degenerate,
+    and the recovered λ = σ + 1/μ blows up. The library must fail
+    loudly with a useful message, not return garbage."""
+
+    def test_sigma_at_zero_on_singular_laplacian_raises(self):
+        # Combinatorial Laplacian of a path graph has 0 in its spectrum
+        # (always — the constant vector is in the kernel for any
+        # connected graph). σ=0 makes (L - σI) = L singular.
+        n = 5
+        L = (
+            2 * torch.eye(n, dtype=torch.float64)
+            - torch.diag(torch.ones(n - 1, dtype=torch.float64), 1)
+            - torch.diag(torch.ones(n - 1, dtype=torch.float64), -1)
+        )
+        L[0, 0] = 1.0
+        L[n - 1, n - 1] = 1.0
+        L = L.unsqueeze(0)
+        with pytest.raises(RuntimeError, match="shift-invert breakdown"):
+            lanczos_eigsh(
+                L, k=2, n_iter=n, oversample=0, which="SA", sigma=0.0,
+                generator=_seeded(0),
+            )

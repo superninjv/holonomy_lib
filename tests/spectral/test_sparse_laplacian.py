@@ -138,6 +138,30 @@ class TestAgreementWithDense:
 # --------------------------------------------------------------------
 
 
+class TestLayoutCoverage:
+    """The dispatcher accepts COO, CSR, and CSC. The agreement-with-
+    dense tests use COO only — confirm CSR and CSC paths produce the
+    same Laplacian (PyTorch's sparse-CSR-to-COO conversion does NOT
+    densify in the version we ship against, but the path needs
+    coverage)."""
+
+    @pytest.mark.parametrize("layout_method", ["to_sparse_coo", "to_sparse_csr"])
+    def test_combinatorial_layouts_agree(self, layout_method):
+        A_dense, _ = _random_symmetric_sparse(20, seed=99)
+        A_sparse = getattr(A_dense, layout_method)()
+        L_sparse = laplacian.combinatorial(A_sparse).to_dense()
+        L_dense = laplacian.combinatorial(A_dense.unsqueeze(0)).squeeze(0)
+        torch.testing.assert_close(L_sparse, L_dense, atol=1e-12, rtol=0)
+
+    @pytest.mark.parametrize("layout_method", ["to_sparse_coo", "to_sparse_csr"])
+    def test_symmetric_normalized_layouts_agree(self, layout_method):
+        A_dense, _ = _random_symmetric_sparse(20, seed=100)
+        A_sparse = getattr(A_dense, layout_method)()
+        L_sparse = laplacian.symmetric_normalized(A_sparse).to_dense()
+        L_dense = laplacian.symmetric_normalized(A_dense.unsqueeze(0)).squeeze(0)
+        torch.testing.assert_close(L_sparse, L_dense, atol=1e-9, rtol=0)
+
+
 class TestEndToEndSparseChain:
     def test_sparse_combinatorial_lanczos_matches_dense_eigh(self):
         """The motivating chain: build sparse L from sparse A, run

@@ -172,6 +172,11 @@ def natural_gradient(
       Amari (1998).
       Martens (2020), §2 — modern derivation.
     """
+    if fisher_matrix.ndim < 2:
+        raise ValueError(
+            f"fisher_matrix must be (..., d, d) with at least 2 dims; "
+            f"got fisher_matrix.shape={tuple(fisher_matrix.shape)}"
+        )
     if grad.shape[-1] != fisher_matrix.shape[-1]:
         raise ValueError(
             f"grad last dim {grad.shape[-1]} must match fisher_matrix "

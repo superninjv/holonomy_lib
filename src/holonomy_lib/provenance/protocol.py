@@ -580,11 +580,39 @@ class ProvenanceRegistry:
             call_kwargs: dict[str, Any] = {
                 k: _restore_value(v) for k, v in node.parsed_params().items()
             }
+            # Class-method replay is not yet supported: `self` was
+            # canonicalized via `_provenance_signature` into a dict
+            # rather than a class instance, and `fn(**call_kwargs)`
+            # would crash with that dict bound to `self`. Fail loudly
+            # instead of crashing on whatever the manifold method
+            # tries to access first.
+            for k, v in call_kwargs.items():
+                if isinstance(v, dict) and v.get(_PROVENANCE_SIGNATURE_TAG):
+                    raise NotImplementedError(
+                        f"replay of class-method calls is not yet "
+                        f"supported (op_id={node.op_id!r}, param "
+                        f"{k!r} is a class instance). Use "
+                        f"`substitute()` instead, or rerun your "
+                        f"pipeline with the substituted upstream "
+                        f"tensors. Tracked for v0.2."
+                    )
             for input_hex in node.input_hexes:
                 name, _, hex_part = input_hex.partition("=")
                 if hex_part not in shadow:
                     raise RuntimeError(
                         f"replay: missing tensor for {hex_part!r} (parent of {h!r})"
+                    )
+                if "[" in name and name.endswith("]"):
+                    # Tuple/list-of-tensor input was unpacked into
+                    # per-element hex keys at record time. Replaying
+                    # would need to reassemble `name[i]` back into a
+                    # positional tuple — not yet implemented.
+                    raise NotImplementedError(
+                        f"replay of methods taking tuple/list-of-tensor "
+                        f"inputs is not yet supported (op_id="
+                        f"{node.op_id!r}, input parameter {name!r} was "
+                        f"unpacked into per-element hex keys). Tracked "
+                        f"for v0.2."
                     )
                 call_kwargs[name] = shadow[hex_part]
             output = fn(**call_kwargs)

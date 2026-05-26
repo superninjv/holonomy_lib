@@ -232,11 +232,12 @@ def sign_magnetic_combinatorial(
     """
     _validate_real_adjacency(A, q)
     A = drop_self_loops(A)
+    abs_A = A.abs()
     A_s_signed = 0.5 * (A + A.mT)
-    A_s_abs = 0.5 * (A.abs() + A.abs().mT)
+    A_s_abs = 0.5 * (abs_A + abs_A.mT)
     D_abs = A_s_abs.sum(dim=-1)                       # (B, n)
 
-    H_times_As = _sign_magnetic_phase_times_adj(A, A_s_signed, q)
+    H_times_As = _sign_magnetic_phase_times_adj(A, abs_A, A_s_signed, q)
     D_diag = torch.diag_embed(D_abs).to(H_times_As.dtype)
     return D_diag - H_times_As
 
@@ -269,8 +270,9 @@ def sign_magnetic_symmetric_normalized(
     """
     _validate_real_adjacency(A, q)
     A = drop_self_loops(A)
+    abs_A = A.abs()
     A_s_signed = 0.5 * (A + A.mT)
-    A_s_abs = 0.5 * (A.abs() + A.abs().mT)
+    A_s_abs = 0.5 * (abs_A + abs_A.mT)
     D_abs = A_s_abs.sum(dim=-1)                       # (B, n)
 
     # Same pseudoinverse handling as `laplacian.symmetric_normalized` and
@@ -281,7 +283,7 @@ def sign_magnetic_symmetric_normalized(
         D_abs > 0, torch.rsqrt(safe_D), torch.zeros_like(D_abs),
     )                                                  # (B, n)
 
-    H_times_As = _sign_magnetic_phase_times_adj(A, A_s_signed, q)
+    H_times_As = _sign_magnetic_phase_times_adj(A, abs_A, A_s_signed, q)
 
     scale = (
         d_inv_sqrt.unsqueeze(dim=-1) * d_inv_sqrt.unsqueeze(dim=-2)
@@ -350,9 +352,15 @@ def _magnetic_phase_times_adj(
 
 
 def _sign_magnetic_phase_times_adj(
-    A: torch.Tensor, A_s_signed: torch.Tensor, q: float,
+    A: torch.Tensor, abs_A: torch.Tensor,
+    A_s_signed: torch.Tensor, q: float,
 ) -> torch.Tensor:
     """Return exp(i · 2π · q · (|A| − |A|^T)) ⊙ A_s_signed.
+
+    Callers pass `abs_A = A.abs()` so we don't recompute it (each
+    sign-magnetic entry point already needs the magnitudes for the
+    signless degree, so hoisting saves one extra `.abs()` kernel
+    launch per call).
 
     The phase argument uses **magnitudes** |A| (not signed A) so that
     direction and sign are independent: flipping a single directed
@@ -373,7 +381,6 @@ def _sign_magnetic_phase_times_adj(
         complex_dtype = _matching_complex_dtype(A.dtype)
         return A_s_signed.to(complex_dtype)
 
-    abs_A = A.abs()
     asym = abs_A - abs_A.mT                            # (B, n, n)
     angle = (2.0 * math.pi * q) * asym                 # (B, n, n) real
     phase = torch.complex(torch.cos(angle), torch.sin(angle))

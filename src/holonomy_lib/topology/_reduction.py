@@ -307,6 +307,15 @@ def _xor_columns(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     that appear in exactly one of A, B". With both as sorted/unsorted
     LongTensors, concatenate them and keep entries whose total count
     is odd — exactly the XOR.
+
+    Precondition: each input tensor is itself duplicate-free (a true
+    "set"). The reduction loop guarantees this — initial columns are
+    built from distinct simplex faces, and every later column is the
+    output of `torch.unique` from a prior XOR. If you call this helper
+    in a context where duplicates are possible, dedupe both inputs
+    first; a triply-occurring index would incorrectly be dropped
+    rather than kept (3 % 2 == 1 but the algorithm treats it as a
+    cancelled "1 + 1 + 1" rather than an odd-survivor).
     """
     combined = torch.cat([a, b])
     uniq, counts = torch.unique(combined, return_counts=True)

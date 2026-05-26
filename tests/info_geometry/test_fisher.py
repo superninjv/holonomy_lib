@@ -79,12 +79,17 @@ class TestCategoricalFisher:
 
     def test_clamps_zero_entries(self):
         """An exact-zero entry should not blow up to inf; the numerical
-        floor `1e-9` keeps the Fisher finite (and large)."""
+        floor `1e-9` keeps the Fisher finite (and large). Verify the
+        clamp is narrowly applied — non-zero entries must be untouched."""
         p = torch.tensor([[0.0, 0.5, 0.5]], dtype=torch.float64)
         F = fisher_information_categorical(p)
         assert torch.isfinite(F).all()
         # Diagonal entry for p_0 = 0 should be 1/clamp_floor = 1e9.
         assert F[0, 0, 0].item() == pytest.approx(1e9, rel=1e-3)
+        # Non-zero entries must be the unclamped 1/p_i, not lumped
+        # together with the clamped value.
+        assert F[0, 1, 1].item() == pytest.approx(2.0, rel=1e-12)
+        assert F[0, 2, 2].item() == pytest.approx(2.0, rel=1e-12)
 
 
 # --------------------------------------------------------------------
@@ -152,6 +157,14 @@ class TestNaturalGradient:
         F = _random_spd(batch=2, d=4, seed=0)
         with pytest.raises(ValueError, match="last dim"):
             natural_gradient(grad, F)
+
+    def test_rejects_1d_fisher_matrix(self):
+        """fisher_matrix must be at least 2-D; reject early with a
+        clear error instead of a cryptic torch internal."""
+        grad = torch.randn(3, dtype=torch.float64)
+        F_bad = torch.randn(3, dtype=torch.float64)
+        with pytest.raises(ValueError, match="at least 2 dims"):
+            natural_gradient(grad, F_bad)
 
 
 # --------------------------------------------------------------------
