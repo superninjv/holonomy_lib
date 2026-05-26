@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # External math libs we wrap or consolidate from
-geometry = ["geoopt", "geomstats"]
+geometry = ["geoopt", "geomstats", "pymanopt", "autograd"]
 topology = ["gudhi", "ripser"]
 optimization = ["higher", "torchopt"]
 dev = ["pytest", "ruff", "mypy"]
