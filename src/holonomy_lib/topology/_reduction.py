@@ -13,11 +13,32 @@ birth_j)`. Columns that reduce to zero are essential — their birth
 gets matched only to `+∞` (until a higher-dim simplex kills them,
 if applicable).
 
-Implementation: each column is a Python `set[int]` of non-zero row
-indices. XOR is symmetric difference. `low` is `max(col_set)` if
-non-empty. The reduction is inherently sequential per matrix
-(column j depends on all earlier columns), but PH batches across
-point clouds at the higher API level (`persistence_diagrams`).
+Two backends:
+
+  `backend="python"` (default) — each column is a Python `set[int]`
+    of non-zero row indices. XOR is set symmetric difference. `low`
+    is `max(col_set)` if non-empty. C-implemented set ops are
+    extremely fast for the small-to-moderate columns that typical
+    PH inputs produce; the bottleneck is the inherently sequential
+    column loop, not the per-column work.
+
+  `backend="torch"` — each column is a `torch.LongTensor` of row
+    indices on the filtration's native device. XOR is implemented
+    via concat + `torch.unique(return_counts=True)` + odd-count
+    filter; `low` is `col.max().item()` (one CPU sync per column).
+    This path runs end-to-end on whatever device the filtration
+    lives on (CPU or GPU), which is what `persistence_diagrams`
+    needs when the filtration was already built on GPU. For typical
+    small-to-moderate complexes the Python-set path is competitive
+    or faster (set ops are tight C code) — the torch path matters
+    when (1) you need device-agnostic semantics, or (2) the
+    column sizes get large enough that vectorized `unique` beats
+    Python set hashing. v1 ships as a foundation for a future
+    custom CUDA kernel.
+
+The reduction is inherently sequential per matrix (column j depends
+on all earlier columns), but PH batches across point clouds at the
+higher API level (`persistence_diagrams`).
 
 Micro-optimizations applied:
   Clearing optimization (Bauer-Kerber-Reininghaus 2014, §3): a
@@ -39,6 +60,8 @@ References:
 
 from __future__ import annotations
 
+from typing import Literal
+
 import torch
 
 from holonomy_lib.topology._filtration import Filtration
@@ -46,16 +69,27 @@ from holonomy_lib.topology._filtration import Filtration
 
 def reduce_filtration(
     filtration: Filtration,
+    backend: Literal["python", "torch"] = "python",
 ) -> dict[int, list[tuple[float, float]]]:
     """Run Z/2 left-to-right reduction. Return persistence pairs by dim.
 
     Args:
       filtration: a `Filtration` produced by `build_filtration`.
+      backend: which reduction backend to use. `"python"` (default)
+        uses Python `set[int]` columns; `"torch"` uses
+        `torch.LongTensor` columns and runs on the filtration's
+        native device.
 
     Returns:
       `dict[k, list[(birth, death)]]` — finite + essential bars for
       each dim k. Essential bars have `death = +inf`.
     """
+    if backend == "torch":
+        return _reduce_filtration_torch(filtration)
+    if backend != "python":
+        raise ValueError(
+            f"backend must be 'python' or 'torch'; got backend={backend!r}"
+        )
     n_total = int(filtration.birth_times.shape[0])
     # Build column-set representation of the boundary matrix in
     # filtration order. column[j] = set of row indices i (j's faces)
@@ -165,3 +199,115 @@ def reduce_filtration(
         )
 
     return pairs_by_dim
+
+
+def _reduce_filtration_torch(
+    filtration: Filtration,
+) -> dict[int, list[tuple[float, float]]]:
+    """Torch-tensor reduction: same algorithm, device-agnostic.
+
+    Each column is a `torch.LongTensor` of non-zero row indices on
+    the filtration's native device. XOR is `unique(cat(a, b))` filtered
+    by `count % 2 == 1`; `low(col)` is `col.max().item()`. Pivot
+    bookkeeping stays on CPU (a Python dict of int → int) since it's
+    pure scalar logic.
+
+    Cost per column: one `.item()` sync to read `low`, plus per XOR
+    one `cat` + `unique` + boolean filter. For small sparse columns
+    this is slower than CPython set ops; the benefit is that the
+    column data never leaves the filtration's device.
+    """
+    n_total = int(filtration.birth_times.shape[0])
+    device = filtration.birth_times.device
+    dims = filtration.sorted_dims.tolist()
+    indices = filtration.sorted_indices.tolist()
+    births = filtration.birth_times.tolist()
+    complex = filtration.complex
+
+    orig_to_filt: dict[tuple[int, int], int] = {}
+    for filt_idx in range(n_total):
+        orig_to_filt[(dims[filt_idx], indices[filt_idx])] = filt_idx
+
+    from holonomy_lib.simplicial._face_lookup import build_simplex_index
+
+    face_lookup_by_dim: dict[int, dict[tuple[int, ...], int]] = {}
+    for k, simplices in complex.simplices_by_dim.items():
+        face_lookup_by_dim[k] = build_simplex_index(simplices)
+
+    # Build columns as LongTensors. Pre-collect each column's face
+    # filtration indices on Python side (face enumeration is cheap)
+    # then construct a tensor on `device`.
+    columns: list[torch.Tensor] = []
+    for j in range(n_total):
+        k = dims[j]
+        idx_in_dim = indices[j]
+        if k == 0:
+            columns.append(torch.empty(0, dtype=torch.int64, device=device))
+            continue
+        simplex = complex.simplices_by_dim[k][idx_in_dim]
+        face_indices = face_lookup_by_dim.get(k - 1, {})
+        face_filt: list[int] = []
+        verts = simplex.tolist()
+        for i in range(k + 1):
+            face = tuple(verts[:i] + verts[i + 1:])
+            if face not in face_indices:
+                raise ValueError(
+                    f"_reduce_filtration_torch: face {face} of simplex "
+                    f"{tuple(verts)} not found in dim-{k - 1} simplices"
+                )
+            face_idx_in_dim = face_indices[face]
+            face_filt.append(orig_to_filt[(k - 1, face_idx_in_dim)])
+        # Face indices are all distinct on a simplex (no duplicate
+        # vertices) — the column has exactly k+1 entries before any
+        # XOR. Construct directly without de-dup.
+        columns.append(torch.tensor(face_filt, dtype=torch.int64, device=device))
+
+    pivot_map: dict[int, int] = {}
+    death_columns: set[int] = set()
+    pairs_by_dim: dict[int, list[tuple[float, float]]] = {}
+
+    for j in range(n_total):
+        col = columns[j]
+        while col.numel() > 0:
+            low = int(col.max().item())                          # CPU sync
+            if low in pivot_map:
+                other = columns[pivot_map[low]]
+                col = _xor_columns(col, other)
+                columns[j] = col
+            else:
+                pivot_map[low] = j
+                death_columns.add(j)
+                death_dim = dims[j]
+                bd_dim = death_dim - 1
+                birth = births[low]
+                death = births[j]
+                if birth < death:
+                    pairs_by_dim.setdefault(bd_dim, []).append(
+                        (birth, death),
+                    )
+                break
+
+    for j in range(n_total):
+        if j in death_columns:
+            continue
+        if columns[j].numel() > 0:
+            continue
+        bd_dim = dims[j]
+        pairs_by_dim.setdefault(bd_dim, []).append(
+            (births[j], float("inf")),
+        )
+
+    return pairs_by_dim
+
+
+def _xor_columns(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Z/2 XOR of two index-sets represented as LongTensors.
+
+    The set XOR `A △ B = (A ∪ B) − (A ∩ B)` is equivalent to "elements
+    that appear in exactly one of A, B". With both as sorted/unsorted
+    LongTensors, concatenate them and keep entries whose total count
+    is odd — exactly the XOR.
+    """
+    combined = torch.cat([a, b])
+    uniq, counts = torch.unique(combined, return_counts=True)
+    return uniq[counts % 2 == 1]

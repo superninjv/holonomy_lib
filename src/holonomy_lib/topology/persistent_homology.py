@@ -56,13 +56,14 @@ from holonomy_lib.topology._reduction import reduce_filtration
 
 
 @with_provenance(
-    "holonomy_lib.topology.persistence_diagrams", op_version="0.1",
+    "holonomy_lib.topology.persistence_diagrams", op_version="0.2",
 )
 def persistence_diagrams(
     points_or_distances: torch.Tensor,
     max_dim: int = 2,
     max_radius: float = float("inf"),
     input_is_distance: bool = False,
+    reduction_backend: str = "python",
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Persistence diagrams for dims 0..max_dim of a Vietoris-Rips
     filtration.
@@ -79,6 +80,10 @@ def persistence_diagrams(
       input_is_distance: if True, `points_or_distances` is read as a
         distance matrix directly; otherwise pairwise Euclidean
         distances are computed.
+      reduction_backend: `"python"` (default; CPython set columns,
+        fast for typical inputs) or `"torch"` (LongTensor columns,
+        device-agnostic — runs on the filtration's native device).
+        See `_reduction.reduce_filtration` for the tradeoff.
 
     Returns:
       `(diagrams, masks)` where:
@@ -148,7 +153,7 @@ def persistence_diagrams(
                 d_b, max_radius=max_radius, max_dim=max_dim + 1,
             )
             filt = build_filtration(d_b, complex)
-            pairs_by_dim = reduce_filtration(filt)
+            pairs_by_dim = reduce_filtration(filt, backend=reduction_backend)
             # The reduction returns H_0 as well, but our union-find
             # path produced cleaner H_0 pairs (no spurious
             # zero-length bars from tied filtration values); we
