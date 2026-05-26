@@ -186,17 +186,53 @@ class TestRandomSO3:
         )
 
     def test_haar_uniform_mean_approaches_zero(self):
-        """Under Haar measure on SO(3), E[R] = 0 (the standard 3D
-        representation has zero projection onto the trivial rep).
-        A large batch should give a mean rotation matrix with
-        Frobenius norm decaying like 1/√N."""
+        """Statistical test for Haar uniformity on SO(3).
+
+        Under Haar measure each entry `R_ij` has `E[R_ij] = 0` and
+        `Var[R_ij] = 1/3` (each row is uniform on S², so the squared
+        components average to `1/n_row = 1/3`). The asymptotic
+        distribution of `3n · ‖mean(R)‖_F²` is approximately
+        `chi-squared(9)` (modulo the orthonormality constraints among
+        rows/columns; the chi-squared bound is tight enough for a
+        sanity test).
+
+        We use the `p < 1e-6` quantile of chi-squared(9) ≈ 41, giving
+        a false-positive rate around 1 per million test runs — small
+        enough to never flake, tight enough to catch an actually
+        broken sampler. The Shoemake construction lands well inside
+        this region in practice: empirical ‖mean‖_F at n=10000 sits
+        near 0.012 against the 0.037 threshold.
+        """
         n = 10000
         R = so3.random_so3(batch_size=n, generator=_seeded(7))
         mean_R = R.mean(dim=0)
-        # 1/√10000 = 0.01; total Frobenius norm of mean across 9 entries
-        # should be small. Use a generous bound.
         fro = torch.linalg.matrix_norm(mean_R, ord="fro").item()
-        assert fro < 0.1, f"mean rotation Frobenius norm {fro} too large"
+        # chi-squared(9) quantile at p = 1e-6.
+        chi2_p1e_6 = 41.0
+        threshold = (chi2_p1e_6 / (3 * n)) ** 0.5
+        assert fro < threshold, (
+            f"Haar-uniformity sanity fails at p<1e-6: ‖mean(R)‖_F={fro:.4f} "
+            f"vs threshold={threshold:.4f}. Sampler is biased."
+        )
+
+    def test_haar_per_entry_mean_within_tolerance(self):
+        """Per-entry tightness: each `|mean(R_ij)|` should be within a
+        few standard errors of zero. Catches bias that the Frobenius
+        check could miss (e.g., one entry systematically positive but
+        others compensating to keep the sum-of-squares small)."""
+        n = 10000
+        R = so3.random_so3(batch_size=n, generator=_seeded(11))
+        mean_R = R.mean(dim=0)
+        # Per-entry std under Haar = sqrt(1/3) / sqrt(n) ≈ 0.0058 at n=10000.
+        # 5σ ≈ 0.029, p ≈ 2.9e-7 per entry, ≈ 2.6e-6 across 9 entries.
+        # Use 0.04 as a single threshold — clearly catches any entry
+        # consistently more than ~7σ off, while being far above the
+        # expected sampling fluctuation.
+        max_abs = mean_R.abs().max().item()
+        assert max_abs < 0.04, (
+            f"max |mean(R_ij)| = {max_abs:.4f} exceeds 0.04 tolerance "
+            f"(7σ at n={n}); sampler appears biased."
+        )
 
     def test_deterministic_with_seed(self):
         R1 = so3.random_so3(batch_size=4, generator=_seeded(42))
