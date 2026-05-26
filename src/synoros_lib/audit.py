@@ -34,16 +34,27 @@ from typing import Optional
 
 
 # Universal safe literals.
-# Three categories, each justified explicitly:
+# Four categories, each justified explicitly:
 #   1. Mathematical identities (0, 1, -1) — no debate
-#   2. Universal binary/SI unit conversions (1024 for KB↔MB↔GB,
+#   2. Halving/doubling identity 0.5 and 2 — fundamental in mathematical code:
+#      symmetric/antisymmetric parts (Z ± Zᵀ)/2, midpoint mean (a + b)/2,
+#      quadratic-form coefficients (½)xᵀAx, triangular numbers n(n+1)/2,
+#      2π, 2-norm, second-derivative coefficients, etc. Treated as
+#      identity-level since both are canonical halve/double constants; on
+#      par with 0, 1, -1 for math libraries (added 2026-05-26 for synoros-lib).
+#      Note: 2 carries some false-negative risk for non-math code (e.g.,
+#      "2 retries" magic numbers) — accepted tradeoff for math-library
+#      readability.
+#   3. Universal binary/SI unit conversions (1024 for KB↔MB↔GB,
 #      1000 for s↔ms / RNG-stream decorrelation) — true universals
-#   3. Conventional numerical floor 1e-9 — chosen safer than float32 eps
+#   4. Conventional numerical floor 1e-9 — chosen safer than float32 eps
 #      (~1.19e-7); used pervasively as anti-divide-by-zero. Posited
 #      convention; documented in catalog as `numerical_floor_convention`.
 ALLOWED_LITERALS: set[float] = {
     # Mathematical identities
     0, 1, -1, 0.0, 1.0, -1.0,
+    # Halving/doubling identities (symmetric part, midpoint, n(n+1)/2, 2π, etc.)
+    0.5, 2, 2.0, -2, -2.0,
     # Universal binary unit conversions (KB↔MB↔GB)
     1024, 1024.0,
     # Universal SI time conversion (s↔ms) + RNG stream-offset multiplier

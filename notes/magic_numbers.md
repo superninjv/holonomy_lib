@@ -33,6 +33,7 @@ ALLOWED_LITERALS set:
 | Literal | Justification |
 |---|---|
 | `0, 1, -1` (and float forms) | Mathematical identities |
+| `0.5` and `2` (and `-2`, float forms) | Halving/doubling identities. Symmetric/antisymmetric parts `(Z ± Zᵀ)/2`, midpoint mean `(a + b)/2`, quadratic-form coefficient `(½)xᵀAx`, triangular numbers `n(n+1)/2`, `2π`, 2-norm, second-derivative coefficients. On par with `0, 1, -1` for mathematical code. Added 2026-05-26. |
 | `1024, 1024.0` | Universal binary unit conversion (KB↔MB↔GB) |
 | `1000, 1000.0` | Universal SI time conversion (s↔ms) AND RNG-stream-offset multiplier |
 | `1e-9` (`numerical_floor_convention`) | Posited convention: anti-divide-by-zero floor. Chosen smaller than float32 eps (~1.19e-7) for safety across dtypes. Used pervasively in `1.0 / max(x, 1e-9)` and similar guards. |
