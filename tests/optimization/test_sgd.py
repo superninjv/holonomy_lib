@@ -38,6 +38,31 @@ class TestValidation:
             RiemannianSGD(mfd, lr=-0.1)
 
 
+class TestBatchZero:
+    """`B = 0` must work — required by CONVENTIONS.md §1.1 for every
+    primitive that accepts a batched input."""
+
+    def test_spd_batch_zero(self):
+        mfd = SPDManifold(n=3, dtype=torch.float64)
+        S = mfd.random_point(batch_size=0, generator=_seeded(80))
+        assert S.shape == (0, 3, 3)
+        g = torch.zeros(0, 3, 3, dtype=torch.float64)
+        opt = RiemannianSGD(mfd, lr=0.1)
+        S_next = opt.step(S, g)
+        assert S_next.shape == (0, 3, 3)
+
+    def test_fixed_rank_batch_zero(self):
+        mfd = FixedRankManifold(m=4, n=5, r=2, dtype=torch.float64)
+        pt = mfd.random_point(batch_size=0, generator=_seeded(81))
+        assert pt[0].shape == (0, 4, 2)
+        g = torch.zeros(0, 4, 5, dtype=torch.float64)
+        opt = RiemannianSGD(mfd, lr=0.1)
+        pt_next = opt.step(pt, g)
+        assert pt_next[0].shape == (0, 4, 2)
+        assert pt_next[1].shape == (0, 2)
+        assert pt_next[2].shape == (0, 2, 5)
+
+
 # --------------------------------------------------------------------
 # Convergence: rank-r best-approximation on FixedRankManifold
 # --------------------------------------------------------------------

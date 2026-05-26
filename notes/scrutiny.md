@@ -438,6 +438,131 @@ when k_signal ≪ n — the expected win.
 
 ---
 
+## Pass 4 — 2026-05-27 (Tier 1 additions)
+
+Three parallel `feature-dev:code-reviewer` agents on the 4 new modules
+introduced across Tier 1 (Riemannian optimizers, simplicial complexes,
+Hodge Laplacians + sparse Lanczos, persistent homology). Starting:
+457 pass. Ending: 461 pass, audit clean.
+
+### ✅ Performance — Z/2 reduction essential-bar pass was O(n²)
+
+**Found**: `_reduction.py:157` used `j in pivot_map.values()` to check
+whether column `j` was a death column. The `.values()` view scan is
+O(n) per call, making the outer essential-bar loop O(n²) in
+`n_total`. For a typical 50-point cloud at max_dim=2, n_total is
+~5000; the linear scan becomes the bottleneck of PH well before
+the Python-set XOR does.
+
+**Fix**: maintain a `death_columns: set[int]` alongside `pivot_map`
+during the reduction (added immediately when `pivot_map[low] = j`
+fires). The essential-bar check becomes an O(1) set lookup, restoring
+the O(n) outer loop.
+
+### ✅ Performance — DenseSimplicialComplex.boundary inner-loop hoist
+
+**Found**: `complex.py:158` called `torch.where(prev_valid[b])[0]`
+INSIDE the triple-nested `for b, j, i` loop. The result is constant
+within a given `b`; recomputing it `n_k · (k+1)` times per batch is
+gratuitous work + (line 159) a `.item()` host sync per call on GPU.
+
+**Fix**: hoist `valid_prev_rows = torch.where(prev_valid[b])[0]` to
+the per-batch setup block and convert to a Python list once with
+`.tolist()`, eliminating both the redundant tensor ops and all
+`.item()` syncs from the hot path. Same treatment applied to
+`k_cols`.
+
+### ✅ Correctness — `_scale` tuple branch was dead-code trap
+
+**Found**: `sgd.py:54-62` had a `_scale` helper with a tuple-handling
+branch ("preserve the structure"). The docstring is explicit that
+`ambient_grad` is always a single `torch.Tensor` (for FixedRank, the
+ambient `(B, m, n)` form per Vandereycken 2013). The tuple branch
+never fires under the documented API; a future caller misled into
+passing a tuple would crash deep inside `FixedRankManifold.projection`.
+
+**Fix**: removed the `_scale` helper entirely; the step is now just
+`-lr * ambient_grad` inline. Updated docstring to explicitly state
+`ambient_grad` is a single tensor.
+
+### ✅ Code quality — sparse Hodge hardcoded float64
+
+**Found**: `_hodge_sparse` hardcoded `dtype = torch.float64`.
+`SparseSimplicialComplex` has no `dtype` attribute, so the function
+had no other source of information; but callers expecting float32
+got silently promoted to float64.
+
+**Fix**: added a `dtype` parameter (default `torch.float64`) to
+`_hodge_sparse`, propagated through to the boundary-matrix
+construction. The public `hodge_laplacian` still picks float64 by
+default per the `SparseSimplicialComplex` convention; callers
+needing float32 can call `_hodge_sparse` directly or add a public
+override in v2.
+
+### ✅ Conventions — `@with_provenance` decoration
+
+**Found**: three public top-level primitives in the new code lacked
+`@with_provenance` decoration:
+- `simplicial.vietoris_rips_sparse`
+- `simplicial.vietoris_rips_dense`
+- `simplicial.pairwise_distances`
+
+Per `CONVENTIONS.md` §7, all public top-level primitives must be
+decorated.
+
+**Fix**: decorated all three. Bumped no op_versions (these are new
+primitives at v0.1).
+
+**Carve-out documented**: `optimization.riemannian_sgd_step` is
+deliberately NOT `@with_provenance`-decorated. Two reasons:
+1. The `manifold` parameter is a class instance — `default=str` JSON
+   serialization produces a memory-address-based string, breaking the
+   hex stability contract (same issue we hit with `torch.Generator`
+   before canonicalization).
+2. The function is hot-loop (fires per optimizer iteration); the
+   decoration overhead would dominate the actual math.
+
+Both rationales documented inline in the function docstring. Future
+v2 work could add `manifold` canonicalization analogous to
+`torch.Generator`, but for v1 the carve-out is clean.
+
+### ✅ Conventions — missing `References:` sections
+
+**Found**: per-function `References:` blocks missing on the three
+public simplicial primitives flagged above, plus `boundary()`
+methods on both complex classes. Module-level docstrings reference
+the right papers but CONVENTIONS.md §6 + §9.1 require per-function
+references.
+
+**Fix**: added `References:` blocks to each affected function.
+
+### ✅ Tests — missing B=0 and max_radius=0 cases
+
+**Found**: `RiemannianSGD` had no `B=0` test (CONVENTIONS.md §1.1
+requires `B ∈ {0, 1, > 1}`). `persistence_diagrams` had no
+`max_radius=0` test (the "no edges → all H_0 bars essential" case).
+
+**Fix**: added `TestBatchZero` (SPD + FixedRank) for the optimizer,
+and `TestEdgeCases.test_max_radius_zero` + `test_batch_zero` for PH.
+
+### 🟢 Verified correct (reviewer cleared on second look)
+
+- `_filtration.py` sort cascade: produces correct lex order via
+  stable-sort passes.
+- `_reduction.py` essential-bar identification: `columns[j]` empty
+  check is correct and complete.
+- `_reduction.py` Z/2 sign-drop: intentional, sign meaningless mod 2.
+- `_persistent_h0` `n_surviving` accounting under `max_radius < inf`:
+  components that never merge get genuine infinite bars.
+- Vietoris-Rips edge enumeration via `torch.argwhere(adj_mask)`: the
+  strict upper-triangular mask precludes duplicates.
+- Riemannian SGD sign convention: `_scale(g, -lr)` then project then
+  retract is correct for `g = ambient_gradient`.
+- `betti_numbers` sparse-path's no-padding-subtraction: correct
+  because sparse has no padding to subtract; inline comment added.
+
+---
+
 ## Open follow-ups (not yet acted on)
 
 ### 🔬 Randomized SVD silent fallback to exact mode

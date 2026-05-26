@@ -28,10 +28,14 @@ from itertools import combinations
 
 import torch
 
+from holonomy_lib.provenance import with_provenance
 from holonomy_lib.simplicial.complex import DenseSimplicialComplex
 from holonomy_lib.simplicial.sparse_complex import SparseSimplicialComplex
 
 
+@with_provenance(
+    "holonomy_lib.simplicial.vietoris_rips_sparse", op_version="0.1",
+)
 def vietoris_rips_sparse(
     distances: torch.Tensor,
     max_radius: float,
@@ -47,6 +51,14 @@ def vietoris_rips_sparse(
     Returns:
       `SparseSimplicialComplex` containing all VR simplices at scale
       `max_radius` up to dim `max_dim`.
+
+    References:
+      Hausmann, J.-C. (1995). On the Vietoris-Rips complexes and a
+        cohomology theory for metric spaces. In Prospects in Topology,
+        Annals of Math Studies 138.
+      Bauer, U. (2021). Ripser: efficient computation of Vietoris-Rips
+        persistence barcodes. J. Appl. Comput. Topology 5:391-423,
+        §3 — incremental k-simplex construction.
     """
     if distances.ndim != 2 or distances.shape[0] != distances.shape[1]:
         raise ValueError(
@@ -126,6 +138,9 @@ def vietoris_rips_sparse(
     )
 
 
+@with_provenance(
+    "holonomy_lib.simplicial.vietoris_rips_dense", op_version="0.1",
+)
 def vietoris_rips_dense(
     distances: torch.Tensor,
     max_radius: float,
@@ -148,6 +163,12 @@ def vietoris_rips_dense(
     per dimension and stacks. Simple and clear; for very large `B` or
     very large `n` a vectorized batched build would help, but isn't
     needed at v1 sizes.
+
+    References:
+      Hausmann, J.-C. (1995). On the Vietoris-Rips complexes and a
+        cohomology theory for metric spaces.
+      Bauer, U. (2021). Ripser: efficient computation of Vietoris-Rips
+        persistence barcodes. J. Appl. Comput. Topology 5:391-423.
     """
     if distances.ndim != 3 or distances.shape[-1] != distances.shape[-2]:
         raise ValueError(
@@ -198,6 +219,9 @@ def vietoris_rips_dense(
     )
 
 
+@with_provenance(
+    "holonomy_lib.simplicial.pairwise_distances", op_version="0.1",
+)
 def pairwise_distances(points: torch.Tensor) -> torch.Tensor:
     """Pairwise Euclidean distances.
 
@@ -206,6 +230,12 @@ def pairwise_distances(points: torch.Tensor) -> torch.Tensor:
 
     Returns:
       `(n, n)` or `(B, n, n)` distance matrix.
+
+    References:
+      Standard Euclidean distance. See e.g. Hartle, J. B. (2003),
+        Gravity: An Introduction to Einstein's General Relativity,
+        §2.1 for the abstract metric formulation; computationally
+        we use `||p - q||_2` directly.
     """
     if points.ndim != 2 and points.ndim != 2 + 1:
         raise ValueError(

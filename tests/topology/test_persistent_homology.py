@@ -212,6 +212,27 @@ class TestAlgebraicInvariants:
 # --------------------------------------------------------------------
 
 
+class TestEdgeCases:
+    def test_max_radius_zero(self):
+        """No edges → every H_0 component is essential (infinite bar)."""
+        pts = torch.randn(1, 5, 2, dtype=torch.float64, generator=_seeded(50))
+        diagrams, masks = persistence_diagrams(pts, max_dim=0, max_radius=0.0)
+        diag0 = diagrams[0][0][masks[0][0]]
+        # All 5 bars are infinite
+        deaths = diag0[:, 1]
+        assert torch.isinf(deaths).all()
+        # Cardinality equals n
+        assert diag0.shape[0] == 5
+
+    def test_batch_zero(self):
+        """B=0 must work — required by CONVENTIONS.md §1.1."""
+        pts = torch.zeros(0, 5, 2, dtype=torch.float64)
+        diagrams, masks = persistence_diagrams(pts, max_dim=1)
+        for k in range(2):
+            assert diagrams[k].shape[0] == 0
+            assert masks[k].shape[0] == 0
+
+
 class TestValidation:
     def test_rejects_negative_max_dim(self):
         pts = torch.randn(1, 4, 2, dtype=torch.float64)

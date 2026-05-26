@@ -112,10 +112,14 @@ def reduce_filtration(
 
     # Z/2 left-to-right reduction.
     # `pivot_map[low] = j` for the paired column j with low(j) = low.
-    # `pairs[dim]` accumulates (birth, death) per dim.
+    # `death_columns: set[int]` tracks which columns are deaths (the
+    # values of `pivot_map`); we maintain it alongside `pivot_map`
+    # because `pivot_map.values()` is an O(n) view scan on dict, and
+    # the essential-bar pass below would otherwise be O(n²) in
+    # n_total.
     pivot_map: dict[int, int] = {}
+    death_columns: set[int] = set()
     pairs_by_dim: dict[int, list[tuple[float, float]]] = {}
-    paired_columns: set[int] = set()
 
     for j in range(n_total):
         col = columns[j]
@@ -127,8 +131,7 @@ def reduce_filtration(
             else:
                 # New pivot — record the persistence pair.
                 pivot_map[low] = j
-                paired_columns.add(low)
-                paired_columns.add(j)
+                death_columns.add(j)
                 death_dim = dims[j]
                 # Pair lives in dim (death_dim - 1) since it's the
                 # H_{death_dim-1} bar born when `low` (a (death_dim-1)-
@@ -144,21 +147,17 @@ def reduce_filtration(
                     )
                 break
 
-    # Essential bars: any column j that wasn't matched as a death
-    # (i.e., not in `pivot_map.values()` and reducible only to zero
-    # OR not yet killed) is an essential bar of dim = dims[j].
-    # In Z/2 reduction, an essential bar is a column that reduces to
-    # zero AND wasn't a "death" for any earlier column.
-    # Equivalently: column j is essential if j ∉ pivot_map.values()
-    # AND `low(reduced col j)` doesn't exist (column is empty).
-    # Our `columns` array now holds the REDUCED columns, so empty
-    # means essential.
+    # Essential bars: any column j that wasn't matched as a death AND
+    # reduces to an empty column. In Z/2 reduction the algorithm
+    # always finds a pivot for any non-empty reduced column, so the
+    # `columns[j]` check is the actual condition; the membership test
+    # in `death_columns` (O(1) set lookup) handles the corresponding
+    # paired-column case.
     for j in range(n_total):
-        if j in pivot_map.values():
-            continue  # j is a death column for some pair
+        if j in death_columns:
+            continue
         if columns[j]:
-            continue  # column j is non-empty but couldn't be paired
-                       # (shouldn't happen with correct reduction)
+            continue
         # Essential bar for dim = dims[j], born at births[j].
         bd_dim = dims[j]
         pairs_by_dim.setdefault(bd_dim, []).append(

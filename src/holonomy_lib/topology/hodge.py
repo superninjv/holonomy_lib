@@ -173,6 +173,11 @@ def betti_numbers(
             eigvals = torch.linalg.eigvalsh(L_k)
             abs_eigvals = eigvals.abs()
             ref = abs_eigvals.max().clamp(min=1.0)
+            # No padding subtraction here: the sparse complex has no
+            # padded rows/cols (every row of L_k corresponds to a real
+            # simplex), so every near-zero eigenvalue counts. Contrast
+            # with the dense path above, which must subtract the
+            # padding count from the raw zero count.
             zero_count = (abs_eigvals <= threshold * ref).sum()
             out[k] = zero_count.to(torch.int64)
         return out
@@ -220,6 +225,7 @@ def _hodge_dense(
 
 def _hodge_sparse(
     complex: SparseSimplicialComplex, k: int,
+    dtype: torch.dtype = torch.float64,
 ) -> torch.Tensor:
     """L_k on the sparse path; returns dense (n_k, n_k).
 
@@ -228,6 +234,11 @@ def _hodge_sparse(
     where this would exceed memory, the user can call Lanczos
     directly with a sparse `LinearOperator`-style implicit Hodge
     operator (planned for v2).
+
+    `SparseSimplicialComplex` doesn't carry a float dtype attribute,
+    so we accept one explicitly (default `torch.float64`). Boundary
+    operators are constructed at this dtype to keep the L_k matmul
+    type-consistent.
     """
     if k > complex.max_dim:
         raise ValueError(
@@ -236,7 +247,6 @@ def _hodge_sparse(
 
     n_k = complex.n_simplices(k)
     device = complex.device
-    dtype = torch.float64
     L = torch.zeros(n_k, n_k, device=device, dtype=dtype)
 
     if k > 0:

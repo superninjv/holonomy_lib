@@ -20,14 +20,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import torch
+
 from holonomy_lib.optimization.base import RiemannianOptimizer
-from holonomy_lib.provenance import with_provenance
 
 
 def riemannian_sgd_step(
     manifold: Any,
     point: Any,
-    ambient_grad: Any,
+    ambient_grad: torch.Tensor,
     lr: float,
 ) -> Any:
     """Functional one-step Riemannian SGD.
@@ -36,30 +37,36 @@ def riemannian_sgd_step(
       manifold: object exposing `projection(point, ambient)` and
         `retraction(point, tangent)` methods (e.g.
         `FixedRankManifold`, `SPDManifold`).
-      point: current point on the manifold.
-      ambient_grad: ambient-space gradient of the objective.
+      point: current point on the manifold (tensor for SPD; triple
+        of tensors for FixedRank).
+      ambient_grad: ambient-space gradient of the objective. Always
+        a single `torch.Tensor`; for `FixedRankManifold` this is the
+        `(B, m, n)` ambient gradient per Vandereycken (2013)'s
+        embedded-tangent representation.
       lr: learning rate (positive scalar).
 
     Returns:
       new_point: the manifold-constrained next iterate.
 
     References:
-      Absil-Mahony-Sepulchre (2008), §4.1.
+      Absil, P.-A., Mahony, R., Sepulchre, R. (2008). Optimization
+        Algorithms on Matrix Manifolds. Princeton University Press,
+        §4.1 — retraction-based steepest descent.
+      Bonnabel, S. (2013). Stochastic gradient descent on Riemannian
+        manifolds. IEEE TAC 58(9):2217-2229, §III.
+
+    Note: this function is intentionally NOT `@with_provenance`-
+    decorated. Optimizer steps are inner-loop calls that fire
+    hundreds or thousands of times per training run, and the hex
+    computation would dominate the actual math. If you need to
+    audit an optimization trajectory, record the manifold primitives
+    (`projection`, `retraction`) it calls instead.
     """
     # Project the negative ambient gradient onto the tangent space at
-    # `point`, then retract. Equivalent to projecting `g` then negating
-    # and scaling, but doing the sign before the projection is one
-    # fewer tensor allocation. The projection is linear so the two
-    # orderings give the same result up to floating-point.
-    tangent = manifold.projection(point, _scale(ambient_grad, -lr))
+    # `point`, then retract. The projection is linear, so scaling by
+    # `-lr` before the projection is equivalent to scaling after.
+    tangent = manifold.projection(point, -lr * ambient_grad)
     return manifold.retraction(point, tangent)
-
-
-def _scale(x: Any, alpha: float) -> Any:
-    """Multiply by a scalar, preserving the structure (tensor or tuple)."""
-    if isinstance(x, tuple):
-        return tuple(alpha * xi for xi in x)
-    return alpha * x
 
 
 class RiemannianSGD(RiemannianOptimizer):

@@ -1,16 +1,17 @@
 # holonomy_lib
 
 > **A research-grade PyTorch math library**: GPU-native, batched-first,
-> audit-clean, with every primitive grounded in a citation. Differential
-> geometry, spectral graph theory, discrete Ricci flow, tensor
-> decompositions, and content-addressable provenance for mechanistic
-> interpretability, all under one roof. Developed by independent and
-> Synoros researchers for the *substrate* research.
+> audit-clean, with every primitive grounded in a citation.
+> Differential geometry, spectral graph theory, discrete Ricci flow,
+> tensor decompositions, Riemannian optimization, simplicial topology,
+> batched persistent homology, and content-addressable provenance for
+> mechanistic interpretability, all under one roof. Developed by
+> independent and Synoros researchers for the *substrate* research.
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 269 passing](https://img.shields.io/badge/tests-269%20passing-brightgreen.svg)](#testing)
+[![tests: 457 passing](https://img.shields.io/badge/tests-457%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -18,11 +19,11 @@
 ## What this is
 
 A consolidated PyTorch math library for research at the intersection of
-**differential geometry**, **spectral graph theory**, and **mechanistic
-interpretability**: the mathematics that modern ML keeps reinventing
-project by project. Six modules, 269 tests, every numerical constant
-derived or cataloged with a scale-of-validity, every primitive cited to
-the paper that defines it.
+**differential geometry**, **spectral graph theory**, **computational
+topology**, and **mechanistic interpretability**: the mathematics that
+modern ML keeps reinventing project by project. Nine modules, 457
+tests, every numerical constant derived or cataloged with a
+scale-of-validity, every primitive cited to the paper that defines it.
 
 The name **holonomy** comes from differential geometry: the
 transformation a vector accumulates when parallel-transported around a
@@ -63,16 +64,22 @@ properties this library guarantees:
    pointing to the paper that defines its math. No "trust me"
    implementations.
 
-| | this lib | geoopt | geomstats | pymanopt | gudhi |
-|---|:-:|:-:|:-:|:-:|:-:|
-| Riemannian manifolds | ✓ | ✓ | ✓ | ✓ | – |
-| Spectral graph theory | ✓ | – | – | – | – |
-| Ollivier-Ricci curvature | ✓ | – | – | – | – |
-| Tucker / HOSVD | ✓ | – | – | – | – |
-| GPU-native (PyTorch) | ✓ | ✓ | partial | – | – |
-| Batched-first | ✓ | ✓ | partial | – | – |
-| Content-addressable provenance | ✓ | – | – | – | – |
-| Audit / no-magic-numbers | ✓ | – | – | – | – |
+| | this lib | geoopt | geomstats | pymanopt | gudhi | ripser |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| Riemannian manifolds + optimizers | ✓ | ✓ | ✓ | ✓ | – | – |
+| Spectral graph theory (4+ Laplacians) | ✓ | – | – | – | – | – |
+| Magnetic Laplacian (directed graphs) | ✓ | – | – | – | – | – |
+| Ollivier-Ricci + Forman-Ricci curvature | ✓ | – | – | – | – | – |
+| Discrete Ricci flow + surgery | ✓ | – | – | – | – | – |
+| Tucker / HOSVD | ✓ | – | – | – | – | – |
+| Chebyshev heat kernel + diffusion maps | ✓ | – | – | – | – | – |
+| Simplicial complexes + Hodge Laplacians | ✓ | – | – | – | ✓ | – |
+| Batched persistent homology (H₀+H₁+H₂) | ✓ | – | – | – | – | – |
+| GPU-native (PyTorch) | ✓ | ✓ | partial | – | – | – |
+| Batched-first | ✓ | ✓ | partial | – | – | – |
+| Content-addressable provenance | ✓ | – | – | – | – | – |
+| Audit / no-magic-numbers | ✓ | – | – | – | – | – |
+| Information geometry (Bregman + KL) | ✓ | – | ✓ | – | – | – |
 
 ---
 
@@ -109,8 +116,10 @@ torchopt), `dev` (pytest, ruff, mypy).
 ```python
 import torch
 from holonomy_lib.manifolds import SPDManifold
+from holonomy_lib.optimization import RiemannianSGD
 from holonomy_lib.spectral import laplacian, laplacian_eigenmaps
 from holonomy_lib.discrete_geometry import ricci_flow_with_surgery
+from holonomy_lib.topology import persistence_diagrams
 from holonomy_lib import provenance
 
 # 1. Riemannian geometry on SPD covariance matrices
@@ -121,19 +130,37 @@ d = mfd.distance(S, T)                    # affine-invariant geodesic
 V = mfd.log(S, T)                         # Lie-algebra-style log
 T_recon = mfd.exp(S, V)                   # exp_S(log_S(T)) ≈ T
 
-# 2. Graph spectral embedding
+# 2. Riemannian gradient descent ON the SPD manifold
+opt = RiemannianSGD(mfd, lr=0.5)
+point = S.clone()
+for _ in range(50):
+    ambient_grad = -mfd.log(point, T)     # gradient of (1/2) d(point, T)^2
+    point = opt.step(point, ambient_grad)
+# `point` now sits on the SPD manifold, close to T.
+
+# 3. Graph spectral embedding
 A = (torch.rand(1, 50, 50) > 0.7).double()
 A = (A + A.mT) * 0.5                      # symmetrize
 vals, vecs = laplacian_eigenmaps(A, k=4, laplacian_type="symmetric_normalized")
 
-# 3. Perelman-on-networks: community detection via Ricci flow + surgery
+# 4. Perelman-on-networks: community detection via Ricci flow + surgery
 A_after = ricci_flow_with_surgery(
     A, n_steps=20, surgery_period=5, surgery_threshold=3.0,
     dt=0.5, alpha=0.0,
 )
 # Disconnected components in A_after correspond to detected communities.
 
-# 4. Mech-interp-style provenance: every primitive emits a Merkle DAG node
+# 5. Batched persistent homology on point clouds
+points = torch.randn(8, 30, 2, dtype=torch.float64)   # 8 point clouds of 30 pts
+diagrams, masks = persistence_diagrams(
+    points, max_dim=2, max_radius=2.5,
+)
+# diagrams[0]: (8, max_h0, 2)  birth/death pairs for H_0 (components)
+# diagrams[1]: (8, max_h1, 2)  for H_1 (loops)
+# diagrams[2]: (8, max_h2, 2)  for H_2 (voids)
+# masks[k] tells you which pair-slots are valid per batch element.
+
+# 6. Mech-interp-style provenance: every primitive emits a Merkle DAG node
 with provenance.record(cache_tensors=True) as reg:
     L = laplacian.combinatorial(A)
     vals, vecs = laplacian_eigenmaps(A, k=4)
@@ -186,6 +213,37 @@ SVD with documented oversampling.
 | 64 × 64 × 8 | 0.31 ms | 0.31 ms | 1.0× (parity) |
 | 256 × 256 × 16 | 7.4 ms | 1.3 ms | 5.8× |
 | **1024 × 1024 × 32** | **193 ms** | **7.6 ms** | **25×** |
+
+### Highlight: Lanczos vs dense `eigh` on big symmetric matrices
+
+The library's `algebra.lanczos_eigsh` with full reorthogonalization
+beats `torch.linalg.eigvalsh` once the matrix is big enough that
+computing the full spectrum becomes wasteful. Single-batch top-1
+eigenvalue at CPU, float64:
+
+| n | dense `eigvalsh` | `lanczos_eigsh` (n_iter=30) | **speedup** |
+|---:|---:|---:|---:|
+| 128 | 0.44 ms | 2.66 ms | 0.2× (Lanczos overhead dominates) |
+| 512 | 7.62 ms | 4.84 ms | 1.6× |
+| **1024** | **46.5 ms** | **11.0 ms** | **4.2×** |
+
+The same `lanczos_eigsh` accepts sparse-CSC inputs (via the dispatch
+added in Phase 3), so it's the natural top-k path on the sparse-Hodge
+Laplacians produced by the `topology` module.
+
+### Highlight: Batched persistent homology
+
+`topology.persistence_diagrams` computes H₀ + H₁ + H₂ for a batch of
+point clouds in parallel. H₀ runs via union-find on sorted filtration
+edges (no boundary-matrix reduction needed). H₁ and H₂ use Z/2
+left-to-right reduction (Edelsbrunner-Letscher-Zomorodian 2002) on
+sparse-CSC boundary matrices, batching across point clouds.
+
+Closed-form verification: a noisy 30-point unit circle reliably
+recovers one persistent H₁ bar (the loop) with persistence > 0.2 in
+the default `max_radius` range; the bottleneck stability theorem
+(Cohen-Steiner-Edelsbrunner-Harer 2007) is verified under
+ε-perturbation in the test suite.
 
 ---
 

@@ -122,17 +122,20 @@ class DenseSimplicialComplex:
         # batched dense use; the heavy lifting in v1 is `eigh` on the
         # resulting (B, n, n) Laplacian, not the boundary construction.
         for b in range(B):
-            # Build the (k-1)-simplex → row-index map for this batch.
+            # Build the (k-1)-simplex → row-index map for this batch
+            # AND hoist all the per-batch lookups out of the inner loop:
+            # `k_cols_list` / `valid_prev_rows_list` are pure CPU lists
+            # so we avoid `.item()` host syncs inside the (j, i) loop
+            # that would otherwise stall every iteration on GPU.
             valid_prev = prev_simplices[b][prev_valid[b]]
             prev_index = build_simplex_index(valid_prev)
             valid_k = k_simplices[b][k_valid[b]]           # (n_k, k+1)
-            # Re-index the valid k-simplices back to their column positions
-            # in the padded n_k_max layout.
-            k_cols = torch.where(k_valid[b])[0]            # (n_k,)
+            k_cols_list = torch.where(k_valid[b])[0].tolist()
+            valid_prev_rows_list = torch.where(prev_valid[b])[0].tolist()
 
             n_k_actual = valid_k.shape[0]
             for j in range(n_k_actual):
-                col = k_cols[j].item()
+                col = k_cols_list[j]
                 simplex = valid_k[j]                       # (k+1,)
                 # Enumerate faces + signs (Koszul: (-1)^i for face dropping vertex i)
                 for i in range(k + 1):
@@ -144,8 +147,7 @@ class DenseSimplicialComplex:
                     key = tuple(face.tolist())
                     if key not in prev_index:
                         # Face missing from (k-1)-dim table — complex is
-                        # malformed. Skip silently? raise? For v1 raise so
-                        # bugs surface early.
+                        # malformed. Raise so bugs surface early.
                         raise ValueError(
                             f"boundary(k={k}): face {key} of simplex "
                             f"{tuple(simplex.tolist())} in batch {b} not "
@@ -155,8 +157,7 @@ class DenseSimplicialComplex:
                         )
                     # Map back to the padded row index in prev_simplices
                     # (prev_index gave us the position in the *valid* slice).
-                    valid_prev_rows = torch.where(prev_valid[b])[0]
-                    row = valid_prev_rows[prev_index[key]].item()
+                    row = valid_prev_rows_list[prev_index[key]]
                     sign = 1 if (i % 2 == 0) else -1
                     D[b, row, col] = sign
         return D
