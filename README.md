@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 457 passing](https://img.shields.io/badge/tests-457%20passing-brightgreen.svg)](#testing)
+[![tests: 534 passing](https://img.shields.io/badge/tests-534%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Nine modules, 457
+modern ML keeps reinventing project by project. Nine modules, 534
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -383,26 +383,24 @@ holonomy_lib/
 
 ## Roadmap
 
-Open frontiers, prioritized by research leverage:
+All v0.1 roadmap items shipped:
 
-1. **Sign-magnetic Laplacian** for signed-directed graphs (Fiorini
-   2023; He et al. 2023). The plain magnetic Laplacian is in; the
-   signed extension treats negative edges with a separate phase.
-2. **Shift-and-invert Lanczos** for smallest-eigenvalue mode (current
-   `lanczos_eigsh` is largest-algebraic only).
-3. **Fisher information metric** and natural-gradient optimizers
-   building on `info_geometry`.
-4. **Sparse graph backend**: most spectral primitives are currently
-   dense `(B, n, n)`. A sparse path would unlock large-graph regimes.
-5. **GPU-native H₁/H₂ matrix reduction**: PH currently uses a
-   Python-set sparse reduction (sequential per complex; batches across
-   point clouds). A GPU kernel for the reduction would unlock larger
-   single complexes.
-6. **Class-method provenance** for `FixedRankManifold` /
-   `SPDManifold` methods (currently only top-level functions are
-   decorated).
+- Sign-magnetic Laplacian for signed-directed graphs (Fiorini 2023;
+  He et al. 2023).
+- Shift-and-invert Lanczos for smallest-eigenvalue mode.
+- Fisher information metric and natural gradient.
+- Sparse-COO/CSR/CSC paths for all four Laplacian variants
+  (combinatorial, symmetric-normalized, random-walk, Kunegis signed);
+  end-to-end with sparse `lanczos_eigsh`.
+- Device-agnostic torch reduction backend for persistent homology
+  (foundation for a future custom CUDA kernel).
+- Class-method provenance for `FixedRankManifold` / `SPDManifold`.
 
-Contributions welcome via PR; see [Contributing](#contributing).
+Open frontiers for v0.2 onward: GPU-resident custom CUDA kernel for
+the Z/2 PH reduction (current torch path is sequential with a
+per-column CPU sync); sparse-input shift-and-invert via iterative
+solver (CG/MINRES) for sparse SA mode; further manifolds (sphere,
+Stiefel, Grassmann, hyperbolic). Contributions welcome via PR.
 
 ---
 
