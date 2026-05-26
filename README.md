@@ -59,7 +59,7 @@ properties this library guarantees:
    1, > 1}`.
 3. **Audit-clean**: every numerical constant is derived, a universal
    invariant, or experimentally tuned with documented scale-of-validity.
-   CI enforces this.
+   Enforced by `python -m holonomy_lib.audit src/ --strict`.
 4. **Cited**: every public function has a `References:` section
    pointing to the paper that defines its math. No "trust me"
    implementations.
@@ -292,8 +292,8 @@ Every numerical constant must be in one of three categories:
 Each constant in category 🔬 has a row in [`notes/magic_numbers.md`](notes/magic_numbers.md)
 with the procedure used to pick it, the regime where it's valid, and what
 to re-derive when scale changes. The audit tool
-(`python -m holonomy_lib.audit src/ --strict`) is run in CI; it fails
-the build on any uncataloged literal.
+(`python -m holonomy_lib.audit src/ --strict`) fails on any uncataloged
+literal; run it before every commit.
 
 ---
 
@@ -368,7 +368,7 @@ holonomy_lib/
 │   ├── spectral/              # Laplacians, eigenmaps
 │   ├── discrete_geometry/     # Ollivier-Ricci, flow, surgery
 │   ├── provenance/            # content-addressable hex protocol
-│   └── audit.py               # CI gate: no magic numbers
+│   └── audit.py               # audit gate: no magic numbers
 ├── tests/                     # 269 tests across all modules
 │   └── benchmarks/            # device-agnostic timing harness
 ├── notes/
