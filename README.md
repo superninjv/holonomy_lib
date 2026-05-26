@@ -32,10 +32,11 @@ its inputs through a content-addressable provenance DAG.
 | Module | Primitives | What it gives you |
 |---|---|---|
 | `manifolds` | `FixedRankManifold`, `SPDManifold` | Riemannian geometry on low-rank matrices and SPD cones (Vandereycken 2013; Pennec et al. 2006) |
-| `algebra` | `truncated_svd` (exact + randomized) | Halko-Martinsson-Tropp randomized SVD; Eckart-Young exact |
+| `algebra` | `truncated_svd` (exact + randomized), **`lanczos_eigsh`** | Halko-Martinsson-Tropp randomized SVD; Eckart-Young exact; Lanczos top-k eigensolver with full reorthogonalization (Paige 1972) |
 | `tensor_calculus` | `hosvd`, `mode_product`, `mode_unfolding` | Truncated HOSVD with Kolda-Bader n-mode product |
-| `spectral` | `combinatorial`/`symmetric_normalized`/`random_walk`/`signed` Laplacians, `laplacian_eigenmaps`, **`magnetic.*`** (directed graphs), **`heat_kernel_chebyshev`** | Chung; von Luxburg; Kunegis (signed); Furutani 2020 (magnetic Hermitian Laplacian); Hammond-Vandergheynst-Gribonval 2011 (Chebyshev heat kernel) |
-| `discrete_geometry` | `ollivier_ricci_curvature`, `discrete_ricci_flow`, `ricci_flow_with_surgery`, **`forman_ricci_simple`**, **`forman_ricci_augmented`** | Sinkhorn-W₁ Ollivier on graphs (Ollivier 2009; Cuturi 2013; Sia/Ni-Lin-Luo-Gao 2019), the **Perelman-on-networks** flow + surgery primitive, and the cheap combinatorial Forman alternative (Sreejith et al. 2016; Samal et al. 2018) |
+| `spectral` | `combinatorial`/`symmetric_normalized`/`random_walk`/`signed` Laplacians, `laplacian_eigenmaps`, `magnetic.*` (directed), `heat_kernel_chebyshev`, **`effective_resistance`**, **`commute_time`**, **`diffusion_map`** | Chung; von Luxburg; Kunegis (signed); Furutani 2020 (magnetic Hermitian); Hammond-Vandergheynst-Gribonval 2011 (Chebyshev heat kernel); Klein-Randić 1993 (resistance); Coifman-Lafon 2006 (diffusion maps) |
+| `discrete_geometry` | `ollivier_ricci_curvature`, `discrete_ricci_flow`, `ricci_flow_with_surgery`, `forman_ricci_simple`, `forman_ricci_augmented` | Sinkhorn-W₁ Ollivier on graphs (Ollivier 2009; Cuturi 2013; Sia/Ni-Lin-Luo-Gao 2019), the **Perelman-on-networks** flow + surgery primitive, and the cheap combinatorial Forman alternative (Sreejith et al. 2016; Samal et al. 2018) |
+| **`info_geometry`** | **`bregman_divergence`**, **`kl_divergence_categorical`**, **`kl_divergence_gaussian`** | Bregman divergence for any convex generator plus closed-form KL for the standard exponential families (Bregman 1967; Banerjee et al. 2005; Amari 2016) |
 | `provenance` | `@with_provenance`, `record()`, `ProvenanceRegistry` | Content-addressable Merkle DAG of math primitives; substitution / replay / SAELens emission for mech interp |
 
 ---
@@ -292,17 +293,22 @@ Open frontiers, prioritized by research leverage:
 
 1. **Persistent homology on GPU**: the biggest standing gap across the
    field; gudhi / ripser are CPU.
-2. **Lanczos sparse eigensolver** for top-k eigenpairs on large graphs.
-3. **Hodge Laplacians** on simplicial complexes (Ribando-Gros et al.
+2. **Hodge Laplacians** on simplicial complexes (Ribando-Gros et al.
    2024).
-4. **Riemannian optimizers** (SGD, Adam, trust-region) on the manifolds
+3. **Riemannian optimizers** (SGD, Adam, trust-region) on the manifolds
    module.
-5. **Information geometry**: conjugate priors, Bregman divergences.
-6. **Sign-magnetic Laplacian** for signed-directed graphs (Fiorini
+4. **Sign-magnetic Laplacian** for signed-directed graphs (Fiorini
    2023; He et al. 2023). The plain magnetic Laplacian is in; the
    signed extension treats negative edges with a separate phase.
-7. **Effective resistance / commute-time distances** on graphs.
-8. **Diffusion maps** built on the Chebyshev heat kernel.
+5. **Shift-and-invert Lanczos** for smallest-eigenvalue mode (current
+   `lanczos_eigsh` is largest-algebraic only).
+6. **Fisher information metric** and natural-gradient optimizers
+   building on `info_geometry`.
+7. **Sparse graph backend**: most spectral primitives are currently
+   dense `(B, n, n)`. A sparse path would unlock large-graph regimes.
+8. **Class-method provenance** for `FixedRankManifold` /
+   `SPDManifold` methods (currently only top-level functions are
+   decorated).
 
 Contributions welcome via PR; see [Contributing](#contributing).
 

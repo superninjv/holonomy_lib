@@ -1,0 +1,240 @@
+"""Symmetric Lanczos iteration for top-k eigenpairs of a batched matrix.
+
+For a symmetric matrix `A ∈ ℝ^{n×n}`, the Lanczos process builds an
+orthonormal Krylov basis `V ∈ ℝ^{n × m}` (with `m ≪ n` typically) such
+that the projected matrix `T = Vᵀ A V` is tridiagonal. Diagonalizing
+`T` (a tiny `m × m` problem) gives Ritz values and Ritz vectors that
+approximate the extreme eigenpairs of `A`. After `m` iterations,
+typically `m / 2` of those approximate the `m / 2` most-extreme
+eigenvalues (largest by magnitude) to machine precision; the others
+converge more slowly.
+
+Algorithm (Lanczos 1950, Paige 1972):
+
+  V[:, 0] = v_0 / ‖v_0‖                                 # random unit vector
+  β_{-1} = 0
+  for j in 0, …, m − 1:
+      w   = A · V[:, j]                                 # 1 matmul
+      α_j = ⟨w, V[:, j]⟩
+      w   = w − α_j · V[:, j] − β_{j-1} · V[:, j-1]    # 3-term recurrence
+      w   = orthogonalize(w, V[:, :j+1])                # full reorth
+      β_j = ‖w‖
+      V[:, j+1] = w / β_j
+  T = tridiag(α, β)
+  ritz_vals, ritz_vecs = eigh(T)                        # small
+  eigenvectors of A ≈ V[:, :m] @ ritz_vecs
+
+For numerical robustness on finite-precision GPUs we use **full
+reorthogonalization** at every step: the cheaper two-step
+Gram-Schmidt and the partial reorthogonalization variants are
+known to lose orthogonality of `V` once Ritz values converge
+(Paige's "ghost eigenvalues"). Full reorth costs `O(m² · n)` extra
+flops on top of the `O(m · n²)` baseline — fine when `m` is small.
+
+The default convention is `which = "largest_algebraic"` (top-`k` by
+value). For bottom-`k` of a known-bounded-spectrum operator (e.g.
+the symmetric-normalized Laplacian with spectrum in `[0, 2]`), call
+`lanczos_eigsh(2.0 * I − L_sym, k=k)` and recover smallest eigenvalues
+of `L_sym` as `2.0 − ritz_vals`. Shift-and-invert for general
+"smallest" mode is planned.
+
+References:
+  Lanczos, C. (1950). An iteration method for the solution of the
+    eigenvalue problem of linear differential and integral
+    operators. Journal of Research of the National Bureau of
+    Standards 45:255–282. Original algorithm.
+  Paige, C. C. (1972). Computational variants of the Lanczos method
+    for the eigenproblem. Journal of the Institute of Mathematics
+    and Its Applications 10:373–381. Identified loss of orthogonality
+    and prescribed reorthogonalization.
+  Saad, Y. (2011). Numerical Methods for Large Eigenvalue Problems,
+    2nd ed. SIAM. §6.5 covers full reorthogonalization.
+  Golub, G. H., Van Loan, C. F. (2013). Matrix Computations, 4th ed.
+    Johns Hopkins University Press. §10.1.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+import torch
+
+from holonomy_lib.provenance import with_provenance
+
+
+# Default oversampling: extra Lanczos iterations beyond `k` to improve
+# accuracy of the top-k Ritz values. Saad (2011), §6.5 recommends
+# ~5–10 extra for reliable top-k convergence. Halko-Martinsson-Tropp
+# (2011), §1.2 use the same value (5) for randomized SVD, which is
+# a closely related Krylov-projection scheme. Cataloged as
+# `lanczos_oversample_default`.
+LANCZOS_OVERSAMPLE_DEFAULT: int = 10
+
+
+@with_provenance(
+    "holonomy_lib.algebra.lanczos_eigsh", op_version="0.1",
+)
+def lanczos_eigsh(
+    A: torch.Tensor,
+    k: int,
+    n_iter: Optional[int] = None,
+    oversample: int = LANCZOS_OVERSAMPLE_DEFAULT,
+    generator: Optional[torch.Generator] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Top-k largest-algebraic eigenpairs of a batched symmetric matrix.
+
+    Args:
+      A: (B, n, n) symmetric. We assume but do not check `A == A.T`;
+        violation produces meaningless results.
+      k: number of eigenpairs to return. `1 ≤ k ≤ n`.
+      n_iter: total Lanczos iterations. Default `k + oversample`,
+        clamped to `n`. More iterations → better convergence to interior
+        eigenvalues but more compute.
+      oversample: extra iterations beyond `k`. Default 10.
+      generator: torch.Generator for the random starting vector.
+
+    Returns:
+      eigvals: (B, k) eigenvalues, descending in value.
+      eigvecs: (B, n, k) orthonormal eigenvectors, columns aligned with
+        `eigvals`.
+
+    Notes:
+      Cost is `O(B · n_iter · n²)` for the matmuls plus
+      `O(B · n_iter² · n)` for full reorthogonalization. For `n_iter ≪ n`
+      this is much cheaper than the `O(B · n³)` dense `torch.linalg.eigh`.
+
+      Convergence: the top-`oversample` Ritz values are the most
+      accurate; the worst-converged of the returned `k` may have
+      error `O(λ_{k+1} / λ_k)^{2·oversample}` in the typical case
+      (Saad 2011, §6.7).
+
+    References:
+      Lanczos (1950); Paige (1972); Saad (2011), §6.5.
+    """
+    if A.ndim < 2 or A.shape[-1] != A.shape[-2]:
+        raise ValueError(
+            f"A must be (..., n, n); got A.shape={tuple(A.shape)}"
+        )
+    n = A.shape[-1]
+    if k <= 0 or k > n:
+        raise ValueError(f"k must satisfy 1 <= k <= n={n}, got k={k}")
+
+    # Total Lanczos iterations. Cap at n (the Krylov subspace can't
+    # exceed n dimensions in exact arithmetic).
+    if n_iter is None:
+        n_iter = k + oversample
+    n_iter = min(n_iter, n)
+    if n_iter < k:
+        raise ValueError(
+            f"n_iter={n_iter} must be >= k={k} to return k eigenpairs"
+        )
+
+    *batch, _ = A.shape[:-1]
+    device, dtype = A.device, A.dtype
+
+    # Initial random unit vector. Same per-batch shape conventions.
+    v0 = torch.randn(*batch, n, generator=generator, device=device, dtype=dtype)
+    v0 = v0 / torch.linalg.norm(v0, dim=-1, keepdim=True)
+
+    # Lanczos basis: store columns of V as a list-of-tensors for clarity.
+    # Each entry is (B, n). After the loop we stack to (B, n, n_iter).
+    V_cols: list[torch.Tensor] = [v0]
+    alphas: list[torch.Tensor] = []                     # each (B,)
+    betas: list[torch.Tensor] = []                      # each (B,)
+
+    # Beta_{-1} = 0, v_{-1} = 0 (3-term recurrence boundary condition).
+    v_prev = torch.zeros_like(v0)
+    beta_prev = torch.zeros(*batch, device=device, dtype=dtype)
+
+    for j in range(n_iter):
+        v_curr = V_cols[j]
+        # Matmul: A · v_curr.
+        w = torch.matmul(A, v_curr.unsqueeze(dim=-1)).squeeze(dim=-1)
+        alpha_j = (w * v_curr).sum(dim=-1)
+        alphas.append(alpha_j)
+
+        # 3-term recurrence: w = w − α_j v_curr − β_{j−1} v_prev.
+        w = (
+            w
+            - alpha_j.unsqueeze(dim=-1) * v_curr
+            - beta_prev.unsqueeze(dim=-1) * v_prev
+        )
+
+        # Full reorthogonalization against all V[:, 0..j].
+        # Stack V_cols into a (B, n, j+1) matrix and project w onto its
+        # column space, then subtract. One matmul + one matmul.
+        V_stack = torch.stack(V_cols, dim=-1)            # (B, n, j+1)
+        coeffs = torch.matmul(
+            V_stack.mT, w.unsqueeze(dim=-1),
+        ).squeeze(dim=-1)                                 # (B, j+1)
+        w = w - torch.matmul(V_stack, coeffs.unsqueeze(dim=-1)).squeeze(dim=-1)
+
+        beta_j = torch.linalg.norm(w, dim=-1)             # (B,)
+        # Avoid division by zero on Lanczos breakdown. We clamp to the
+        # dtype's tiny positive; the resulting basis vector is
+        # numerical noise but doesn't propagate NaN. In batched code we
+        # can't selectively stop per-batch, so this is the safest
+        # behaviour. (Production-grade: replace with a fresh random
+        # vector and continue — left as future work.)
+        floor = torch.finfo(dtype).tiny
+        safe_beta = beta_j.clamp(min=floor)
+        v_next = w / safe_beta.unsqueeze(dim=-1)
+
+        betas.append(beta_j)
+        V_cols.append(v_next)
+        v_prev = v_curr
+        beta_prev = beta_j
+
+    # Stack final basis: (B, n, n_iter). We drop the (n_iter+1)-th
+    # basis vector — it's not needed for the projected problem.
+    V = torch.stack(V_cols[:n_iter], dim=-1)              # (B, n, n_iter)
+
+    # Build tridiagonal T = diag(alpha) + offdiag(beta).
+    # alphas: list of (B,) of length n_iter
+    # betas:  list of (B,) of length n_iter (we only need the first
+    # n_iter − 1 for the tridiagonal off-diagonal).
+    T = _build_tridiagonal(alphas, betas[:-1] if len(betas) >= 1 else [])
+
+    # Solve the small (B, n_iter, n_iter) symmetric eigenproblem.
+    ritz_vals, ritz_vecs = torch.linalg.eigh(T)            # ascending
+
+    # Approximate eigenvectors of A.
+    approx_eigvecs = torch.matmul(V, ritz_vecs)            # (B, n, n_iter)
+
+    # Take top-k by VALUE (descending). eigh returns ascending; flip.
+    top_vals = ritz_vals.flip(dims=(-1,))[..., :k]
+    top_vecs = approx_eigvecs.flip(dims=(-1,))[..., :k]
+    return top_vals, top_vecs
+
+
+# ============================================================
+# Internal helpers
+# ============================================================
+
+
+def _build_tridiagonal(
+    alphas: list[torch.Tensor],
+    betas: list[torch.Tensor],
+) -> torch.Tensor:
+    """Build a batched tridiagonal matrix from diagonal + sub/super-diagonal.
+
+    Args:
+      alphas: list of length n, each (B,). The diagonal entries.
+      betas: list of length n − 1, each (B,). The sub/super-diagonal entries
+        (the matrix is symmetric).
+
+    Returns:
+      T: (B, n, n) tridiagonal.
+    """
+    n = len(alphas)
+    assert len(betas) == n - 1, (
+        f"need {n - 1} off-diagonal entries for {n}x{n} tridiagonal, "
+        f"got {len(betas)}"
+    )
+    diag = torch.stack(alphas, dim=-1)                    # (B, n)
+    T = torch.diag_embed(diag)
+    if n > 1:
+        off = torch.stack(betas, dim=-1)                  # (B, n-1)
+        # Place off on both sub- and super-diagonal.
+        T = T + torch.diag_embed(off, offset=1) + torch.diag_embed(off, offset=-1)
+    return T

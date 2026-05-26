@@ -32,8 +32,10 @@ Shapes use `B` for batch, `n`/`m`/`r`/etc. for math.
 from holonomy_lib.manifolds import FixedRankManifold, SPDManifold
 from holonomy_lib.algebra import truncated_svd
 from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
+from holonomy_lib.algebra import lanczos_eigsh
 from holonomy_lib.spectral import (
     laplacian, magnetic, laplacian_eigenmaps, heat_kernel_chebyshev,
+    effective_resistance, commute_time, diffusion_map,
 )
 from holonomy_lib.discrete_geometry import (
     ollivier_ricci_curvature,
@@ -41,6 +43,11 @@ from holonomy_lib.discrete_geometry import (
     ricci_flow_with_surgery,
     forman_ricci_simple,
     forman_ricci_augmented,
+)
+from holonomy_lib.info_geometry import (
+    bregman_divergence,
+    kl_divergence_categorical,
+    kl_divergence_gaussian,
 )
 from holonomy_lib import provenance
 ```
@@ -99,6 +106,15 @@ Batched top-r SVD of `M: (..., m, n) → (U: (..., m, r), S: (..., r), Vt: (...,
   Accuracy controlled by `oversample` + `n_iter`.
 
 Refs: Eckart-Young (1936), Halko-Martinsson-Tropp (2011).
+
+### `lanczos_eigsh(A, k, n_iter=None, oversample=10, generator=None)`
+Top-k largest-algebraic eigenpairs of a batched symmetric `A: (B, n, n)`
+via Lanczos iteration with full reorthogonalization (Paige 1972). Cost
+`O(B · n_iter · n²)`, vs `O(B · n³)` for dense `torch.linalg.eigh` — the
+right tool when `n_iter ≪ n` and only the extreme eigenpairs matter.
+For smallest-k, call on `λ_max · I − A` with a known spectrum upper
+bound and recover by subtraction.
+Refs: Lanczos (1950), Paige (1972), Saad (2011) §6.5.
 
 ---
 
@@ -168,6 +184,24 @@ expansion: `O(K · n³)` dense, or `O(K · n² · k)` for an `(n, k)` signal,
 beating the `O(n³)` eigendecomposition for medium `t`. Coefficients are
 modified Bessel functions `I_k(t·λ_max/2)`, computed via `scipy.special.ive`.
 Refs: Hammond-Vandergheynst-Gribonval (2011), §3.
+
+### `effective_resistance(A) → (B, n, n)`
+Pairwise effective resistance `R(u, v) = (e_u − e_v)ᵀ L⁺ (e_u − e_v)`
+on a weighted graph (Klein-Randić 1993). On `K_n` every edge has
+`R = 2/n`; on a path `P_n` the endpoints have `R = n − 1` (series
+resistance). Refs: Doyle-Snell (1984), Klein-Randić (1993).
+
+### `commute_time(A) → (B, n, n)`
+Pairwise commute time `C(u, v) = vol(A) · R(u, v)` — expected
+round-trip steps of the random walk on `A`. Chandra-Raghavan-Ruzzo-
+Smolensky-Tiwari (1996) identity. Ref: Lovász (1993), §5.
+
+### `diffusion_map(A, k, t=1.0) → (transition_eigvals, embedding)`
+Coifman-Lafon (2006) diffusion-map embedding at time `t`. Returns
+`(B, k)` transition-matrix eigenvalues `μ_j = 1 − λ_j` and
+`(B, n, k)` coordinates `Ψ_t(x_i) = (μ_j^t · φ_j(x_i))`. Drops the
+trivial null eigenvector. Pairwise Euclidean distance in the
+embedding is the diffusion distance. Ref: Coifman-Lafon (2006), §3.
 
 ---
 
@@ -254,6 +288,31 @@ def op_name(x: torch.Tensor, k: int = 3) -> torch.Tensor:
 
 Hex computation: `sha256(op_id || op_version || canonical(params) || ":".join(input_hexes))`
 truncated to 16 chars. Pluggable hash function (blake3 if installed, else sha256).
+
+---
+
+## §Information geometry: `holonomy_lib.info_geometry`
+
+Divergences on probability distributions, treated as points on a
+Riemannian manifold (Amari 2016).
+
+### `bregman_divergence(p, q, potential)`
+General Bregman divergence `D_F(p ‖ q) = F(p) − F(q) − ⟨∇F(q), p − q⟩`
+for any caller-supplied convex potential `F` (which must return the
+pair `(F(x), ∇F(x))` at any input). Recovers squared-Euclidean,
+generalized KL, and Itakura-Saito as special cases.
+Refs: Bregman (1967), Banerjee et al. (2005).
+
+### `kl_divergence_categorical(p, q) → (B,)`
+Discrete KL `KL(p ‖ q) = Σ_i p_i (log p_i − log q_i)` with the
+0·log(0/x) = 0 convention. Both `p` and `q` must be on the simplex.
+Refs: Cover-Thomas (2006), Amari (2016) §2.4.
+
+### `kl_divergence_gaussian(mu_p, Sigma_p, mu_q, Sigma_q) → (B,)`
+Closed-form KL between two multivariate Gaussians. Cholesky-stable:
+factors `Σ_q` once and reuses the factorization for the trace and
+Mahalanobis terms; pulls `log det Σ` directly from the Cholesky
+diagonal. Ref: Petersen-Pedersen Matrix Cookbook eq. 380.
 
 ---
 

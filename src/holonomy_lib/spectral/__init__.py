@@ -22,10 +22,18 @@ Planned:
 """
 
 from holonomy_lib.spectral import laplacian, magnetic
+from holonomy_lib.spectral.diffusion_map import diffusion_map
+from holonomy_lib.spectral.effective_resistance import (
+    commute_time,
+    effective_resistance,
+)
 from holonomy_lib.spectral.embedding import laplacian_eigenmaps
 from holonomy_lib.spectral.heat_kernel import heat_kernel_chebyshev
 
 __all__ = [
+    "commute_time",
+    "diffusion_map",
+    "effective_resistance",
     "heat_kernel_chebyshev",
     "laplacian",
     "laplacian_eigenmaps",
