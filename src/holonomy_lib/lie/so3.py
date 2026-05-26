@@ -57,10 +57,29 @@ SO3_LOG_NEAR_ZERO_RAD: float = 1e-6
 # Angle threshold (in radians, measured below π) above which
 # `matrix_to_axis_angle` switches to the "near-π rotation" branch
 # that recovers the axis from the symmetric `(R + I)/2` rather than
-# from the antisymmetric `vee((R − R^T)/2)`. **Scale of validity**:
-# dimensionless angle in radians; matches `SO3_LOG_NEAR_ZERO_RAD`'s
-# scale for symmetry. Cataloged as `SO3_LOG_NEAR_PI_RAD`.
-SO3_LOG_NEAR_PI_RAD: float = 1e-6
+# from the antisymmetric `vee((R − R^T)/2)`.
+#
+# Empirical comparison (float64, axis=[0.6,-0.4,0.7]/‖·‖) of the
+# two branches' round-trip max-error per gap = π - θ:
+#
+#     gap        general err     near-pi err
+#     1e-2       1.1e-14         2.6e-5
+#     1e-4       1.5e-12         2.6e-9
+#     1e-6       1.1e-10         2.6e-13
+#     1e-7       2.0e-9          1.6e-9
+#     1e-9       7.0e-10         7.0e-10
+#     1e-12      8.0e-5          7.0e-13
+#
+# The general branch wins by 4-9 orders of magnitude in the wide
+# range gap ∈ [1e-6, 1e-2]; the near-π branch wins only at
+# gap < 1e-7 where `arccos(trace - 1) / 2` itself becomes the
+# precision bottleneck for the general branch. `1e-7` is the
+# crossover for float64. **Scale of validity**: dimensionless
+# angle in radians, calibrated for float64. Float32 callers may
+# want a larger threshold (~1e-3) since their amplification
+# tolerance is ~6 orders of magnitude weaker. Cataloged as
+# `SO3_LOG_NEAR_PI_RAD`.
+SO3_LOG_NEAR_PI_RAD: float = 1e-7
 
 
 @with_provenance(
@@ -276,8 +295,22 @@ def random_so3(
     if batch_size < 0:
         raise ValueError(f"batch_size must be >= 0, got {batch_size}")
     # Shoemake: three uniform [0, 1] samples u1, u2, u3 → unit
-    # quaternion (w, x, y, z) with q on S³ uniformly.
-    u = torch.rand(batch_size, SO3_DIM, generator=generator, dtype=dtype)
+    # quaternion (w, x, y, z) with q on S³ uniformly. The sampling
+    # and trig run on `device` so a `device="cuda"` call doesn't
+    # silently fall back to CPU for the per-sample scalar work. The
+    # generator must be on the matching device — if the caller wants
+    # GPU sampling, they must pass a CUDA generator.
+    target_device = torch.device(device)
+    if generator is not None and generator.device != target_device:
+        raise ValueError(
+            f"generator is on {generator.device} but device={target_device} "
+            f"was requested; pass a generator on the target device or omit "
+            f"`generator` to use the default"
+        )
+    u = torch.rand(
+        batch_size, SO3_DIM,
+        generator=generator, dtype=dtype, device=target_device,
+    )
     u1, u2, u3 = u[..., 0], u[..., 1], u[..., 2]
     sqrt_u1 = torch.sqrt(u1)
     sqrt_1_minus_u1 = torch.sqrt(1.0 - u1)
@@ -288,7 +321,6 @@ def random_so3(
     y = sqrt_u1 * torch.sin(two_pi_u3)
     z = sqrt_u1 * torch.cos(two_pi_u3)
     q = torch.stack([w, x, y, z], dim=-1)                   # (B, 4)
-    q = q.to(device=device)
     return _quaternion_to_matrix(q)
 
 

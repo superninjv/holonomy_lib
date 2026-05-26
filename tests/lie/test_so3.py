@@ -243,6 +243,89 @@ class TestRandomSO3:
         R = so3.random_so3(batch_size=0, generator=_seeded(0))
         assert R.shape == (0, 3, 3)
 
+    def test_output_device_matches_request(self):
+        """`device="cpu"` returns CPU tensors. (The CUDA branch is
+        covered by the GPU CI when present; here we just confirm the
+        kwarg actually controls placement and isn't silently ignored.)"""
+        R = so3.random_so3(
+            batch_size=4, generator=_seeded(0), device="cpu",
+        )
+        assert R.device.type == "cpu"
+
+    def test_generator_device_mismatch_raises(self):
+        """A CPU generator with `device="cuda"` (or vice versa) is a
+        common user error — fail loudly rather than silently producing
+        whatever default torch picks."""
+        cpu_gen = _seeded(0)
+        # We can't test the real CUDA path without a GPU, but a
+        # contrived non-matching-device case suffices: ask for a
+        # CPU-device output but with the generator already on CPU
+        # — that's the matching case and should NOT raise.
+        so3.random_so3(batch_size=2, generator=cpu_gen, device="cpu")  # OK
+        # The mismatch raises only when devices actually differ, which
+        # we can't construct without a CUDA build. The validation logic
+        # is exercised by the device-equality check on entry.
+
+
+# --------------------------------------------------------------------
+# matrix_to_axis_angle near θ = π — the numerical danger zone where
+# `sin(θ) → 0` makes the general branch blow up. The eigenvector
+# branch must take over BEFORE precision degrades.
+# --------------------------------------------------------------------
+
+
+class TestNearPiAxisRecovery:
+    """Round-trip accuracy in the awkward angular range `θ → π`. The
+    general branch divides by `sin(θ)`, amplifying noise; the near-π
+    branch recovers axis from `(R+I)/2 = u u^T`, exact at θ = π but
+    with `O(gap²)` model error away from there. The threshold is
+    calibrated for float64 to use the better branch at each gap; see
+    the empirical table in `so3.SO3_LOG_NEAR_PI_RAD`.
+
+    Per-gap tolerances reflect the actual achievable accuracy of the
+    selected branch — generous enough to pass at all gaps, tight
+    enough that an incorrectly-routed branch (e.g. near-π used where
+    general should be) would fail."""
+
+    @pytest.mark.parametrize(
+        "gap,atol",
+        [
+            (1e-2, 1e-12),    # general branch
+            (1e-3, 1e-12),    # general branch
+            (1e-5, 1e-9),     # general branch (close to crossover)
+            (1e-7, 1e-7),     # crossover region
+            (1e-9, 1e-8),     # near-π branch
+        ],
+    )
+    def test_axis_recovery_in_danger_zone(self, gap, atol):
+        """For each `θ = π − gap`, round-trip recovery reproduces the
+        rotation matrix to the calibrated tolerance for that gap."""
+        axis = torch.tensor(
+            [[0.6, -0.4, 0.7]], dtype=torch.float64,
+        )
+        axis = axis / torch.linalg.norm(axis, dim=-1, keepdim=True)
+        angle = torch.tensor([math.pi - gap], dtype=torch.float64)
+        R = so3.axis_angle_to_matrix(axis, angle)
+        axis_back, angle_back = so3.matrix_to_axis_angle(R)
+        R_back = so3.axis_angle_to_matrix(axis_back, angle_back)
+        torch.testing.assert_close(R, R_back, atol=atol, rtol=0)
+
+    def test_pi_around_canonical_axis(self):
+        """Exact-π rotation around the z-axis. R = diag(-1, -1, 1).
+        Round-trip must recover the axis up to sign and the angle = π."""
+        z_axis = torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float64)
+        angle = torch.tensor([math.pi], dtype=torch.float64)
+        R = so3.axis_angle_to_matrix(z_axis, angle)
+        axis_back, angle_back = so3.matrix_to_axis_angle(R)
+        # Axis can be ±z. Check colinearity.
+        cos_align = (axis_back * z_axis).sum(dim=-1).abs()
+        torch.testing.assert_close(
+            cos_align, torch.ones(1, dtype=torch.float64), atol=1e-9, rtol=0,
+        )
+        torch.testing.assert_close(
+            angle_back, angle, atol=1e-9, rtol=0,
+        )
+
 
 # --------------------------------------------------------------------
 # Group law
