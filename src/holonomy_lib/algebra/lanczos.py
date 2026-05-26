@@ -71,8 +71,13 @@ from holonomy_lib.provenance import with_provenance
 LANCZOS_OVERSAMPLE_DEFAULT: int = 10
 
 
+_SPARSE_LAYOUTS = (
+    torch.sparse_coo, torch.sparse_csr, torch.sparse_csc,
+)
+
+
 @with_provenance(
-    "holonomy_lib.algebra.lanczos_eigsh", op_version="0.1",
+    "holonomy_lib.algebra.lanczos_eigsh", op_version="0.2",
 )
 def lanczos_eigsh(
     A: torch.Tensor,
@@ -81,11 +86,19 @@ def lanczos_eigsh(
     oversample: int = LANCZOS_OVERSAMPLE_DEFAULT,
     generator: Optional[torch.Generator] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Top-k largest-algebraic eigenpairs of a batched symmetric matrix.
+    """Top-k largest-algebraic eigenpairs of a symmetric matrix.
+
+    Dispatches on layout: dense batched `(B, n, n)` runs the standard
+    path; sparse `(n, n)` (CSR/CSC/COO) runs a single-instance path
+    with sparse matmul on each iteration. Sparse input must be 2-D
+    (no batch); the output shape is `(k,)` / `(n, k)` without a batch
+    dim. For batched sparse you can either iterate yourself or convert
+    to a sparse batched COO and call repeatedly.
 
     Args:
-      A: (B, n, n) symmetric. We assume but do not check `A == A.T`;
-        violation produces meaningless results.
+      A: dense `(B, n, n)` or sparse-CSC/CSR/COO `(n, n)` symmetric.
+        We assume but do not check `A == A.T`; violation produces
+        meaningless results.
       k: number of eigenpairs to return. `1 ≤ k ≤ n`.
       n_iter: total Lanczos iterations. Default `k + oversample`,
         clamped to `n`. More iterations → better convergence to interior
@@ -94,9 +107,11 @@ def lanczos_eigsh(
       generator: torch.Generator for the random starting vector.
 
     Returns:
-      eigvals: (B, k) eigenvalues, descending in value.
-      eigvecs: (B, n, k) orthonormal eigenvectors, columns aligned with
-        `eigvals`.
+      Dense input  → `(eigvals: (B, k), eigvecs: (B, n, k))`.
+      Sparse input → `(eigvals: (k,), eigvecs: (n, k))`.
+
+      Eigenvalues descending in value; eigenvectors orthonormal with
+      columns aligned to the eigenvalues.
 
     Notes:
       Cost is `O(B · n_iter · n²)` for the matmuls plus
@@ -111,6 +126,9 @@ def lanczos_eigsh(
     References:
       Lanczos (1950); Paige (1972); Saad (2011), §6.5.
     """
+    # Dispatch on layout. Sparse inputs go through a 2-D no-batch path.
+    if A.layout in _SPARSE_LAYOUTS:
+        return _lanczos_sparse(A, k, n_iter, oversample, generator)
     if A.ndim < 2 or A.shape[-1] != A.shape[-2]:
         raise ValueError(
             f"A must be (..., n, n); got A.shape={tuple(A.shape)}"
@@ -213,6 +231,99 @@ def lanczos_eigsh(
 # ============================================================
 # Internal helpers
 # ============================================================
+
+
+def _lanczos_sparse(
+    A: torch.Tensor,
+    k: int,
+    n_iter: Optional[int],
+    oversample: int,
+    generator: Optional[torch.Generator],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """2-D no-batch Lanczos for sparse `A`.
+
+    Mirrors the dense path's algorithm — the only difference is that
+    `A @ v` goes through sparse matmul, and there's no leading batch
+    dimension. Used by `betti_numbers` on sparse Hodge Laplacians and
+    by callers who pass sparse `A` directly.
+
+    Limitations:
+      - 2-D only (no batch). Caller wraps for batched sparse cases.
+      - Provenance recording of sparse `A` reads its dense form via
+        `to_dense()` before hashing, which negates the memory win of
+        sparse inputs inside `record()`. Outside `record()` the
+        decorator is transparent and this doesn't matter.
+    """
+    if A.ndim != 2 or A.shape[-1] != A.shape[-2]:
+        raise ValueError(
+            f"sparse A must be (n, n); got A.shape={tuple(A.shape)}"
+        )
+    n = A.shape[-1]
+    if k <= 0 or k > n:
+        raise ValueError(f"k must satisfy 1 <= k <= n={n}, got k={k}")
+
+    if n_iter is None:
+        n_iter = k + oversample
+    n_iter = min(n_iter, n)
+    if n_iter < k:
+        raise ValueError(
+            f"n_iter={n_iter} must be >= k={k} to return k eigenpairs"
+        )
+
+    device, dtype = A.device, A.dtype
+
+    v0 = torch.randn(n, generator=generator, device=device, dtype=dtype)
+    v0 = v0 / torch.linalg.norm(v0)
+
+    V = torch.empty(n, n_iter + 1, device=device, dtype=dtype)
+    V[:, 0] = v0
+    alphas: list[torch.Tensor] = []
+    betas: list[torch.Tensor] = []
+
+    v_prev = torch.zeros_like(v0)
+    beta_prev = torch.zeros((), device=device, dtype=dtype)
+
+    for j in range(n_iter):
+        v_curr = V[:, j]
+        # Sparse matmul: A @ v. For sparse-CSC + dense vector this
+        # uses the appropriate spmv kernel. The (n, 1) shape is needed
+        # because torch.matmul on sparse expects a 2-D RHS.
+        w = torch.matmul(A, v_curr.unsqueeze(-1)).squeeze(-1)
+        alpha_j = (w * v_curr).sum()
+        alphas.append(alpha_j)
+
+        w = w - alpha_j * v_curr - beta_prev * v_prev
+
+        # Full reorthogonalization against V[:, :j+1] (all dense).
+        V_used = V[:, :j + 1]                            # (n, j+1)
+        coeffs = V_used.mT @ w                            # (j+1,)
+        w = w - V_used @ coeffs
+
+        beta_j = torch.linalg.norm(w)
+        floor = torch.finfo(dtype).tiny
+        safe_beta = beta_j.clamp(min=floor)
+        V[:, j + 1] = w / safe_beta
+
+        betas.append(beta_j)
+        v_prev = v_curr
+        beta_prev = beta_j
+
+    V_basis = V[:, :n_iter]                              # (n, n_iter)
+
+    # Build tridiagonal T = diag(alpha) + offdiag(beta).
+    # alphas/betas here are 0-D tensors; stack and use the dense path.
+    diag = torch.stack(alphas)                            # (n_iter,)
+    T = torch.diag(diag)
+    if len(betas) > 1:
+        off = torch.stack(betas[:-1])                     # (n_iter - 1,)
+        T = T + torch.diag(off, diagonal=1) + torch.diag(off, diagonal=-1)
+
+    ritz_vals, ritz_vecs = torch.linalg.eigh(T)
+    approx_eigvecs = V_basis @ ritz_vecs
+
+    top_vals = ritz_vals.flip(dims=(0,))[:k]
+    top_vecs = approx_eigvecs.flip(dims=(-1,))[:, :k]
+    return top_vals, top_vecs
 
 
 def _build_tridiagonal(

@@ -40,6 +40,7 @@ its inputs through a content-addressable provenance DAG.
 | **`info_geometry`** | **`bregman_divergence`**, **`kl_divergence_categorical`**, **`kl_divergence_gaussian`** | Bregman divergence for any convex generator plus closed-form KL for the standard exponential families (Bregman 1967; Banerjee et al. 2005; Amari 2016) |
 | **`optimization`** | **`RiemannianSGD`** | Steepest descent on `FixedRankManifold` / `SPDManifold` via the existing projection + retraction API (Absil-Mahony-Sepulchre 2008, §4.1) |
 | **`simplicial`** | **`DenseSimplicialComplex`**, **`SparseSimplicialComplex`**, **`vietoris_rips_*`** | Simplicial complex data structures + boundary operators + Vietoris-Rips construction; foundation for Hodge + persistent homology (Munkres 1984; Hausmann 1995; Bauer 2021) |
+| **`topology`** | **`hodge_laplacian`**, **`betti_numbers`** | Hodge Laplacians on simplicial complexes + Betti number extraction; closed-form verified on S¹/S²/T² triangulations (Eckmann 1944; Lim 2020; Schaub et al. 2020) |
 | `provenance` | `@with_provenance`, `record()`, `ProvenanceRegistry` | Content-addressable Merkle DAG of math primitives; substitution / replay / SAELens emission for mech interp |
 
 ---

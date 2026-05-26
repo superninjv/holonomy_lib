@@ -54,6 +54,7 @@ from holonomy_lib.simplicial import (
     DenseSimplicialComplex, SparseSimplicialComplex,
     pairwise_distances, vietoris_rips_dense, vietoris_rips_sparse,
 )
+from holonomy_lib.topology import betti_numbers, hodge_laplacian
 from holonomy_lib import provenance
 ```
 
@@ -318,6 +319,26 @@ Closed-form KL between two multivariate Gaussians. Cholesky-stable:
 factors `Σ_q` once and reuses the factorization for the trace and
 Mahalanobis terms; pulls `log det Σ` directly from the Cholesky
 diagonal. Ref: Petersen-Pedersen Matrix Cookbook eq. 380.
+
+---
+
+## §Topology: `holonomy_lib.topology`
+
+Hodge Laplacians and persistent homology on simplicial complexes.
+Built on `holonomy_lib.simplicial`.
+
+### `hodge_laplacian(complex, k) → Tensor`
+The k-th Hodge Laplacian `L_k = ∂_{k+1} ∂_{k+1}^T + ∂_k^T ∂_k`. Its
+kernel has dimension equal to the k-th Betti number (Hodge
+decomposition). Dense complex → `(B, n_k_max, n_k_max)`; sparse →
+`(n_k, n_k)` dense Tensor (the product of two sparse boundary
+matrices is generally dense).
+Refs: Eckmann (1944), Lim (2020), Schaub et al. (2020).
+
+### `betti_numbers(complex, max_dim, threshold=1e-9) → Tensor`
+`(β_0, …, β_max_dim)` via near-zero eigenvalue counting on each
+`L_k`. Closed-form verification: S¹ gives `(1, 1)`, S² gives
+`(1, 0, 1)`, T² gives `(1, 2, 1)`.
 
 ---
 
