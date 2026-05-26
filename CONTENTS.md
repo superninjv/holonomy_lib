@@ -1,16 +1,10 @@
 # holonomy_lib contents
 
-A research-grade PyTorch math library: GPU-native, batched-first, audit-clean,
-cited. This file is a **flat inventory** of what the library provides: every
-primitive, its signature, what it does in one line, and the paper to cite.
-Read this *before* grepping or reading source.
+A flat inventory of every public primitive: signature, one-line summary,
+and the paper to cite. See `README.md` for the project overview;
+this file is the API map.
 
-If something you want isn't here, it isn't implemented. Don't reinvent;
-either ask the user or pick the closest existing primitive.
-
-## How to read this file
-
-Each primitive entry has the form:
+Each entry has the form:
 
 > `module.thing(signature) → returns`
 > One-line what-it-does. Math citation. Cross-references.
@@ -228,24 +222,9 @@ truncated to 16 chars. Pluggable hash function (blake3 if installed, else sha256
 
 ---
 
-## Files an agent should know about
+## Planned primitives
 
-- `README.md`: vision, what this library is and why.
-- `CONTENTS.md`: this file (primitive inventory and quick reference).
-- `notes/magic_numbers.md`: every posited numerical constant with
-  scale-of-validity. Update when you add a tunable constant.
-- `notes/scrutiny.md`: running log of critical-review findings and fixes.
-- `notes/benchmark_baseline.md` / `notes/benchmark_optimized.md`:
-  before/after timings from the optimization pass.
-- `pyproject.toml`: Python ≥3.12, install with `uv pip install -e ".[dev]"`.
-  Torch must be installed separately per-platform (ROCm wheels on AMD).
-- `src/holonomy_lib/audit.py`: `python -m holonomy_lib.audit src/ --strict`
-  scans source for undocumented numerical literals. CI gate.
-- `.github/workflows/ci.yml`: runs audit + tests on every push.
-
-## What's *not* here (yet)
-
-Open frontiers an agent might assume exist but don't:
+Open frontiers the library does not yet cover:
 - Sign-magnetic / magnetic Laplacian (planned; see `spectral/__init__.py`).
 - Hodge Laplacians on simplicial complexes.
 - Lanczos sparse-eigensolver for large graphs (currently `linalg.eigh` dense only).
