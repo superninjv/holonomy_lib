@@ -145,8 +145,10 @@ class TestDagChaining:
         # Find each by op_id
         comb_node = reg.where(op_id="synoros_lib.spectral.laplacian.combinatorial")[0]
         svd_node = reg.where(op_id="synoros_lib.algebra.linear.truncated_svd")[0]
-        # SVD's input should be the combinatorial output's hex
-        assert comb_node.hex in svd_node.input_hexes
+        # SVD's input_hexes are name=hex; comb_node.hex appears as the
+        # hex part of one of those.
+        hex_parts = [h.partition("=")[2] for h in svd_node.input_hexes]
+        assert comb_node.hex in hex_parts
 
     def test_ancestors_walk(self):
         A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(8))
@@ -476,6 +478,74 @@ class TestPersistence:
         assert original_hexes == loaded_hexes
         # Algorithm preserved
         assert loaded.hash_algorithm == reg.hash_algorithm
+
+
+# --------------------------------------------------------------------
+# Causal replay — downstream DAG re-execution
+# --------------------------------------------------------------------
+
+
+class TestReplay:
+    def test_replay_requires_tensor_cache(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(70))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg:
+            laplacian.combinatorial(A)
+        with pytest.raises(ValueError, match="cache_tensors"):
+            reg.replay({"abc": torch.zeros(4)})
+
+    def test_replay_rejects_unknown_target(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(71))
+        A = (A + A.mT).abs()
+        with provenance.record(cache_tensors=True) as reg:
+            laplacian.combinatorial(A)
+        with pytest.raises(KeyError, match="not in registry"):
+            reg.replay({"0000000000000000": torch.zeros(1, 4, 4)})
+
+    def test_replay_substitutes_and_propagates(self):
+        """Replay rebuilds the downstream chain from cached upstream."""
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(72))
+        A = (A + A.mT).abs() + torch.eye(5, dtype=torch.float64).unsqueeze(dim=0)
+
+        with provenance.record(cache_tensors=True) as reg:
+            L = laplacian.combinatorial(A)
+            U, S, Vt = truncated_svd(L, r=3, mode="exact")
+
+        # Find the Laplacian node; substitute it with zeros.
+        lap_hex = reg.where(
+            op_id="synoros_lib.spectral.laplacian.combinatorial",
+        )[0].hex
+        new_outputs = reg.replay({lap_hex: torch.zeros(1, 5, 5, dtype=torch.float64)})
+
+        # The SVD should have been re-executed; outputs differ from cache.
+        svd_hex = reg.where(op_id="synoros_lib.algebra.linear.truncated_svd")[0].hex
+        original_U = reg.get_tensor(f"{svd_hex}:0")
+        new_U = new_outputs[f"{svd_hex}:0"]
+        diff = (original_U - new_U).abs().max().item()
+        assert diff > 0.01, (
+            f"replay should produce different U for zero'd Laplacian; diff={diff}"
+        )
+
+    def test_replay_skips_unaffected_nodes(self):
+        """Nodes upstream of the substitution target are NOT in the output;
+        only descendants are re-executed.
+        """
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(73))
+        A = (A + A.mT).abs() + torch.eye(4, dtype=torch.float64).unsqueeze(dim=0)
+        with provenance.record(cache_tensors=True) as reg:
+            L = laplacian.combinatorial(A)
+            U, S, Vt = truncated_svd(L, r=2, mode="exact")
+
+        lap_hex = reg.where(
+            op_id="synoros_lib.spectral.laplacian.combinatorial",
+        )[0].hex
+        svd_hex = reg.where(op_id="synoros_lib.algebra.linear.truncated_svd")[0].hex
+        new_outputs = reg.replay({lap_hex: torch.zeros(1, 4, 4, dtype=torch.float64)})
+
+        # Only SVD outputs in new_outputs (combinatorial wasn't re-executed
+        # since it was substituted, not downstream of itself)
+        assert lap_hex not in new_outputs
+        assert any(h.startswith(svd_hex) for h in new_outputs)
 
 
 # --------------------------------------------------------------------

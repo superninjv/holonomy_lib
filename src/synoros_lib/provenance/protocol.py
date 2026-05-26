@@ -26,8 +26,10 @@ not inherit the parent's recording state.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import threading
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import wraps
@@ -199,9 +201,14 @@ class ProvenanceRegistry:
     def parents(self, hex_id: str) -> list[ProvenanceNode]:
         """Direct upstream nodes (input_hexes of `hex_id`)."""
         node = self._nodes[hex_id]
-        # Strip multi-output index suffix when looking up parents.
-        parent_ids = [h.split(":")[0] for h in node.input_hexes]
-        return [self._nodes[p] for p in parent_ids if p in self._nodes]
+        parents = []
+        for input_hex in node.input_hexes:
+            # input_hex is "name=hex" or "name=hex:i" — extract the base hex
+            _, _, hex_part = input_hex.partition("=")
+            base = hex_part.split(":")[0]
+            if base in self._nodes:
+                parents.append(self._nodes[base])
+        return parents
 
     def ancestors(self, hex_id: str) -> set[str]:
         """All transitive upstream hexes — the Merkle DAG above `hex_id`."""
@@ -213,7 +220,9 @@ class ProvenanceRegistry:
             if base in seen or base not in self._nodes:
                 continue
             seen.add(base)
-            stack.extend(self._nodes[base].input_hexes)
+            for input_hex in self._nodes[base].input_hexes:
+                _, _, hex_part = input_hex.partition("=")
+                stack.append(hex_part)
         return seen
 
     # ----- hooks / callbacks (observation without mutation) -----
@@ -289,8 +298,9 @@ class ProvenanceRegistry:
                 "output_shape": node.output_shape,
                 "output_dtype": node.output_dtype,
             })
-            for in_hex in node.input_hexes:
-                base = in_hex.split(":")[0]
+            for input_hex in node.input_hexes:
+                _, _, hex_part = input_hex.partition("=")
+                base = hex_part.split(":")[0]
                 G.add_edge(base, node.hex)
         return G
 
@@ -398,6 +408,136 @@ class ProvenanceRegistry:
                 set(other_hexes_by_op) - set(self_hexes_by_op),
             ),
         }
+
+    # ----- causal replay: downstream DAG re-execution -----
+
+    def replay(
+        self,
+        substitutions: dict[str, torch.Tensor],
+        final_hex: Optional[str] = None,
+    ) -> dict[str, torch.Tensor]:
+        """Re-execute the downstream DAG with substitutions propagating.
+
+        Unlike `substitute()` (which only affects ops whose hex is in
+        the substitution map at *call* time, requiring you to re-run
+        your pipeline), this method walks the recorded DAG and
+        re-executes only the affected nodes — the upstream computation
+        is reused from the cache, so this is much cheaper than re-running
+        a full pipeline when you only want to intervene at one node.
+
+        Args:
+          substitutions: hex → replacement tensor. Each substituted hex
+            must already exist in the registry's tensor cache.
+          final_hex: if given, stop early once this node has been
+            re-executed and return only its value (under that key).
+            Otherwise return all re-executed nodes' new outputs.
+
+        Returns:
+          dict mapping hex → new output tensor for every re-executed
+          node. Hexes match the *original* recording's hex (we use the
+          original DAG topology; only the *values* change).
+
+        Requires `cache_tensors=True` on the original recording.
+
+        Caveats:
+          - Random ops (those that take a Generator and call torch.randn
+            etc.) replay with a fresh generator — the result will differ
+            from the original. Avoid replaying through stochastic ops.
+          - The substituted tensor must be shape-compatible with the
+            original at that node, or downstream ops will raise.
+        """
+        if not self._cache_tensors:
+            raise ValueError("replay requires cache_tensors=True on record()")
+        for h in substitutions:
+            base = h.split(":")[0]
+            if base not in self._nodes:
+                raise KeyError(
+                    f"substitution target {h!r} not in registry"
+                )
+
+        # Reverse adjacency: parent_hex → list[child_hex]
+        children_of: dict[str, list[str]] = {h: [] for h in self._nodes}
+        for child_hex, child_node in self._nodes.items():
+            for parent_input in child_node.input_hexes:
+                # input_hex is "name=hex"; extract the hex part
+                _, _, parent_hex = parent_input.partition("=")
+                parent_base = parent_hex.split(":")[0]
+                if parent_base in children_of:
+                    children_of[parent_base].append(child_hex)
+
+        # Collect ALL hexes downstream of any substituted hex.
+        affected: set[str] = set()
+        queue = deque(h.split(":")[0] for h in substitutions)
+        while queue:
+            h = queue.popleft()
+            for child in children_of.get(h, ()):
+                if child not in affected:
+                    affected.add(child)
+                    queue.append(child)
+
+        # Topological sort (Kahn's algorithm) restricted to `affected`.
+        indegree: dict[str, int] = {}
+        for h in affected:
+            count = 0
+            for parent_input in self._nodes[h].input_hexes:
+                _, _, parent_hex = parent_input.partition("=")
+                parent_base = parent_hex.split(":")[0]
+                if parent_base in affected:
+                    count += 1
+            indegree[h] = count
+        ready = deque(h for h, d in indegree.items() if d == 0)
+        order: list[str] = []
+        while ready:
+            h = ready.popleft()
+            order.append(h)
+            for child in children_of.get(h, ()):
+                if child in indegree:
+                    indegree[child] -= 1
+                    if indegree[child] == 0:
+                        ready.append(child)
+
+        # Shadow cache: starts from baseline, gets overwritten as we go.
+        # Substitutions are merged in immediately so any node that reads
+        # them sees the substituted value.
+        shadow: dict[str, torch.Tensor] = dict(self._tensor_cache)
+        for h, val in substitutions.items():
+            shadow[h] = val
+
+        new_outputs: dict[str, torch.Tensor] = {}
+        for h in order:
+            node = self._nodes[h]
+            if node.op_id not in OP_REGISTRY:
+                raise RuntimeError(
+                    f"cannot replay: op_id {node.op_id!r} not in OP_REGISTRY"
+                )
+            fn, _ver = OP_REGISTRY[node.op_id]
+            # Reconstruct call kwargs from input_hexes + params.
+            call_kwargs: dict[str, Any] = node.parsed_params()
+            for input_hex in node.input_hexes:
+                name, _, hex_part = input_hex.partition("=")
+                if hex_part not in shadow:
+                    raise RuntimeError(
+                        f"replay: missing tensor for {hex_part!r} (parent of {h!r})"
+                    )
+                call_kwargs[name] = shadow[hex_part]
+            output = fn(**call_kwargs)
+            # Store in shadow so downstream ops can find it.
+            if isinstance(output, torch.Tensor):
+                shadow[h] = output
+                new_outputs[h] = output
+            elif isinstance(output, tuple):
+                for i, o in enumerate(output):
+                    if isinstance(o, torch.Tensor):
+                        shadow[f"{h}:{i}"] = o
+                        new_outputs[f"{h}:{i}"] = o
+            if final_hex is not None and h.split(":")[0] == final_hex.split(":")[0]:
+                # Hit the requested terminus.
+                key = final_hex if final_hex in shadow else h
+                return {key: shadow[key]}
+
+        if final_hex is not None:
+            return {final_hex: shadow[final_hex]} if final_hex in shadow else {}
+        return new_outputs
 
     # ----- persistence -----
 
@@ -540,21 +680,20 @@ def _resolve_tensor_hex(t: torch.Tensor, ctx: ProvenanceRegistry) -> str:
 def with_provenance(op_id: str, op_version: str = "0.1") -> Callable:
     """Decorator: emit a provenance node when the wrapped op runs inside
     a `record()` context. Outside of recording, the decorator is
-    transparent — single attribute lookup per call.
+    transparent.
 
-    Args:
-      op_id: stable dotted-name identifier (e.g.
-        "synoros_lib.algebra.linear.truncated_svd"). Used as the op
-        identity in the hex computation; changing it invalidates all
-        downstream hexes that depend on it.
-      op_version: version string, bumped when the implementation changes
-        in a way that should invalidate cached hashes. Defaults to "0.1".
+    All arguments — positional or keyword — are bound by parameter name
+    via `inspect.signature`. This makes call signatures fully
+    reconstructible for `Registry.replay`, at the cost of one hex
+    invalidation if you rename a parameter (bump op_version when that
+    happens).
 
-    The decorated function may take any positional/keyword args. Tensor
-    positional args contribute their hex to the op's hex; all other
-    arguments are serialized into `params` via JSON.
+    Restrictions:
+      - The function must not use `*args` or `**kwargs` in its signature
+        (named parameters only). Our math primitives don't.
     """
     def decorator(fn: Callable) -> Callable:
+        sig = inspect.signature(fn)
         if op_id in OP_REGISTRY and OP_REGISTRY[op_id][0] is not fn:
             raise ValueError(
                 f"op_id {op_id!r} already registered to a different function"
@@ -567,20 +706,33 @@ def with_provenance(op_id: str, op_version: str = "0.1") -> Callable:
             if ctx is None:
                 return fn(*args, **kwargs)
 
-            # Resolve input hexes for tensor positional args, in order.
-            input_hexes: list[str] = []
-            for arg in args:
-                if isinstance(arg, torch.Tensor):
-                    input_hexes.append(_resolve_tensor_hex(arg, ctx))
-            # Tensor kwargs also contribute, sorted by key for determinism.
-            for k in sorted(kwargs):
-                v = kwargs[k]
-                if isinstance(v, torch.Tensor):
-                    input_hexes.append(f"{k}={_resolve_tensor_hex(v, ctx)}")
+            # Bind all arguments to parameter names — this normalizes
+            # `truncated_svd(M, 3)` and `truncated_svd(M, r=3)` to the
+            # same call signature, and gives us the param name for
+            # every input so replay can reconstruct the call.
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
 
-            params_json = _canonical_params(kwargs)
+            # Separate tensor inputs (which get hex IDs) from non-tensor
+            # parameters (which get serialized to JSON).
+            tensor_inputs: dict[str, str] = {}
+            non_tensor_params: dict[str, Any] = {}
+            for name, value in bound.arguments.items():
+                if isinstance(value, torch.Tensor):
+                    tensor_inputs[name] = _resolve_tensor_hex(value, ctx)
+                else:
+                    non_tensor_params[name] = value
+
+            # Deterministic input_hexes: sorted by name, "name=hex" each.
+            input_hexes = tuple(
+                f"{name}={hex_id}"
+                for name, hex_id in sorted(tensor_inputs.items())
+            )
+            params_json = json.dumps(
+                non_tensor_params, sort_keys=True, default=str,
+            )
             this_hex = _op_hex(
-                op_id, op_version, params_json, tuple(input_hexes),
+                op_id, op_version, params_json, input_hexes,
                 ctx._hasher_factory,
             )
 
@@ -613,7 +765,7 @@ def with_provenance(op_id: str, op_version: str = "0.1") -> Callable:
                 op_id=op_id,
                 op_version=op_version,
                 params=params_json,
-                input_hexes=tuple(input_hexes),
+                input_hexes=input_hexes,
                 output_shape=shapes,
                 output_dtype=dtypes,
             )
