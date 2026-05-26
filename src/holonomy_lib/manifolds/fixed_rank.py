@@ -35,6 +35,7 @@ from typing import Literal, Optional
 import torch
 
 from holonomy_lib.algebra.linear import truncated_svd
+from holonomy_lib.provenance import with_provenance
 
 # A batched manifold point is the triple (U, S, Vt) of stacked tensors.
 # Shapes: U (B, m, r), S (B, r), Vt (B, r, n).
@@ -115,6 +116,22 @@ class FixedRankManifold:
         """Manifold dimension, r·(m + n − r). Vandereycken (2013), §2.1."""
         return self.r * (self.m + self.n - self.r)
 
+    def _provenance_signature(self) -> dict:
+        """Deterministic canonical form used by `@with_provenance` to
+        hash the bound `self` of decorated methods. Without this, the
+        provenance hex would embed the manifold's Python `id()`, making
+        the same call across processes produce different hexes.
+        """
+        return {
+            "class": "FixedRankManifold",
+            "m": self.m,
+            "n": self.n,
+            "r": self.r,
+            "device": str(self.device),
+            "dtype": str(self.dtype),
+            "retraction_mode": self.retraction_mode,
+        }
+
     # ----------------------------------------------------------------
     # Construction
     # ----------------------------------------------------------------
@@ -161,6 +178,9 @@ class FixedRankManifold:
     # Embedding
     # ----------------------------------------------------------------
 
+    @with_provenance(
+        "holonomy_lib.manifolds.FixedRankManifold.dense", op_version="0.1",
+    )
     def dense(self, point: FixedRankPoint) -> torch.Tensor:
         """Reconstruct ambient dense matrices: M = U @ diag(S) @ Vt.
 
@@ -178,6 +198,9 @@ class FixedRankManifold:
     # Tangent operations
     # ----------------------------------------------------------------
 
+    @with_provenance(
+        "holonomy_lib.manifolds.FixedRankManifold.projection", op_version="0.1",
+    )
     def projection(
         self, point: FixedRankPoint, Z: torch.Tensor
     ) -> torch.Tensor:
@@ -215,6 +238,9 @@ class FixedRankManifold:
         UUt_Z_VVt = torch.bmm(U, torch.bmm(Ut_Z_V, Vt))  # (B, m, n)
         return UUt_Z + Z_VVt - UUt_Z_VVt
 
+    @with_provenance(
+        "holonomy_lib.manifolds.FixedRankManifold.inner", op_version="0.1",
+    )
     def inner(
         self,
         point: FixedRankPoint,
@@ -241,6 +267,9 @@ class FixedRankManifold:
         del point  # induced ambient metric does not depend on the base point
         return (tangent_a * tangent_b).sum(dim=(-2, -1))
 
+    @with_provenance(
+        "holonomy_lib.manifolds.FixedRankManifold.norm", op_version="0.1",
+    )
     def norm(
         self, point: FixedRankPoint, tangent: torch.Tensor
     ) -> torch.Tensor:
@@ -251,6 +280,9 @@ class FixedRankManifold:
     # Retraction
     # ----------------------------------------------------------------
 
+    @with_provenance(
+        "holonomy_lib.manifolds.FixedRankManifold.retraction", op_version="0.1",
+    )
     def retraction(
         self, point: FixedRankPoint, tangent: torch.Tensor
     ) -> FixedRankPoint:

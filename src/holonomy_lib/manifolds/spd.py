@@ -43,6 +43,8 @@ from typing import Optional
 
 import torch
 
+from holonomy_lib.provenance import with_provenance
+
 
 class SPDManifold:
     """Affine-invariant SPD(n) manifold, GPU-native + batched-first.
@@ -76,6 +78,17 @@ class SPDManifold:
         """
         # n*(n+1) is a derived even integer; integer division by 2 is exact.
         return self.n * (self.n + 1) // 2
+
+    def _provenance_signature(self) -> dict:
+        """Deterministic canonical form used by `@with_provenance` to
+        hash the bound `self` of decorated methods.
+        """
+        return {
+            "class": "SPDManifold",
+            "n": self.n,
+            "device": str(self.device),
+            "dtype": str(self.dtype),
+        }
 
     # ----------------------------------------------------------------
     # Construction
@@ -125,6 +138,9 @@ class SPDManifold:
     # Tangent operations
     # ----------------------------------------------------------------
 
+    @with_provenance(
+        "holonomy_lib.manifolds.SPDManifold.projection", op_version="0.1",
+    )
     def projection(self, S: torch.Tensor, Z: torch.Tensor) -> torch.Tensor:
         """Project ambient direction Z onto the tangent space at S.
 
@@ -147,6 +163,9 @@ class SPDManifold:
         del S  # tangent space is point-independent in ambient form
         return 0.5 * (Z + Z.mT)
 
+    @with_provenance(
+        "holonomy_lib.manifolds.SPDManifold.inner", op_version="0.1",
+    )
     def inner(
         self, S: torch.Tensor, U: torch.Tensor, V: torch.Tensor
     ) -> torch.Tensor:
@@ -175,6 +194,9 @@ class SPDManifold:
         # tr(X Y) = sum_{i,j} X_ij Y_ji = sum_{i,j} X_ij (Yᵀ)_ij
         return (S_inv_U * S_inv_V.mT).sum(dim=(-2, -1))
 
+    @with_provenance(
+        "holonomy_lib.manifolds.SPDManifold.norm", op_version="0.1",
+    )
     def norm(self, S: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         """Riemannian norm sqrt(⟨V, V⟩_S). Shape (B,)."""
         return torch.sqrt(self.inner(S, V, V))
@@ -225,6 +247,10 @@ class SPDManifold:
         )
         return S_sqrt, S_inv_sqrt
 
+    @with_provenance(
+        "holonomy_lib.manifolds.SPDManifold.precompute_whitening",
+        op_version="0.1",
+    )
     def precompute_whitening(
         self, S: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -242,6 +268,9 @@ class SPDManifold:
         """
         return self._sqrt_and_inv_sqrt(S)
 
+    @with_provenance(
+        "holonomy_lib.manifolds.SPDManifold.exp", op_version="0.1",
+    )
     def exp(
         self, S: torch.Tensor, V: torch.Tensor,
         whitening: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
@@ -272,6 +301,9 @@ class SPDManifold:
         out = S_sqrt @ torch.matrix_exp(inner) @ S_sqrt
         return 0.5 * (out + out.mT)
 
+    @with_provenance(
+        "holonomy_lib.manifolds.SPDManifold.log", op_version="0.1",
+    )
     def log(
         self, S: torch.Tensor, T: torch.Tensor,
         whitening: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
@@ -302,6 +334,9 @@ class SPDManifold:
         out = S_sqrt @ log_inner @ S_sqrt
         return 0.5 * (out + out.mT)
 
+    @with_provenance(
+        "holonomy_lib.manifolds.SPDManifold.distance", op_version="0.1",
+    )
     def distance(
         self, S: torch.Tensor, T: torch.Tensor,
         whitening: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
@@ -341,6 +376,9 @@ class SPDManifold:
     # Retraction (exponential map is the canonical choice on SPD)
     # ----------------------------------------------------------------
 
+    @with_provenance(
+        "holonomy_lib.manifolds.SPDManifold.retraction", op_version="0.1",
+    )
     def retraction(
         self, S: torch.Tensor, V: torch.Tensor,
         whitening: Optional[tuple[torch.Tensor, torch.Tensor]] = None,

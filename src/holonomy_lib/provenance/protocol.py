@@ -719,14 +719,22 @@ def _current_context() -> Optional[ProvenanceRegistry]:
 # so that "same seed → same hex" holds, and replay can reconstruct
 # a Generator with that seed.
 _TORCH_GENERATOR_TAG = "__torch_generator__"
+_PROVENANCE_SIGNATURE_TAG = "__provenance_signature__"
 
 
 def _canonicalize_value(v: Any) -> Any:
     """Replace non-JSON-stable objects with canonical representations.
 
-    Currently handles torch.Generator. Other un-serializable values fall
-    through to `default=str` in the JSON encoder; if those become a
-    reproducibility hazard, add cases here.
+    Currently handles:
+      - torch.Generator → recorded seed + device
+      - any object exposing a `_provenance_signature(self) -> dict`
+        method → that dict (used by manifold instances so class-method
+        provenance is deterministic; `<Manifold object at 0x7f...>`
+        would otherwise leak the memory address into the hex)
+
+    Other un-serializable values fall through to `default=str` in the
+    JSON encoder; if those become a reproducibility hazard, add cases
+    here.
     """
     if isinstance(v, torch.Generator):
         return {
@@ -734,6 +742,9 @@ def _canonicalize_value(v: Any) -> Any:
             "seed": int(v.initial_seed()),
             "device": str(v.device),
         }
+    sig_fn = getattr(v, "_provenance_signature", None)
+    if callable(sig_fn):
+        return {_PROVENANCE_SIGNATURE_TAG: True, "sig": sig_fn()}
     return v
 
 
@@ -850,12 +861,23 @@ def with_provenance(op_id: str, op_version: str = "0.1") -> Callable:
             bound.apply_defaults()
 
             # Separate tensor inputs (which get hex IDs) from non-tensor
-            # parameters (which get serialized to JSON).
+            # parameters (which get serialized to JSON). Tuples/lists
+            # of tensors are unpacked into per-element hexes so that
+            # e.g. a FixedRankPoint = (U, S, Vt) input contributes
+            # three independent content hashes rather than being
+            # str()-ed into the params blob.
             tensor_inputs: dict[str, str] = {}
             non_tensor_params: dict[str, Any] = {}
             for name, value in bound.arguments.items():
                 if isinstance(value, torch.Tensor):
                     tensor_inputs[name] = _resolve_tensor_hex(value, ctx)
+                elif (
+                    isinstance(value, (tuple, list))
+                    and len(value) > 0
+                    and all(isinstance(x, torch.Tensor) for x in value)
+                ):
+                    for i, t in enumerate(value):
+                        tensor_inputs[f"{name}[{i}]"] = _resolve_tensor_hex(t, ctx)
                 else:
                     non_tensor_params[name] = _canonicalize_value(value)
 
