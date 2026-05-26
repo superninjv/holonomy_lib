@@ -43,6 +43,8 @@ from __future__ import annotations
 
 import torch
 
+from synoros_lib.provenance import with_provenance
+
 
 def degree(A: torch.Tensor, signed: bool = False) -> torch.Tensor:
     """Degree vector of a (batched) weighted adjacency matrix.
@@ -65,6 +67,7 @@ def degree(A: torch.Tensor, signed: bool = False) -> torch.Tensor:
     return A.abs().sum(dim=-1) if signed else A.sum(dim=-1)
 
 
+@with_provenance("synoros_lib.spectral.laplacian.combinatorial", op_version="0.1")
 def combinatorial(A: torch.Tensor) -> torch.Tensor:
     """Combinatorial Laplacian L = D − A.
 
@@ -85,6 +88,7 @@ def combinatorial(A: torch.Tensor) -> torch.Tensor:
     return torch.diag_embed(d) - A
 
 
+@with_provenance("synoros_lib.spectral.laplacian.symmetric_normalized", op_version="0.1")
 def symmetric_normalized(A: torch.Tensor) -> torch.Tensor:
     """Symmetric normalized Laplacian L_sym = I − D^{−1/2} A D^{−1/2}.
 

@@ -59,6 +59,12 @@ ALLOWED_LITERALS set:
 | `RANDOMIZED_SVD_OVERSAMPLE_DEFAULT` | 🔬 | `5` | Halko-Martinsson-Tropp (2011) §1.2 standard recommendation for the oversampling parameter `p` in randomized SVD. Five extra projection columns typically yield relative spectral error below 1e-3 for matrices with smoothly decaying singular values past the truncation rank. **Scale of validity**: adequate when σ_{r+1} is meaningfully smaller than σ_r; increase to 10 (also literature-standard) when the spectrum is flat near the truncation. Used in `src/synoros_lib/algebra/linear.py`. |
 | `RANDOMIZED_SVD_N_ITER_DEFAULT` | 🔬 | `2` | Halko-Martinsson-Tropp (2011) §4.5 standard recommendation for subspace-iteration power method steps. Two iterations amplify the singular-value gap by (σ_{r+1}/σ_r)^(2q+1), sufficient for typical low-rank truncation. **Scale of validity**: fine for σ_{r+1}/σ_r ≲ 0.5; increase to 4–7 when ratio is closer to 1. Used in `src/synoros_lib/algebra/linear.py`. (Note: value 2 is also in `ALLOWED_LITERALS` as a doubling identity; this entry documents the *semantic* role of the default.) |
 
+### provenance
+
+| Name | Status | Value | Justification |
+|---|---|---|---|
+| `HEX_PREFIX_LEN` | 🔬 | `16` | Length (in hex chars) of the truncated sha256 prefix used as provenance IDs. 16 chars = 64 bits ≈ collision-free up to ~2³² operations by the birthday bound. **Scale of validity**: fine for interactive mech-interp sessions and most batch runs. Bump to 32 chars (128 bits) for million-op production traces. Used in `src/synoros_lib/provenance/protocol.py`. |
+
 ### discrete_geometry
 
 | Name | Status | Value | Justification |
