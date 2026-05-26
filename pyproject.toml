@@ -1,7 +1,7 @@
 [project]
 name = "holonomy-lib"
 version = "0.1.0"
-description = "Research-grade PyTorch math: differential geometry, spectral graph theory, discrete Ricci flow, tensor decompositions, content-addressable provenance. GPU-native, batched-first, audit-clean, cited."
+description = "Research-grade PyTorch math: differential geometry, spectral graph theory, discrete Ricci flow, tensor decompositions, simplicial topology, persistent homology, content-addressable provenance. GPU-native, batched-first, audit-clean, cited."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Jack" }]
@@ -33,6 +33,11 @@ keywords = [
     "merkle-dag",
     "numerical-linear-algebra",
     "gpu-computing",
+    "persistent-homology",
+    "simplicial-complex",
+    "topological-data-analysis",
+    "riemannian-optimization",
+    "hodge-laplacian",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -45,7 +50,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
+
+# Runtime dependencies. `torch >= 2.0` is included for ergonomic
+# `pip install holonomy-lib` on CPU and the default CUDA wheel.
+# ROCm users: install your own torch wheel BEFORE `pip install
+# holonomy-lib`, or use `--force-reinstall` after, e.g.:
+#   pip install --index-url https://download.pytorch.org/whl/rocm6.4 torch
+#   pip install holonomy-lib
+# pip / uv will respect the already-installed torch.
 dependencies = [
+    "torch>=2.0",
     "numpy",
     "scipy",
 ]
@@ -55,22 +69,48 @@ Homepage = "https://github.com/superninjv/holonomy_lib"
 Repository = "https://github.com/superninjv/holonomy_lib"
 Issues = "https://github.com/superninjv/holonomy_lib/issues"
 
-# torch is intentionally NOT in dependencies. Install platform-appropriate
-# wheel manually — uv's resolver tends to prefer PyPI CUDA-13 wheels even
-# when ROCm is configured.
-#   Workstation (AMD gfx1200 / 9060 XT):
-#     uv pip install --index-url https://download.pytorch.org/whl/rocm6.4 torch
-#   NVIDIA CUDA 12+:
-#     uv pip install torch
-#   CPU only:
-#     uv pip install torch
-
 [project.optional-dependencies]
-# External math libs we wrap or consolidate from
-geometry = ["geoopt", "geomstats", "pymanopt", "autograd"]
-topology = ["gudhi", "ripser"]
-optimization = ["higher", "torchopt"]
+# Runtime extras for the optional provenance helpers. The library
+# uses these only inside specific methods:
+#   - `blake3`: ~5-10x faster than sha256 for the provenance hash
+#     computation. Falls back to sha256 if not installed.
+#   - `networkx`: used by `ProvenanceRegistry.to_networkx()`.
+#   - `pandas`: used by `ProvenanceRegistry.to_dataframe()`.
+# Skip this extra if you don't need mech-interp DAG exports.
+provenance-extras = ["blake3", "networkx", "pandas"]
+
+# Comparison-test extras: third-party libraries we cross-check
+# implementations against (pymanopt, geoopt for manifolds; tensorly
+# for HOSVD; gudhi, ripser for persistent homology; GraphRicciCurvature
+# for Ollivier-Ricci; networkx as a graph-data-structure peer). These
+# are NOT runtime dependencies — the comparison tests use
+# `pytest.importorskip` and silently skip when the comparison lib
+# isn't installed. Install this extra ONLY if you want to run the
+# full cross-comparison test suite locally.
+comparison = [
+    "pymanopt",
+    "geoopt",
+    "geomstats",
+    "autograd",
+    "tensorly",
+    "networkx",
+    "gudhi",
+    "ripser",
+    "GraphRicciCurvature",
+]
+
+# Development toolchain.
 dev = ["pytest", "ruff", "mypy"]
+
+# Convenience extras: everything.
+all = [
+    "blake3",
+    "networkx",
+    "pandas",
+    "pytest",
+    "ruff",
+    "mypy",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

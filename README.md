@@ -85,29 +85,61 @@ properties this library guarantees:
 
 ## Installation
 
-```bash
-# Install PyTorch separately per platform; we don't pin in pyproject.toml
-# because uv's resolver tends to prefer PyPI CUDA-13 wheels even when ROCm
-# is configured.
-#
-#   Workstation (AMD ROCm 6.4):
-#     uv pip install --index-url https://download.pytorch.org/whl/rocm6.4 torch
-#
-#   NVIDIA CUDA 12+:
-#     uv pip install torch
-#
-#   CPU only:
-#     uv pip install torch
+The library has a small dependency surface: `torch >= 2.0`, `numpy`,
+`scipy`. Everything else, Riemannian optimizers, simplicial complexes,
+Hodge Laplacians, persistent homology, is shipped natively. You do
+**not** need to install `pymanopt`, `geoopt`, `gudhi`, `ripser`, or
+similar to use the corresponding primitives.
 
-# Then install the library:
+### Standard install (CPU or default CUDA)
+
+```bash
+pip install holonomy-lib
+```
+
+This pulls torch's default wheel (CPU or CUDA 12, depending on
+platform) automatically. Python ≥ 3.12.
+
+### ROCm / older CUDA / specific torch wheel
+
+Install your preferred torch wheel **first**, then the library. pip /
+uv will respect the already-installed torch:
+
+```bash
+# AMD ROCm 6.4:
+pip install --index-url https://download.pytorch.org/whl/rocm6.4 torch
+pip install holonomy-lib
+
+# CUDA 12.1 specifically:
+pip install --index-url https://download.pytorch.org/whl/cu121 torch
+pip install holonomy-lib
+
+# CPU only:
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install holonomy-lib
+```
+
+### From source (development)
+
+```bash
+git clone https://github.com/superninjv/holonomy_lib
+cd holonomy_lib
+uv venv
 uv pip install -e ".[dev]"
 ```
 
-Python ≥ 3.12, PyTorch 2.x.
+### Optional extras
 
-Optional extras: `geometry` (geoopt, geomstats, pymanopt, used by
-comparison tests), `topology` (gudhi, ripser), `optimization` (higher,
-torchopt), `dev` (pytest, ruff, mypy).
+- `holonomy-lib[provenance-extras]`: `blake3` (faster hash), `networkx`
+  (DAG export), `pandas` (DataFrame export). Used only inside specific
+  provenance helpers; the library degrades gracefully without them.
+- `holonomy-lib[comparison]`: pymanopt, geoopt, geomstats, tensorly,
+  gudhi, ripser, GraphRicciCurvature, networkx, autograd. Required
+  ONLY for running the cross-comparison test suite locally; the
+  library itself never imports these.
+- `holonomy-lib[dev]`: pytest, ruff, mypy.
+- `holonomy-lib[all]`: provenance-extras + dev (the typical
+  contributor install).
 
 ---
 
