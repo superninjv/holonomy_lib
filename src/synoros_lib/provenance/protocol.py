@@ -31,9 +31,30 @@ import threading
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import wraps
+from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 import torch
+
+# Pluggable hash algorithm. blake3 is ~5-10× faster than sha256 and
+# still cryptographic; falls back to sha256 if blake3 isn't installed.
+# The hex output format is identical so downstream code is unaffected,
+# but a registry's hexes are tied to whichever hash was used to record
+# it — recordings are not portable across hash algorithms.
+try:
+    import blake3 as _blake3
+
+    def _make_hasher_blake3():
+        return _blake3.blake3()
+
+    _DEFAULT_HASHER_NAME = "blake3"
+    _HASHER_FACTORIES: dict[str, Callable] = {
+        "blake3": _make_hasher_blake3,
+        "sha256": hashlib.sha256,
+    }
+except ImportError:
+    _DEFAULT_HASHER_NAME = "sha256"
+    _HASHER_FACTORIES = {"sha256": hashlib.sha256}
 
 
 # How many hex chars to keep from the sha256 prefix. 16 = 64 bits ≈ 2^32
@@ -99,7 +120,11 @@ class ProvenanceRegistry:
     and substitute (activation patching) on subsequent calls.
     """
 
-    def __init__(self, cache_tensors: bool = False):
+    def __init__(
+        self,
+        cache_tensors: bool = False,
+        hash_algorithm: str = _DEFAULT_HASHER_NAME,
+    ):
         self._nodes: dict[str, ProvenanceNode] = {}
         self._tensor_cache: dict[str, torch.Tensor] = {}
         self._cache_tensors: bool = cache_tensors
@@ -107,6 +132,17 @@ class ProvenanceRegistry:
         self._tensor_id_to_hex: dict[int, str] = {}
         # User-set substitutions: hex → tensor (or tuple of tensors).
         self._substitutions: dict[str, Any] = {}
+        # Hook callbacks: op_id → list[Callable[[ProvenanceNode, Any], None]]
+        self._hooks: dict[str, list[Callable[[ProvenanceNode, Any], None]]] = {}
+        # Hash algorithm — frozen at construction so all hexes in this
+        # registry are computed consistently.
+        if hash_algorithm not in _HASHER_FACTORIES:
+            raise ValueError(
+                f"hash_algorithm must be one of {sorted(_HASHER_FACTORIES)}, "
+                f"got {hash_algorithm!r}"
+            )
+        self.hash_algorithm: str = hash_algorithm
+        self._hasher_factory = _HASHER_FACTORIES[hash_algorithm]
 
     # ----- low-level registration -----
 
@@ -180,6 +216,39 @@ class ProvenanceRegistry:
             stack.extend(self._nodes[base].input_hexes)
         return seen
 
+    # ----- hooks / callbacks (observation without mutation) -----
+
+    def on_op(
+        self, op_id: str,
+        callback: Callable[[ProvenanceNode, Any], None],
+    ) -> None:
+        """Register a callback that fires every time `op_id` is called
+        inside this registry's recording context.
+
+        The callback receives `(node, output)` where `output` is whatever
+        the decorated primitive returned (a tensor, tuple of tensors, etc.).
+        Multiple callbacks for the same op_id are called in registration order.
+
+        TransformerLens-equivalent: forward-hook on a module, but indexed
+        by op_id instead of module path. Doesn't change behavior (unlike
+        substitute()); just lets you observe / log / accumulate.
+
+        Example:
+          activations = []
+          reg.on_op("synoros_lib.spectral.laplacian.combinatorial",
+                      lambda node, out: activations.append((node.hex, out)))
+          # ... run the pipeline ...
+          # activations now lists every Laplacian computed
+        """
+        self._hooks.setdefault(op_id, []).append(callback)
+
+    def clear_hooks(self, op_id: Optional[str] = None) -> None:
+        """Remove all hooks (or just for one op_id)."""
+        if op_id is None:
+            self._hooks.clear()
+        else:
+            self._hooks.pop(op_id, None)
+
     # ----- substitution / activation patching -----
 
     @contextmanager
@@ -232,7 +301,140 @@ class ProvenanceRegistry:
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-Python JSON-friendly export."""
-        return {"nodes": [n.to_dict() for n in self]}
+        return {
+            "schema_version": "0.1",
+            "hash_algorithm": self.hash_algorithm,
+            "nodes": [n.to_dict() for n in self],
+        }
+
+    def to_sae_dataset(
+        self, op_id: Optional[str] = None,
+    ) -> Iterator[tuple[torch.Tensor, dict[str, Any]]]:
+        """Yield `(tensor, metadata)` pairs from cached outputs, in registration
+        order. Useful as input to SAELens-style training where you want a
+        stream of activations + labels.
+
+        Args:
+          op_id: if given, only yield records for this op.
+
+        Yields:
+          (output_tensor, dict) — the dict has {"hex", "op_id", "op_version",
+          "params", "input_hexes"} for downstream filtering / labeling.
+
+        Requires `cache_tensors=True` on the recording context.
+        """
+        for node in self.where(op_id=op_id):
+            tensor = self.get_tensor(node.hex)
+            if tensor is not None:
+                yield tensor, {
+                    "hex": node.hex,
+                    "op_id": node.op_id,
+                    "op_version": node.op_version,
+                    "params": node.params,
+                    "input_hexes": list(node.input_hexes),
+                }
+            else:
+                # Multi-output op: yield each cached output with its hex:i
+                for i in range(len(node.output_shape)):
+                    sub_hex = f"{node.hex}:{i}"
+                    t = self.get_tensor(sub_hex)
+                    if t is not None:
+                        yield t, {
+                            "hex": sub_hex,
+                            "op_id": node.op_id,
+                            "op_version": node.op_version,
+                            "params": node.params,
+                            "input_hexes": list(node.input_hexes),
+                            "output_index": i,
+                        }
+
+    # ----- diff -----
+
+    def diff(self, other: "ProvenanceRegistry") -> dict[str, Any]:
+        """Compare two recordings and return a structured diff.
+
+        Useful for "did my refactor preserve semantics?" or "what changed
+        between these two experimental conditions?". The diff groups by
+        op_id so you see, per operation, which hexes are unique to each
+        registry vs. shared.
+
+        Returns:
+          dict with keys:
+            "only_in_self":   {op_id: [hex, ...]}  — ops in self, not other
+            "only_in_other":  {op_id: [hex, ...]}
+            "shared":         {op_id: [hex, ...]}
+            "op_ids_only_in_self":   list[str]
+            "op_ids_only_in_other":  list[str]
+        """
+        self_hexes_by_op: dict[str, set[str]] = {}
+        for n in self:
+            self_hexes_by_op.setdefault(n.op_id, set()).add(n.hex)
+        other_hexes_by_op: dict[str, set[str]] = {}
+        for n in other:
+            other_hexes_by_op.setdefault(n.op_id, set()).add(n.hex)
+
+        all_ops = set(self_hexes_by_op) | set(other_hexes_by_op)
+        only_in_self: dict[str, list[str]] = {}
+        only_in_other: dict[str, list[str]] = {}
+        shared: dict[str, list[str]] = {}
+        for op in all_ops:
+            s = self_hexes_by_op.get(op, set())
+            o = other_hexes_by_op.get(op, set())
+            if s - o:
+                only_in_self[op] = sorted(s - o)
+            if o - s:
+                only_in_other[op] = sorted(o - s)
+            if s & o:
+                shared[op] = sorted(s & o)
+
+        return {
+            "only_in_self": only_in_self,
+            "only_in_other": only_in_other,
+            "shared": shared,
+            "op_ids_only_in_self": sorted(
+                set(self_hexes_by_op) - set(other_hexes_by_op),
+            ),
+            "op_ids_only_in_other": sorted(
+                set(other_hexes_by_op) - set(self_hexes_by_op),
+            ),
+        }
+
+    # ----- persistence -----
+
+    def save(self, path: str | Path) -> None:
+        """Persist the registry's metadata to disk as JSON.
+
+        The tensor cache (if any) is NOT persisted — only the DAG
+        structure, hexes, op_ids, params, shapes, dtypes. To persist
+        tensors, save them separately keyed by hex (e.g. via torch.save
+        in a follow-on directory).
+        """
+        path = Path(path)
+        path.write_text(json.dumps(self.to_dict(), indent=2))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "ProvenanceRegistry":
+        """Load a registry's metadata from a JSON file written by save().
+
+        The loaded registry has no tensor cache (tensors aren't persisted).
+        Substitutions and hooks are reset to empty.
+        """
+        path = Path(path)
+        data = json.loads(path.read_text())
+        algorithm = data.get("hash_algorithm", "sha256")
+        registry = cls(hash_algorithm=algorithm)
+        for entry in data["nodes"]:
+            node = ProvenanceNode(
+                hex=entry["hex"],
+                op_id=entry["op_id"],
+                op_version=entry["op_version"],
+                params=entry["params"],
+                input_hexes=tuple(entry["input_hexes"]),
+                output_shape=tuple(tuple(s) for s in entry["output_shape"]),
+                output_dtype=tuple(entry["output_dtype"]),
+            )
+            registry._nodes[node.hex] = node
+        return registry
 
 
 # ============================================================
@@ -241,18 +443,28 @@ class ProvenanceRegistry:
 
 
 @contextmanager
-def record(cache_tensors: bool = False) -> Iterator[ProvenanceRegistry]:
+def record(
+    cache_tensors: bool = False,
+    hash_algorithm: str = _DEFAULT_HASHER_NAME,
+) -> Iterator[ProvenanceRegistry]:
     """Activate provenance recording for decorated primitives.
 
     Args:
       cache_tensors: if True, store output tensors in the registry so
         `registry.get_tensor(hex)` returns them. Costs memory; off by
         default to keep the overhead near zero.
+      hash_algorithm: hash function name. Defaults to whichever was
+        available at import (blake3 if installed, else sha256). All
+        hexes within a registry are computed with this algorithm; you
+        cannot mix.
 
     Yields:
       The active ProvenanceRegistry.
     """
-    registry = ProvenanceRegistry(cache_tensors=cache_tensors)
+    registry = ProvenanceRegistry(
+        cache_tensors=cache_tensors,
+        hash_algorithm=hash_algorithm,
+    )
     prev = getattr(_local, "context", None)
     _local.context = registry
     try:
@@ -279,9 +491,9 @@ def _canonical_params(kwargs: dict[str, Any]) -> str:
     return json.dumps(cleaned, sort_keys=True, default=str)
 
 
-def _tensor_content_hex(t: torch.Tensor) -> str:
-    """Content hash of a tensor: shape + dtype + bytes (sha256 prefix)."""
-    h = hashlib.sha256()
+def _tensor_content_hex(t: torch.Tensor, hasher_factory: Callable) -> str:
+    """Content hash of a tensor: shape + dtype + bytes."""
+    h = hasher_factory()
     h.update(str(tuple(t.shape)).encode())
     h.update(str(t.dtype).encode())
     # Hash bytes — move to CPU and contiguous first.
@@ -290,10 +502,14 @@ def _tensor_content_hex(t: torch.Tensor) -> str:
 
 
 def _op_hex(
-    op_id: str, op_version: str, params_json: str, input_hexes: tuple[str, ...],
+    op_id: str,
+    op_version: str,
+    params_json: str,
+    input_hexes: tuple[str, ...],
+    hasher_factory: Callable,
 ) -> str:
     """Deterministic hex for an op call from its identity + inputs."""
-    h = hashlib.sha256()
+    h = hasher_factory()
     h.update(op_id.encode())
     h.update(b"\0")
     h.update(op_version.encode())
@@ -311,7 +527,7 @@ def _resolve_tensor_hex(t: torch.Tensor, ctx: ProvenanceRegistry) -> str:
     upstream = ctx._lookup_tensor_hex(t)
     if upstream is not None:
         return upstream
-    h = _tensor_content_hex(t)
+    h = _tensor_content_hex(t, ctx._hasher_factory)
     ctx._register_tensor_hex(t, h)
     return h
 
@@ -365,6 +581,7 @@ def with_provenance(op_id: str, op_version: str = "0.1") -> Callable:
             params_json = _canonical_params(kwargs)
             this_hex = _op_hex(
                 op_id, op_version, params_json, tuple(input_hexes),
+                ctx._hasher_factory,
             )
 
             # Substitution: if user has overridden this op-call's hex,
@@ -409,6 +626,10 @@ def with_provenance(op_id: str, op_version: str = "0.1") -> Callable:
                 for i, o in enumerate(output):
                     if isinstance(o, torch.Tensor):
                         ctx._register_tensor_hex(o, f"{this_hex}:{i}")
+
+            # Fire any hooks registered for this op_id.
+            for hook in ctx._hooks.get(op_id, ()):
+                hook(node, output)
 
             return output
 

@@ -9,10 +9,17 @@ Covers:
      the correct provenance edge.
   6. Substitution — TransformerLens-style activation patching applied
      to math primitives.
-  7. Interop — to_networkx / to_dataframe / to_dict.
+  7. Interop — to_networkx / to_dataframe / to_dict / to_sae_dataset.
+  8. Hooks — observe ops without changing behavior.
+  9. Diff — compare two recordings.
+  10. Persistence — save/load registry to disk.
+  11. Hash algorithm pluggability — blake3 vs sha256.
 """
 
 from __future__ import annotations
+
+import tempfile
+from pathlib import Path
 
 import pytest
 import torch
@@ -300,3 +307,208 @@ class TestMechInterpDemo:
         assert ablated_lap.hex == lap_node.hex, (
             "same op call → same hex even with substitution active"
         )
+
+
+# --------------------------------------------------------------------
+# Hooks — observation without mutation
+# --------------------------------------------------------------------
+
+
+class TestHooks:
+    def test_hook_fires_on_matching_op_id(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(20))
+        A = (A + A.mT).abs()
+        captured = []
+        with provenance.record() as reg:
+            reg.on_op(
+                "synoros_lib.spectral.laplacian.combinatorial",
+                lambda node, out: captured.append((node.hex, out.shape)),
+            )
+            L = laplacian.combinatorial(A)
+        assert len(captured) == 1
+        hex_id, shape = captured[0]
+        assert shape == (1, 4, 4)
+        assert hex_id == next(iter(reg)).hex
+
+    def test_hook_does_not_fire_for_other_ops(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(21))
+        A = (A + A.mT).abs()
+        captured = []
+        with provenance.record() as reg:
+            # Hook for an op we don't call
+            reg.on_op("synoros_lib.algebra.linear.truncated_svd",
+                        lambda n, o: captured.append(n))
+            laplacian.combinatorial(A)
+        assert captured == []
+
+    def test_multiple_hooks_for_same_op_fire_in_order(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(22))
+        A = (A + A.mT).abs()
+        order = []
+        with provenance.record() as reg:
+            reg.on_op("synoros_lib.spectral.laplacian.combinatorial",
+                        lambda n, o: order.append("first"))
+            reg.on_op("synoros_lib.spectral.laplacian.combinatorial",
+                        lambda n, o: order.append("second"))
+            laplacian.combinatorial(A)
+        assert order == ["first", "second"]
+
+    def test_hook_observes_does_not_mutate(self):
+        """Hook output is not used; the math primitive's actual return
+        value is what the caller sees.
+        """
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(23))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg:
+            # Hook that "tries" to mutate (its return value is ignored)
+            reg.on_op("synoros_lib.spectral.laplacian.combinatorial",
+                        lambda n, o: torch.zeros_like(o))
+            L = laplacian.combinatorial(A)
+        # L is the real Laplacian, not zeros
+        assert not torch.allclose(L, torch.zeros_like(L))
+
+
+# --------------------------------------------------------------------
+# SAELens-ready dataset emission
+# --------------------------------------------------------------------
+
+
+class TestSaeDataset:
+    def test_emits_cached_activations_with_metadata(self):
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(30))
+        A = (A + A.mT).abs()
+        with provenance.record(cache_tensors=True) as reg:
+            laplacian.combinatorial(A)
+            truncated_svd(A, r=2, mode="exact")
+        records = list(reg.to_sae_dataset())
+        # combinatorial yields 1 tensor; truncated_svd yields 3 (multi-output)
+        assert len(records) == 4
+        for tensor, meta in records:
+            assert isinstance(tensor, torch.Tensor)
+            assert "hex" in meta
+            assert "op_id" in meta
+
+    def test_filter_by_op_id(self):
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(31))
+        A = (A + A.mT).abs()
+        with provenance.record(cache_tensors=True) as reg:
+            laplacian.combinatorial(A)
+            truncated_svd(A, r=2, mode="exact")
+        only_svd = list(reg.to_sae_dataset(
+            op_id="synoros_lib.algebra.linear.truncated_svd",
+        ))
+        assert len(only_svd) == 3  # U, S, Vt
+        assert all(
+            meta["op_id"] == "synoros_lib.algebra.linear.truncated_svd"
+            for _, meta in only_svd
+        )
+
+
+# --------------------------------------------------------------------
+# Run diffing
+# --------------------------------------------------------------------
+
+
+class TestDiff:
+    def test_identical_runs_diff_empty(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(40))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg1:
+            laplacian.combinatorial(A)
+        with provenance.record() as reg2:
+            laplacian.combinatorial(A)
+        d = reg1.diff(reg2)
+        assert d["only_in_self"] == {}
+        assert d["only_in_other"] == {}
+        assert len(d["shared"]) == 1
+
+    def test_different_inputs_show_divergence(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(41))
+        A = (A + A.mT).abs()
+        B = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(42))
+        B = (B + B.mT).abs()
+        with provenance.record() as reg1:
+            laplacian.combinatorial(A)
+        with provenance.record() as reg2:
+            laplacian.combinatorial(B)
+        d = reg1.diff(reg2)
+        # Both runs have the combinatorial op, but with different hexes
+        op = "synoros_lib.spectral.laplacian.combinatorial"
+        assert op in d["only_in_self"]
+        assert op in d["only_in_other"]
+        assert d["shared"].get(op, []) == []
+
+    def test_different_op_ids_show_in_only_lists(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(43))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg1:
+            laplacian.combinatorial(A)
+        with provenance.record() as reg2:
+            laplacian.symmetric_normalized(A)
+        d = reg1.diff(reg2)
+        assert "synoros_lib.spectral.laplacian.combinatorial" in d["op_ids_only_in_self"]
+        assert "synoros_lib.spectral.laplacian.symmetric_normalized" in d["op_ids_only_in_other"]
+
+
+# --------------------------------------------------------------------
+# Persistence
+# --------------------------------------------------------------------
+
+
+class TestPersistence:
+    def test_save_and_load_roundtrip(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(50))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg:
+            laplacian.combinatorial(A)
+            truncated_svd(A, r=2, mode="exact")
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "registry.json"
+            reg.save(path)
+            assert path.exists()
+            loaded = provenance.ProvenanceRegistry.load(path)
+
+        assert len(loaded) == len(reg)
+        # Hexes survive
+        original_hexes = {n.hex for n in reg}
+        loaded_hexes = {n.hex for n in loaded}
+        assert original_hexes == loaded_hexes
+        # Algorithm preserved
+        assert loaded.hash_algorithm == reg.hash_algorithm
+
+
+# --------------------------------------------------------------------
+# Hash-algorithm pluggability
+# --------------------------------------------------------------------
+
+
+class TestHashAlgorithm:
+    def test_sha256_is_always_available(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(60))
+        A = (A + A.mT).abs()
+        with provenance.record(hash_algorithm="sha256") as reg:
+            laplacian.combinatorial(A)
+        assert reg.hash_algorithm == "sha256"
+        assert len(reg) == 1
+
+    def test_unknown_algorithm_rejected(self):
+        with pytest.raises(ValueError, match="hash_algorithm"):
+            with provenance.record(hash_algorithm="md5") as _:
+                pass
+
+    def test_different_algorithms_produce_different_hexes(self):
+        """sha256 and blake3 hash the same content to different hex values."""
+        try:
+            import blake3  # noqa: F401
+        except ImportError:
+            pytest.skip("blake3 not installed")
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(61))
+        A = (A + A.mT).abs()
+        with provenance.record(hash_algorithm="sha256") as r1:
+            laplacian.combinatorial(A)
+        with provenance.record(hash_algorithm="blake3") as r2:
+            laplacian.combinatorial(A)
+        h1 = next(iter(r1)).hex
+        h2 = next(iter(r2)).hex
+        assert h1 != h2, "different hash algos must produce different hexes"

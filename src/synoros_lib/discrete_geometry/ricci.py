@@ -63,6 +63,8 @@ from typing import Optional
 
 import torch
 
+from synoros_lib.provenance import with_provenance
+
 
 # Default regularization for entropic Sinkhorn, per Cuturi (2013) §4.
 # A regularization of 0.01 is a common middle-ground: small enough that
@@ -85,6 +87,7 @@ SINKHORN_N_ITER_DEFAULT: int = 100
 DISCONNECTED_DISTANCE_MULTIPLIER: float = 1000.0
 
 
+@with_provenance("synoros_lib.discrete_geometry.ollivier_ricci_curvature", op_version="0.1")
 def ollivier_ricci_curvature(
     A: torch.Tensor,
     alpha: float = 0.0,

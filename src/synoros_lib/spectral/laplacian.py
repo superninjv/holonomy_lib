@@ -115,6 +115,7 @@ def symmetric_normalized(A: torch.Tensor) -> torch.Tensor:
     return eye - A_norm
 
 
+@with_provenance("synoros_lib.spectral.laplacian.random_walk", op_version="0.1")
 def random_walk(A: torch.Tensor) -> torch.Tensor:
     """Random-walk Laplacian L_rw = I − D^{−1} A.
 
@@ -140,6 +141,7 @@ def random_walk(A: torch.Tensor) -> torch.Tensor:
     return eye - A_rw
 
 
+@with_provenance("synoros_lib.spectral.laplacian.signed", op_version="0.1")
 def signed(A: torch.Tensor) -> torch.Tensor:
     """Signed Laplacian L^σ = D^{|σ|} − A,  D^{|σ|}_{ii} = Σ_j |A_{ij}|.
 
