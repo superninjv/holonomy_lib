@@ -1,0 +1,31 @@
+[project]
+name = "synoros-lib"
+version = "0.0.0"
+description = "Research-oriented PyTorch math library: topology, differential geometry, algebra, persistent homology, tensor calculus, information geometry — audit-compliant, GPU-native, cited"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "scipy",
+]
+
+# torch is intentionally NOT in dependencies. Install platform-appropriate wheel
+# manually since uv's lockfile resolution tends to prefer PyPI CUDA-13 wheels
+# even when ROCm is configured. Same convention as synoros-substrate.
+#   Workstation (AMD gfx1200 / 9060 XT):
+#     uv pip install --index-url https://download.pytorch.org/whl/rocm6.4 torch
+#   Rental (NVIDIA CUDA 12+):
+#     uv pip install torch
+
+[project.optional-dependencies]
+# External math libs we wrap or consolidate from
+geometry = ["geoopt", "geomstats"]
+topology = ["gudhi", "ripser"]
+optimization = ["higher", "torchopt"]
+dev = ["pytest", "ruff", "mypy"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,446 @@
+"""synoros_lib.audit — find undocumented numeric constants in source.
+
+Per the "no magic numbers" rule (CLAUDE.md constraint #8, direction.md 2026-05-23),
+every numerical constant in the architecture must be derived from substrate state,
+corpus properties, universal invariants, or experimentally tuned with documented
+procedure. This module enforces that rule by scanning Python source for numeric
+literals that don't match a safe whitelist and cross-referencing them against the
+`notes/magic_numbers.md` catalog.
+
+Usage:
+    python -m synoros_lib.audit <path>...      # scan files or directories
+    python -m synoros_lib.audit --strict ...   # exit code 1 if any literal found
+
+Output flags:
+    🟢 Allowed   — literal is in the safe set (0, 1, -1, 0.5, 2.0, math constants)
+    🟡 Documented — variable name matches an entry in magic_numbers.md
+    🔴 Undocumented — literal not allowed, variable not in catalog (REVIEW)
+
+Limitations:
+    - Static AST analysis; can't detect dynamic derivation (e.g. `lr = 1/N`)
+      will warn but the user should mark it as derived in the catalog
+    - Pattern-match is heuristic; treat as a starting point, not ground truth
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+
+# Universal safe literals.
+# Three categories, each justified explicitly:
+#   1. Mathematical identities (0, 1, -1) — no debate
+#   2. Universal binary/SI unit conversions (1024 for KB↔MB↔GB,
+#      1000 for s↔ms / RNG-stream decorrelation) — true universals
+#   3. Conventional numerical floor 1e-9 — chosen safer than float32 eps
+#      (~1.19e-7); used pervasively as anti-divide-by-zero. Posited
+#      convention; documented in catalog as `numerical_floor_convention`.
+ALLOWED_LITERALS: set[float] = {
+    # Mathematical identities
+    0, 1, -1, 0.0, 1.0, -1.0,
+    # Universal binary unit conversions (KB↔MB↔GB)
+    1024, 1024.0,
+    # Universal SI time conversion (s↔ms) + RNG stream-offset multiplier
+    1000, 1000.0,
+    # Conventional numerical floor (divide-by-zero protection)
+    # Cataloged as `numerical_floor_convention` (posited convention)
+    1e-9,
+}
+
+# Variable names whose literals are display/IO/formatting concerns, not architecture
+DISPLAY_VAR_NAMES: set[str] = {
+    "log_every", "print_every", "save_every", "checkpoint_every",
+    "report_every", "verbose", "context_expr",
+    "n_walks_per_epoch",  # epoch sizing — display-ish
+    "max_iter", "max_steps",  # standard bounds
+    # argparse defaults — experiment knobs, not architectural constants;
+    # the catalog covers them under their architectural name elsewhere
+    "default",
+    # Common script-scope experiment knobs
+    "n_runs", "n_warmup", "n_epochs_default",
+    # JSON / dump formatting (output-only, no architectural meaning)
+    "indent",
+}
+
+# Variable names that are universally safe (not architectural constants)
+SAFE_VAR_NAMES: set[str] = {
+    "i", "j", "k", "n", "m", "t", "x", "y", "z",
+    "idx", "index", "count", "total", "step",
+    "size", "shape", "dim", "axis",
+    "epoch", "iter", "iteration", "seed",  # tracked separately
+    "len", "length",
+    # PyTorch tensor index / shape constants
+    "min", "max",
+    # Common loop bounds
+    "start", "end", "stop",
+}
+
+# Universal-invariant patterns we recognize as derived
+DERIVED_PATTERNS = [
+    r"1\s*/\s*N",
+    r"1\s*/\s*\w*n_(nodes|ent|ents)",
+    r"1\s*/\s*sqrt",
+    r"math\.(log|sqrt|pi|e)",
+    r"torch\.(log|sqrt|pi)",
+    r"log\(\s*\w*N\w*\s*\)",
+]
+
+# Files that are themselves the audit/catalog infrastructure and must not
+# be scanned — they contain literals BY DESIGN (the safe-list, the posited
+# constants registry, etc.) and scanning them creates circular self-reference
+# noise. Self-scanning was part of the drift mode that lit up bogus
+# undocumented-literal reports in 2026-05-24 cleanup.
+EXCLUDE_FILES: set[str] = {
+    "audit.py",       # this file — contains ALLOWED_LITERALS and exclude lists
+    "_posited.py",    # posited-constants registry (by design)
+}
+
+
+@dataclass
+class FoundLiteral:
+    file_path: Path
+    lineno: int
+    col_offset: int
+    value: float
+    context_var: Optional[str] = None  # the variable being assigned to, if any
+    context_expr: Optional[str] = None  # the surrounding expression source
+    severity: str = "🔴"  # 🟢 / 🟡 / 🔴
+
+    def __repr__(self) -> str:
+        var_part = f" → {self.context_var}" if self.context_var else ""
+        expr_part = f"  ({self.context_expr})" if self.context_expr else ""
+        return (f"{self.severity} {self.file_path}:{self.lineno} "
+                f"literal={self.value}{var_part}{expr_part}")
+
+
+class ConstantVisitor(ast.NodeVisitor):
+    """Walks AST and collects numeric literals with context."""
+
+    def __init__(self, file_path: Path, source: str):
+        self.file_path = file_path
+        self.source = source
+        self.source_lines = source.splitlines()
+        self.literals: list[FoundLiteral] = []
+        self._context_stack: list[str] = []  # innermost first
+
+    def _line_text(self, lineno: int) -> str:
+        if 0 < lineno <= len(self.source_lines):
+            return self.source_lines[lineno - 1]
+        return ""
+
+    def visit_Assign(self, node: ast.Assign):
+        # Capture the variable name being assigned
+        targets = []
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                targets.append(target.id)
+            elif isinstance(target, ast.Attribute):
+                targets.append(target.attr)
+        # Visit the RHS with the target name in context
+        self._context_stack.append(",".join(targets) if targets else "")
+        self.generic_visit(node)
+        self._context_stack.pop()
+
+    def visit_AnnAssign(self, node: ast.AnnAssign):
+        if isinstance(node.target, ast.Name):
+            target = node.target.id
+        elif isinstance(node.target, ast.Attribute):
+            target = node.target.attr
+        else:
+            target = ""
+        self._context_stack.append(target)
+        self.generic_visit(node)
+        self._context_stack.pop()
+
+    def visit_keyword(self, node: ast.keyword):
+        # Function call keyword argument — `func(arg=0.5)`
+        if node.arg:
+            self._context_stack.append(node.arg)
+            self.generic_visit(node)
+            self._context_stack.pop()
+        else:
+            self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef):
+        """Track parameter defaults so `def f(lr=0.01)` carries `lr` as context."""
+        args = node.args
+        positional = list(getattr(args, "posonlyargs", [])) + list(args.args)
+        n_defaults = len(args.defaults)
+        n_positional = len(positional)
+        for i, default in enumerate(args.defaults):
+            arg_idx = n_positional - n_defaults + i
+            if 0 <= arg_idx < n_positional:
+                arg_name = positional[arg_idx].arg
+                self._context_stack.append(arg_name)
+                self.visit(default)
+                self._context_stack.pop()
+        for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+            if default is None:
+                continue
+            self._context_stack.append(arg.arg)
+            self.visit(default)
+            self._context_stack.pop()
+        # Walk decorators, return annotation, and body separately to avoid
+        # re-visiting the defaults we already handled
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        if node.returns:
+            self.visit(node.returns)
+        for stmt in node.body:
+            self.visit(stmt)
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # same logic for async
+
+    def visit_Constant(self, node: ast.Constant):
+        if not isinstance(node.value, (int, float)) or isinstance(node.value, bool):
+            return
+        value = float(node.value)
+        if value in ALLOWED_LITERALS:
+            return
+        # Negative versions allowed
+        if -value in ALLOWED_LITERALS:
+            return
+        # Outermost context (current assignment target / keyword arg name)
+        context_var = self._context_stack[-1] if self._context_stack else None
+        # If the context variable looks safe (i, j, idx, ...), skip
+        if context_var and context_var.lower() in SAFE_VAR_NAMES:
+            return
+        # If the context variable is a display/IO/formatting concern, skip
+        if context_var and context_var in DISPLAY_VAR_NAMES:
+            return
+        line_text = self._line_text(node.lineno)
+        # If the line contains a derived-pattern, mark as documented
+        severity = "🔴"
+        for pat in DERIVED_PATTERNS:
+            if re.search(pat, line_text):
+                severity = "🟡"
+                break
+        self.literals.append(FoundLiteral(
+            file_path=self.file_path,
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+            value=value,
+            context_var=context_var,
+            context_expr=line_text.strip()[:80],
+            severity=severity,
+        ))
+
+
+def load_catalog(catalog_path: Path) -> set[str]:
+    """Read magic_numbers.md and return the set of constant names documented there."""
+    if not catalog_path.exists():
+        return set()
+    text = catalog_path.read_text()
+    # Grab anything in backticks — magic_numbers.md uses `name` for constant names
+    names = set(re.findall(r"`([A-Za-z_][A-Za-z_0-9]*)`", text))
+    return names
+
+
+def load_catalog_status(catalog_path: Path,
+                          live_names: set[str]) -> dict[str, list[str]]:
+    """Scan catalog rows; return names grouped by status marker.
+
+    Considers a name "live" if it appears in `live_names` (extracted from the
+    actual source). Names NOT in live_names are archaeological and excluded
+    from the status report (they're documented for posterity, not enforced).
+
+    Returns a dict with keys: "derived" (✅), "scale_invariant" (⚖️),
+    "experimentally_set" (🔬), "unresolved" (⚠️), "retired" (🏚️).
+    """
+    if not catalog_path.exists():
+        return {}
+    text = catalog_path.read_text()
+    status_marks = {
+        "derived": "✅",
+        "scale_invariant": "⚖️",
+        "experimentally_set": "🔬",
+        "unresolved": "⚠️",
+        "retired": "🏚️",
+    }
+    by_status: dict[str, list[str]] = {k: [] for k in status_marks}
+    for line in text.splitlines():
+        if "|" not in line:
+            continue
+        # Try to extract the first backticked name in the row
+        names_in_row = re.findall(r"`([A-Za-z_][A-Za-z_0-9]*)`", line)
+        if not names_in_row:
+            continue
+        primary_name = names_in_row[0]
+        if primary_name not in live_names:
+            continue  # archaeological; skip
+        for status_key, mark in status_marks.items():
+            if mark in line:
+                by_status[status_key].append(primary_name)
+                break
+    return by_status
+
+
+def extract_live_names(paths: list[Path],
+                         exclude_dirs: tuple[str, ...] = (
+                             "__pycache__", ".venv", ".venv-local",
+                             ".venv-hyplora", "tests", ".git", "node_modules",
+                         )) -> set[str]:
+    """Walk source paths; return the set of identifier names that appear as
+    AnnAssign targets, function arg names with defaults, or assignment targets.
+
+    Used to determine which catalog entries are "live" (referenced in code).
+    """
+    live: set[str] = set()
+    for root in paths:
+        if root.is_file() and root.suffix == ".py":
+            files = [root] if root.name not in EXCLUDE_FILES else []
+        elif root.is_dir():
+            files = [p for p in root.rglob("*.py")
+                       if not any(part in exclude_dirs for part in p.parts)
+                       and p.name not in EXCLUDE_FILES]
+        else:
+            files = []
+        for path in files:
+            try:
+                source = path.read_text()
+                tree = ast.parse(source)
+            except (OSError, UnicodeDecodeError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    live.add(node.target.id)
+                elif isinstance(node, ast.Assign):
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            live.add(tgt.id)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args = node.args
+                    positional = list(getattr(args, "posonlyargs", [])) + list(args.args)
+                    n_defaults = len(args.defaults)
+                    n_positional = len(positional)
+                    for i in range(n_defaults):
+                        arg_idx = n_positional - n_defaults + i
+                        if 0 <= arg_idx < n_positional:
+                            live.add(positional[arg_idx].arg)
+                    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+                        if default is not None:
+                            live.add(arg.arg)
+    return live
+
+
+def scan_file(path: Path, catalog_names: set[str]) -> list[FoundLiteral]:
+    """Scan one Python file for undocumented constants."""
+    if path.name in EXCLUDE_FILES:
+        return []
+    try:
+        source = path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return []
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError:
+        return []
+    visitor = ConstantVisitor(path, source)
+    visitor.visit(tree)
+    # Cross-reference against catalog names
+    for lit in visitor.literals:
+        if lit.context_var and lit.context_var in catalog_names:
+            # Variable name matches a catalog entry — mark documented
+            lit.severity = "🟡"
+    return visitor.literals
+
+
+def scan_path(root: Path, catalog_names: set[str],
+                  exclude_dirs: tuple[str, ...] = (
+                      "__pycache__", ".venv", ".venv-local", ".venv-hyplora",
+                      "tests", ".git", "node_modules",
+                  )) -> list[FoundLiteral]:
+    """Scan a path (file or directory) recursively."""
+    all_literals: list[FoundLiteral] = []
+    if root.is_file() and root.suffix == ".py":
+        return scan_file(root, catalog_names)
+    if root.is_dir():
+        for path in root.rglob("*.py"):
+            if any(part in exclude_dirs for part in path.parts):
+                continue
+            all_literals.extend(scan_file(path, catalog_names))
+    return all_literals
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description="Find undocumented constants in source.")
+    ap.add_argument("paths", nargs="+", type=Path,
+                    help="Files or directories to scan")
+    ap.add_argument("--catalog", type=Path,
+                    default=Path("notes/magic_numbers.md"),
+                    help="Magic numbers catalog (default: notes/magic_numbers.md)")
+    ap.add_argument("--strict", action="store_true",
+                    help="Exit code 1 if any 🔴 undocumented literal found")
+    ap.add_argument("--strict-status", action="store_true",
+                    help="Exit code 1 if any LIVE catalog entry is ⚠️ Unresolved")
+    ap.add_argument("--show-allowed", action="store_true",
+                    help="Show 🟢 allowed literals too (verbose)")
+    ap.add_argument("--show-documented", action="store_true",
+                    help="Show 🟡 documented literals too")
+    args = ap.parse_args(argv)
+
+    catalog_names = load_catalog(args.catalog)
+    print(f"Catalog: {args.catalog} ({len(catalog_names)} documented names)")
+
+    # Determine which catalog entries are LIVE (appear in source)
+    live_names = extract_live_names(list(args.paths))
+    live_catalog = catalog_names & live_names
+    archaeological = catalog_names - live_names
+    print(f"  live (in source): {len(live_catalog)}, "
+          f"archaeological (catalog-only): {len(archaeological)}")
+
+    # Status counts on LIVE constants
+    by_status = load_catalog_status(args.catalog, live_names)
+    if by_status:
+        print("\n=== Catalog status (LIVE constants only) ===")
+        for status_key, mark in [("derived", "✅"), ("scale_invariant", "⚖️"),
+                                    ("experimentally_set", "🔬"),
+                                    ("unresolved", "⚠️"), ("retired", "🏚️")]:
+            names_list = by_status.get(status_key, [])
+            if names_list:
+                print(f"  {mark} {status_key} ({len(names_list)}): "
+                      f"{', '.join(sorted(names_list))}")
+
+    all_literals: list[FoundLiteral] = []
+    for p in args.paths:
+        all_literals.extend(scan_path(p, catalog_names))
+
+    # Group by severity
+    by_sev: dict[str, list[FoundLiteral]] = {"🔴": [], "🟡": [], "🟢": []}
+    for lit in all_literals:
+        by_sev.setdefault(lit.severity, []).append(lit)
+
+    n_red = len(by_sev["🔴"])
+    n_yellow = len(by_sev["🟡"])
+
+    if by_sev["🔴"]:
+        print(f"\n=== 🔴 Undocumented literals ({n_red}) ===")
+        for lit in by_sev["🔴"]:
+            print(f"  {lit}")
+    if args.show_documented and by_sev["🟡"]:
+        print(f"\n=== 🟡 Documented or derived ({n_yellow}) ===")
+        for lit in by_sev["🟡"]:
+            print(f"  {lit}")
+
+    print(f"\nSummary: {n_red} undocumented, {n_yellow} documented/derived, "
+          f"{len(by_sev['🟢'])} allowed.")
+
+    n_unresolved_live = len(by_status.get("unresolved", []))
+    if n_unresolved_live > 0:
+        print(f"  ⚠️ {n_unresolved_live} LIVE catalog entries still Unresolved")
+
+    if args.strict and n_red > 0:
+        return 1
+    if args.strict_status and n_unresolved_live > 0:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
