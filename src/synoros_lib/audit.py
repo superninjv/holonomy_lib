@@ -100,6 +100,11 @@ DERIVED_PATTERNS = [
     r"math\.(log|sqrt|pi|e)",
     r"torch\.(log|sqrt|pi)",
     r"log\(\s*\w*N\w*\s*\)",
+    # Tensor-rank / shape assertions: `X.ndim [op] N` or `len(X.shape) [op] N`.
+    # Structural shape requirements, not numerical tuning — common in
+    # math-library input validation. Treated as derived (added 2026-05-26).
+    r"\.ndim\s*[!=<>]+",
+    r"len\(\s*\w+\.shape\s*\)\s*[!=<>]+",
 ]
 
 # Files that are themselves the audit/catalog infrastructure and must not
