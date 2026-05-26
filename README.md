@@ -40,7 +40,7 @@ its inputs through a content-addressable provenance DAG.
 | **`info_geometry`** | **`bregman_divergence`**, **`kl_divergence_categorical`**, **`kl_divergence_gaussian`** | Bregman divergence for any convex generator plus closed-form KL for the standard exponential families (Bregman 1967; Banerjee et al. 2005; Amari 2016) |
 | **`optimization`** | **`RiemannianSGD`** | Steepest descent on `FixedRankManifold` / `SPDManifold` via the existing projection + retraction API (Absil-Mahony-Sepulchre 2008, §4.1) |
 | **`simplicial`** | **`DenseSimplicialComplex`**, **`SparseSimplicialComplex`**, **`vietoris_rips_*`** | Simplicial complex data structures + boundary operators + Vietoris-Rips construction; foundation for Hodge + persistent homology (Munkres 1984; Hausmann 1995; Bauer 2021) |
-| **`topology`** | **`hodge_laplacian`**, **`betti_numbers`** | Hodge Laplacians on simplicial complexes + Betti number extraction; closed-form verified on S¹/S²/T² triangulations (Eckmann 1944; Lim 2020; Schaub et al. 2020) |
+| **`topology`** | **`hodge_laplacian`**, **`betti_numbers`**, **`persistence_diagrams`** | Hodge Laplacians + Betti numbers on simplicial complexes (Eckmann 1944; Lim 2020), plus batched persistent homology H₀+H₁+H₂ of Vietoris-Rips filtrations via union-find + Z/2 matrix reduction (Edelsbrunner-Letscher-Zomorodian 2002; Cohen-Steiner-Edelsbrunner-Harer 2007 stability) |
 | `provenance` | `@with_provenance`, `record()`, `ProvenanceRegistry` | Content-addressable Merkle DAG of math primitives; substitution / replay / SAELens emission for mech interp |
 
 ---
@@ -295,22 +295,23 @@ holonomy_lib/
 
 Open frontiers, prioritized by research leverage:
 
-1. **Persistent homology on GPU**: the biggest standing gap across the
-   field; gudhi / ripser are CPU.
-2. **Hodge Laplacians** on simplicial complexes (Ribando-Gros et al.
-   2024).
-3. **Riemannian optimizers** (SGD, Adam, trust-region) on the manifolds
-   module.
-4. **Sign-magnetic Laplacian** for signed-directed graphs (Fiorini
+1. **Sign-magnetic Laplacian** for signed-directed graphs (Fiorini
    2023; He et al. 2023). The plain magnetic Laplacian is in; the
    signed extension treats negative edges with a separate phase.
-5. **Shift-and-invert Lanczos** for smallest-eigenvalue mode (current
+2. **Shift-and-invert Lanczos** for smallest-eigenvalue mode (current
    `lanczos_eigsh` is largest-algebraic only).
-6. **Fisher information metric** and natural-gradient optimizers
+3. **Fisher information metric** and natural-gradient optimizers
    building on `info_geometry`.
-7. **Sparse graph backend**: most spectral primitives are currently
+4. **Riemannian Adam / trust-region** optimizers (SGD is in; adaptive
+   schemes belong in user code per design but a built-in variant
+   could ship as a convenience wrapper).
+5. **Sparse graph backend**: most spectral primitives are currently
    dense `(B, n, n)`. A sparse path would unlock large-graph regimes.
-8. **Class-method provenance** for `FixedRankManifold` /
+6. **GPU-native H₁/H₂ matrix reduction**: PH currently uses a
+   Python-set sparse reduction (sequential per complex; batches across
+   point clouds). A GPU kernel for the reduction would unlock larger
+   single complexes.
+7. **Class-method provenance** for `FixedRankManifold` /
    `SPDManifold` methods (currently only top-level functions are
    decorated).
 

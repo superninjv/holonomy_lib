@@ -15,8 +15,10 @@ Built on `holonomy_lib.simplicial`. Two flavors of output:
 """
 
 from holonomy_lib.topology.hodge import betti_numbers, hodge_laplacian
+from holonomy_lib.topology.persistent_homology import persistence_diagrams
 
 __all__ = [
     "betti_numbers",
     "hodge_laplacian",
+    "persistence_diagrams",
 ]

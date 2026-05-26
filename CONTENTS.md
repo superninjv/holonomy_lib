@@ -54,7 +54,9 @@ from holonomy_lib.simplicial import (
     DenseSimplicialComplex, SparseSimplicialComplex,
     pairwise_distances, vietoris_rips_dense, vietoris_rips_sparse,
 )
-from holonomy_lib.topology import betti_numbers, hodge_laplacian
+from holonomy_lib.topology import (
+    betti_numbers, hodge_laplacian, persistence_diagrams,
+)
 from holonomy_lib import provenance
 ```
 
@@ -339,6 +341,17 @@ Refs: Eckmann (1944), Lim (2020), Schaub et al. (2020).
 `(β_0, …, β_max_dim)` via near-zero eigenvalue counting on each
 `L_k`. Closed-form verification: S¹ gives `(1, 1)`, S² gives
 `(1, 0, 1)`, T² gives `(1, 2, 1)`.
+
+### `persistence_diagrams(points_or_distances, max_dim=2, max_radius=inf) → (diagrams, masks)`
+Persistent homology of the Vietoris-Rips filtration over `(B, n, d)`
+point clouds (or `(B, n, n)` distance matrices). Returns per-dim
+batched padded tensors `diagrams[k]: (B, max_pairs_k, 2)` of
+`(birth, death)` pairs + matching validity masks. H₀ via batched
+union-find on sorted filtration edges; H_{1..max_dim} via Z/2
+left-to-right boundary-matrix reduction (Edelsbrunner-Letscher-
+Zomorodian 2002) with the Bauer-Kerber-Reininghaus clearing
+optimization. Refs: Edelsbrunner-Letscher-Zomorodian (2002);
+Cohen-Steiner-Edelsbrunner-Harer (2007) stability; Bauer (2021).
 
 ---
 
