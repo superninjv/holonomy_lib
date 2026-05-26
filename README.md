@@ -4,7 +4,8 @@
 > audit-clean, with every primitive grounded in a citation. Differential
 > geometry, spectral graph theory, discrete Ricci flow, tensor
 > decompositions, and content-addressable provenance for mechanistic
-> interpretability, all under one roof.
+> interpretability, all under one roof. Developed by independent and
+> Synoros researchers for the *substrate* research.
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
