@@ -64,6 +64,7 @@ from typing import Optional
 
 import torch
 
+from holonomy_lib._graph_utils import drop_self_loops
 from holonomy_lib.provenance import with_provenance
 
 
@@ -132,7 +133,7 @@ RICCI_FLOW_SURGERY_PERIOD_DEFAULT: int = 10
 RICCI_FLOW_SURGERY_THRESHOLD_DEFAULT: float = 3.0
 
 
-@with_provenance("holonomy_lib.discrete_geometry.ollivier_ricci_curvature", op_version="0.3")
+@with_provenance("holonomy_lib.discrete_geometry.ollivier_ricci_curvature", op_version="0.4")
 def ollivier_ricci_curvature(
     A: torch.Tensor,
     alpha: float = 0.0,
@@ -230,6 +231,10 @@ def ollivier_ricci_curvature(
             "meaningful results.",
             stacklevel=2,
         )
+    # Library convention (`CONVENTIONS.md`): graph primitives treat
+    # `A` as a simple graph. Self-loops would change the row sums in
+    # `_lazy_walk_distributions` and propagate through Sinkhorn.
+    A = drop_self_loops(A)
 
     *batch, n, _ = A.shape
 
@@ -264,7 +269,7 @@ def ollivier_ricci_curvature(
 
 
 @with_provenance(
-    "holonomy_lib.discrete_geometry.discrete_ricci_flow", op_version="0.3",
+    "holonomy_lib.discrete_geometry.discrete_ricci_flow", op_version="0.4",
 )
 def discrete_ricci_flow(
     A: torch.Tensor,
@@ -346,7 +351,7 @@ def discrete_ricci_flow(
 
 
 @with_provenance(
-    "holonomy_lib.discrete_geometry.ricci_flow_with_surgery", op_version="0.3",
+    "holonomy_lib.discrete_geometry.ricci_flow_with_surgery", op_version="0.4",
 )
 def ricci_flow_with_surgery(
     A: torch.Tensor,

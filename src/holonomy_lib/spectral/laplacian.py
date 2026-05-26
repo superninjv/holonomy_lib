@@ -43,11 +43,17 @@ from __future__ import annotations
 
 import torch
 
+from holonomy_lib._graph_utils import drop_self_loops
 from holonomy_lib.provenance import with_provenance
 
 
 def degree(A: torch.Tensor, signed: bool = False) -> torch.Tensor:
     """Degree vector of a (batched) weighted adjacency matrix.
+
+    Per the library's simple-graph convention (`CONVENTIONS.md`), the
+    diagonal of `A` is dropped before summing: self-loops do not
+    contribute to a node's degree. Idempotent on inputs that already
+    have a zero diagonal.
 
     Args:
       A: (B, n, n) weighted adjacency. Symmetry is assumed.
@@ -64,10 +70,11 @@ def degree(A: torch.Tensor, signed: bool = False) -> torch.Tensor:
       Kunegis et al. (2010), eq. 1 — signed degree.
     """
     _check_square_with_batch(A)
+    A = drop_self_loops(A)
     return A.abs().sum(dim=-1) if signed else A.sum(dim=-1)
 
 
-@with_provenance("holonomy_lib.spectral.laplacian.combinatorial", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.laplacian.combinatorial", op_version="0.2")
 def combinatorial(A: torch.Tensor) -> torch.Tensor:
     """Combinatorial Laplacian L = D − A.
 
@@ -84,11 +91,12 @@ def combinatorial(A: torch.Tensor) -> torch.Tensor:
       von Luxburg (2007), §3 — unnormalized Laplacian.
     """
     _check_square_with_batch(A)
+    A = drop_self_loops(A)
     d = degree(A, signed=False)              # (B, n)
     return torch.diag_embed(d) - A
 
 
-@with_provenance("holonomy_lib.spectral.laplacian.symmetric_normalized", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.laplacian.symmetric_normalized", op_version="0.2")
 def symmetric_normalized(A: torch.Tensor) -> torch.Tensor:
     """Symmetric normalized Laplacian L_sym = I − D^{−1/2} A D^{−1/2}.
 
@@ -106,6 +114,7 @@ def symmetric_normalized(A: torch.Tensor) -> torch.Tensor:
       Cheng-Wu (2024) — pseudoinverse handling of isolated nodes.
     """
     _check_square_with_batch(A)
+    A = drop_self_loops(A)
     d = degree(A, signed=False)               # (B, n)
     d_inv_sqrt = _safe_inv_sqrt(d)            # (B, n) — zeros where d=0
     n = A.shape[-1]
@@ -115,7 +124,7 @@ def symmetric_normalized(A: torch.Tensor) -> torch.Tensor:
     return eye - A_norm
 
 
-@with_provenance("holonomy_lib.spectral.laplacian.random_walk", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.laplacian.random_walk", op_version="0.2")
 def random_walk(A: torch.Tensor) -> torch.Tensor:
     """Random-walk Laplacian L_rw = I − D^{−1} A.
 
@@ -133,6 +142,7 @@ def random_walk(A: torch.Tensor) -> torch.Tensor:
       von Luxburg (2007), §3 — L_rw.
     """
     _check_square_with_batch(A)
+    A = drop_self_loops(A)
     d = degree(A, signed=False)               # (B, n)
     d_inv = _safe_inv(d)                       # (B, n) — zeros where d=0
     n = A.shape[-1]
@@ -141,7 +151,7 @@ def random_walk(A: torch.Tensor) -> torch.Tensor:
     return eye - A_rw
 
 
-@with_provenance("holonomy_lib.spectral.laplacian.signed", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.laplacian.signed", op_version="0.2")
 def signed(A: torch.Tensor) -> torch.Tensor:
     """Signed Laplacian L^σ = D^{|σ|} − A,  D^{|σ|}_{ii} = Σ_j |A_{ij}|.
 
@@ -162,6 +172,7 @@ def signed(A: torch.Tensor) -> torch.Tensor:
         generalize this to a one-parameter family.
     """
     _check_square_with_batch(A)
+    A = drop_self_loops(A)
     d_abs = degree(A, signed=True)             # (B, n) — ∑_j |A_ij|
     return torch.diag_embed(d_abs) - A
 

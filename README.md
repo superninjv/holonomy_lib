@@ -336,8 +336,11 @@ function lists its references in its docstring).
 
 ## Contributing
 
-Contributions welcome. Hard constraints (binding for any code in this
-repo):
+See [`CONVENTIONS.md`](CONVENTIONS.md) for the full coding standards
+(batched-first API shape, self-loop policy, numerical conventions,
+performance patterns, magic-numbers catalog, citation requirements,
+provenance, testing). Contributions welcome. Hard constraints
+(binding for any code in this repo):
 
 - **Citations are non-optional.** Every public function has a
   `References:` section pointing to the paper for its math.

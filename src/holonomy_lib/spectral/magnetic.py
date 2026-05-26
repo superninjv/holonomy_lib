@@ -51,6 +51,7 @@ import math
 
 import torch
 
+from holonomy_lib._graph_utils import drop_self_loops
 from holonomy_lib.provenance import with_provenance
 
 
@@ -63,7 +64,7 @@ MAGNETIC_CHARGE_DEFAULT: float = 0.25
 
 
 @with_provenance(
-    "holonomy_lib.spectral.magnetic.combinatorial", op_version="0.1",
+    "holonomy_lib.spectral.magnetic.combinatorial", op_version="0.2",
 )
 def combinatorial(
     A: torch.Tensor, q: float = MAGNETIC_CHARGE_DEFAULT,
@@ -86,6 +87,7 @@ def combinatorial(
       Lieb-Loss (1993).
     """
     _validate_real_adjacency(A, q)
+    A = drop_self_loops(A)
     A_s = 0.5 * (A + A.mT)                       # symmetrized magnitude
     D_s = A_s.sum(dim=-1)                         # (B, n) symmetric degree
 
@@ -97,7 +99,7 @@ def combinatorial(
 
 
 @with_provenance(
-    "holonomy_lib.spectral.magnetic.symmetric_normalized", op_version="0.1",
+    "holonomy_lib.spectral.magnetic.symmetric_normalized", op_version="0.2",
 )
 def symmetric_normalized(
     A: torch.Tensor, q: float = MAGNETIC_CHARGE_DEFAULT,
@@ -122,6 +124,7 @@ def symmetric_normalized(
       Furutani et al. (2020), Definition 4 and Prop. 1.
     """
     _validate_real_adjacency(A, q)
+    A = drop_self_loops(A)
     A_s = 0.5 * (A + A.mT)
     D_s = A_s.sum(dim=-1)                         # (B, n)
 

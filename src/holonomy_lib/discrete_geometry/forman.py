@@ -62,6 +62,7 @@ import warnings
 
 import torch
 
+from holonomy_lib._graph_utils import drop_self_loops
 from holonomy_lib.provenance import with_provenance
 
 
@@ -119,7 +120,7 @@ def forman_ricci_simple(A: torch.Tensor) -> torch.Tensor:
       Forman (2003), §"Combinatorial Ricci curvature for graphs".
     """
     _validate_adjacency(A)
-    A = _drop_self_loops(A)
+    A = drop_self_loops(A)
     *batch, n, _ = A.shape
 
     # Mask of which positions are edges. We avoid `A > 0` host syncs by
@@ -207,7 +208,7 @@ def forman_ricci_augmented(A: torch.Tensor) -> torch.Tensor:
       Samal et al. (2018), §"Augmented Forman curvature".
     """
     _validate_adjacency(A)
-    A = _drop_self_loops(A)
+    A = drop_self_loops(A)
 
     # Common-neighbor count, masked to actual edges.
     # For unweighted graphs (A binary), (A @ A)[u, v] counts the number
@@ -241,17 +242,6 @@ def forman_ricci_augmented(A: torch.Tensor) -> torch.Tensor:
 # ============================================================
 # Internal helpers
 # ============================================================
-
-
-def _drop_self_loops(A: torch.Tensor) -> torch.Tensor:
-    """Zero out the diagonal — Forman-Ricci is defined on simple graphs
-    (no self-loops). Treating `A[i, i]` as a degree contributor is a
-    common silent-bug source; zero it upfront so both `simple` and
-    `augmented` give the same curvature regardless of whether the
-    caller included self-loops in `A`."""
-    n = A.shape[-1]
-    eye = torch.eye(n, device=A.device, dtype=A.dtype).expand_as(A)
-    return torch.where(eye > 0, torch.zeros_like(A), A)
 
 
 def _validate_adjacency(A: torch.Tensor) -> None:
