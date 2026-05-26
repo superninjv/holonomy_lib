@@ -46,6 +46,8 @@ References:
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 
 from holonomy_lib.provenance import with_provenance
@@ -99,6 +101,25 @@ def diffusion_map(
     eigvals, eigvecs = laplacian_eigenmaps(
         A, k=k + 1, laplacian_type="random_walk",
     )
+    # A connected graph has exactly one zero L_rw eigenvalue (the
+    # stationary distribution). A disconnected graph with `c` components
+    # has `c` zero eigenvalues; we still drop only one, leaving `c − 1`
+    # degenerate null modes embedded in the output as constant-on-
+    # component vectors with `μ_j^t ≈ 1`. These coordinates are NOT
+    # geometrically meaningful — they're stationary modes per component.
+    # Warn so the caller can mask by component membership.
+    # 1e-9 is the library's `numerical_floor_convention` (ALLOWED).
+    n_near_zero = (eigvals.abs() < 1e-9).sum(dim=-1).max().item()
+    if n_near_zero > 1:
+        warnings.warn(
+            f"diffusion_map: input graph has at least {n_near_zero} near-zero "
+            f"L_rw eigenvalues, suggesting disconnected components. The "
+            f"embedding will contain {n_near_zero - 1} additional null "
+            f"modes that are not geometrically meaningful — mask by "
+            f"component membership before interpreting cross-component "
+            f"distances.",
+            stacklevel=2,
+        )
     # Drop index 0 (the smallest eigenvalue, ≈ 0; eigenvector is the
     # stationary mode).
     eigvals_non_null = eigvals[..., 1:]              # (B, k)

@@ -14,6 +14,8 @@ from holonomy_lib.discrete_geometry import (
     ollivier_ricci_curvature,
     discrete_ricci_flow,
     ricci_flow_with_surgery,
+    forman_ricci_simple,
+    forman_ricci_augmented,
 )
 from tests.benchmarks.harness import Bench
 
@@ -87,3 +89,34 @@ bench.case("discrete_ricci_flow", _setup_flow, _flow_sizes,
             notes="Edge-weight evolution: w *= (1 - dt*κ) per step.")
 bench.case("ricci_flow_with_surgery", _setup_surgery, _surgery_sizes,
             notes="Flow + periodic threshold-based edge removal.")
+
+
+# ----------------- Forman-Ricci (combinatorial) -----------------
+
+def _setup_forman_simple(size, device, dtype):
+    A = _make_adj(size, device, dtype)
+    def fn():
+        return forman_ricci_simple(A)
+    return fn
+
+
+def _setup_forman_augmented(size, device, dtype):
+    A = _make_adj(size, device, dtype)
+    def fn():
+        return forman_ricci_augmented(A)
+    return fn
+
+
+_forman_sizes = [
+    {"B": 1,  "n": 16},
+    {"B": 1,  "n": 64},
+    {"B": 1,  "n": 256},
+    {"B": 1,  "n": 1024},
+    {"B": 16, "n": 64},
+]
+
+bench.case("forman_ricci_simple", _setup_forman_simple, _forman_sizes,
+            notes="Combinatorial Forman-Ricci; O(B*n^2). No OT solve.")
+bench.case("forman_ricci_augmented", _setup_forman_augmented, _forman_sizes,
+            notes="Augmented form adds the +3*#triangles term; "
+                  "triangle-count matmul makes this O(B*n^3).")

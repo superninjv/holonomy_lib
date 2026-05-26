@@ -130,6 +130,24 @@ class TestKLCategorical:
         # Closed form: 2 · 0.5 log(0.5/0.25) = log 2.
         assert d[0].item() == pytest.approx(math.log(2.0), abs=1e-9)
 
+    def test_zero_in_q_with_support_in_p_returns_inf(self):
+        """If `q` has a zero where `p` has positive mass, KL diverges
+        (supp(p) ⊄ supp(q); Gibbs's inequality bound is +inf). Regression
+        for scrutiny-pass-3 bug: a previous symmetric clamp on `q`
+        returned ~20 (= log(1e9)) instead of +inf."""
+        p = torch.tensor([[1.0, 0.0]], dtype=torch.float64)
+        q = torch.tensor([[0.0, 1.0]], dtype=torch.float64)
+        d = kl_divergence_categorical(p, q)
+        assert torch.isinf(d[0]).item() and d[0].item() > 0
+
+    def test_zero_in_q_outside_support_of_p_is_finite(self):
+        """If `q_i = 0` where `p_i = 0`, the 0·log convention applies
+        and KL stays finite."""
+        p = torch.tensor([[0.5, 0.5, 0.0]], dtype=torch.float64)
+        q = torch.tensor([[0.5, 0.5, 0.0]], dtype=torch.float64)
+        d = kl_divergence_categorical(p, q)
+        assert d[0].item() == pytest.approx(0.0, abs=1e-9)
+
 
 # --------------------------------------------------------------------
 # Gaussian KL
@@ -204,3 +222,13 @@ class TestKLGaussian:
         bad_Sigma = torch.eye(5).unsqueeze(0)
         with pytest.raises(ValueError, match="Sigma_p"):
             kl_divergence_gaussian(mu, bad_Sigma, mu, torch.eye(4).unsqueeze(0))
+
+    def test_mu_q_shape_mismatch_raises(self):
+        """Regression: previously `mu_q` was unvalidated against `d`,
+        producing opaque cholesky_solve errors. Now it raises a clear
+        ValueError up front."""
+        mu_p = torch.zeros(1, 4)
+        mu_q_bad = torch.zeros(1, 5)
+        Sigma = torch.eye(4).unsqueeze(0)
+        with pytest.raises(ValueError, match="mu_q"):
+            kl_divergence_gaussian(mu_p, Sigma, mu_q_bad, Sigma)

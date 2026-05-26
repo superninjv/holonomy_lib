@@ -280,3 +280,24 @@ class TestEdgeCases:
         A = torch.zeros(0, 4, 4, dtype=torch.float64)
         kappa = forman_ricci_simple(A)
         assert kappa.shape == (0, 4, 4)
+
+    def test_self_loop_does_not_inflate_augmented(self):
+        """Regression: previously, a self-loop at node `i` inflated the
+        triangle count for every edge incident to `i` (the matmul
+        included spurious walks `j → i → i → k`). The augmented
+        Forman value on an edge must be invariant to self-loops at
+        either endpoint."""
+        A = torch.zeros(1, 4, 4, dtype=torch.float64)
+        for i in range(3):
+            for j in range(3):
+                if i != j:
+                    A[0, i, j] = 1.0
+        kappa_no_loop = forman_ricci_augmented(A)[0, 0, 1].item()
+
+        A_with = A.clone()
+        A_with[0, 0, 0] = 1.0  # self-loop at node 0
+        kappa_with_loop = forman_ricci_augmented(A_with)[0, 0, 1].item()
+        assert kappa_no_loop == pytest.approx(kappa_with_loop, abs=1e-12), (
+            f"self-loop changed augmented Forman on edge (0,1): "
+            f"{kappa_no_loop} (no loop) vs {kappa_with_loop} (with loop)"
+        )

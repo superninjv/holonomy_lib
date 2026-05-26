@@ -56,6 +56,29 @@ class TestValidation:
         with pytest.raises(ValueError, match="must be"):
             diffusion_map(torch.zeros(1, 4, 5), k=2)
 
+    def test_warns_on_disconnected_graph(self):
+        """Regression: previously, disconnected graphs (multiple zero
+        L_rw eigenvalues) silently produced corrupted embeddings.
+        Now a UserWarning fires so the caller can mask by component."""
+        import warnings
+        # Two disjoint triangles → 2 zero L_rw eigenvalues.
+        n = 6
+        A = torch.zeros(1, n, n, dtype=torch.float64)
+        for i in range(3):
+            for j in range(3):
+                if i != j:
+                    A[0, i, j] = 1.0
+        for i in range(3, 6):
+            for j in range(3, 6):
+                if i != j:
+                    A[0, i, j] = 1.0
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            diffusion_map(A, k=2, t=1.0)
+        assert any(
+            "disconnected" in str(item.message).lower() for item in w
+        ), f"expected disconnected warning; got {[str(x.message) for x in w]}"
+
 
 # --------------------------------------------------------------------
 # Shape contract

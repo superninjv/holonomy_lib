@@ -50,6 +50,13 @@ class TestValidation:
         with pytest.raises(ValueError, match="must be"):
             heat_kernel_chebyshev(torch.zeros(1, 4, 5), t=0.1)
 
+    def test_rejects_signal_with_wrong_node_dim(self):
+        """A signal whose node count doesn't match L's must raise."""
+        L = _random_normalized_laplacian(6)
+        bad_signal = torch.zeros(1, 5, 2, dtype=torch.float64)  # n=5 ≠ 6
+        with pytest.raises(ValueError, match="match L's"):
+            heat_kernel_chebyshev(L, t=0.1, signal=bad_signal)
+
 
 # --------------------------------------------------------------------
 # Identity at t = 0

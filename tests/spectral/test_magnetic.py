@@ -49,6 +49,16 @@ class TestValidation:
         with pytest.raises(ValueError, match="q"):
             magnetic.symmetric_normalized(A, q=1.5)
 
+    def test_rejects_complex_input(self):
+        """Regression: previously, a complex `A` would crash deep inside
+        `torch.complex(cos, sin)` because cos/sin of complex inputs are
+        complex. Now we reject up front with a clear ValueError."""
+        A = torch.zeros(1, 3, 3, dtype=torch.complex128)
+        with pytest.raises(ValueError, match="real"):
+            magnetic.combinatorial(A, q=0.25)
+        with pytest.raises(ValueError, match="real"):
+            magnetic.symmetric_normalized(A, q=0.25)
+
 
 # --------------------------------------------------------------------
 # q = 0 reduces to symmetric Laplacian of A_s

@@ -68,3 +68,58 @@ bench.case(
     "truncated_svd_randomized", _setup_truncated_svd_randomized, _svd_sizes,
     notes="Halko-Martinsson-Tropp randomized SVD with oversample=5, n_iter=2.",
 )
+
+
+# ----------------- Lanczos top-k -----------------
+
+from holonomy_lib.algebra import lanczos_eigsh
+
+
+def _setup_lanczos(size, device, dtype):
+    """Symmetric A for Lanczos benchmarking."""
+    g = torch.Generator(device="cpu"); g.manual_seed(0)
+    A = torch.randn(size["B"], size["n"], size["n"], generator=g, dtype=dtype)
+    A = 0.5 * (A + A.mT)
+    A = A.to(device)
+    k = size["k"]
+    n_iter = size.get("n_iter", None)
+    gen = torch.Generator(device="cpu"); gen.manual_seed(1)
+    def fn():
+        return lanczos_eigsh(A, k=k, n_iter=n_iter, generator=gen)
+    return fn
+
+
+def _setup_dense_eigh(size, device, dtype):
+    """Reference: full eigendecomposition. Useful for comparison."""
+    g = torch.Generator(device="cpu"); g.manual_seed(0)
+    A = torch.randn(size["B"], size["n"], size["n"], generator=g, dtype=dtype)
+    A = 0.5 * (A + A.mT)
+    A = A.to(device)
+    def fn():
+        return torch.linalg.eigh(A)
+    return fn
+
+
+_lanczos_sizes = [
+    # Small n, top-1 — Lanczos overhead vs eigh.
+    {"B": 1, "n": 64,   "k": 1, "n_iter": 30},
+    # Medium n, k=8 — typical eigenmap-style query.
+    {"B": 1, "n": 256,  "k": 8, "n_iter": 40},
+    # Large n, k=16 — where Lanczos should win.
+    {"B": 1, "n": 1024, "k": 16, "n_iter": 60},
+    # Batched
+    {"B": 8, "n": 256,  "k": 8, "n_iter": 40},
+]
+_dense_eigh_sizes = [
+    {"B": 1, "n": 64},
+    {"B": 1, "n": 256},
+    {"B": 1, "n": 1024},
+    {"B": 8, "n": 256},
+]
+
+bench.case("lanczos_eigsh", _setup_lanczos, _lanczos_sizes,
+            notes="Symmetric Lanczos with full reorthogonalization; "
+                  "winning regime is k << n with modest n_iter.")
+bench.case("dense_eigh_reference", _setup_dense_eigh, _dense_eigh_sizes,
+            notes="torch.linalg.eigh on the SAME symmetric inputs; "
+                  "the cost Lanczos should beat at large n.")

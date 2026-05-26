@@ -85,13 +85,7 @@ def combinatorial(
       Furutani et al. (2020), eq. 8.
       Lieb-Loss (1993).
     """
-    if A.ndim < 2 or A.shape[-1] != A.shape[-2]:
-        raise ValueError(
-            f"A must be (..., n, n); got A.shape={tuple(A.shape)}"
-        )
-    if not (0.0 <= q < 1.0):
-        raise ValueError(f"magnetic charge q must be in [0, 1), got {q}")
-
+    _validate_real_adjacency(A, q)
     A_s = 0.5 * (A + A.mT)                       # symmetrized magnitude
     D_s = A_s.sum(dim=-1)                         # (B, n) symmetric degree
 
@@ -127,13 +121,7 @@ def symmetric_normalized(
     References:
       Furutani et al. (2020), Definition 4 and Prop. 1.
     """
-    if A.ndim < 2 or A.shape[-1] != A.shape[-2]:
-        raise ValueError(
-            f"A must be (..., n, n); got A.shape={tuple(A.shape)}"
-        )
-    if not (0.0 <= q < 1.0):
-        raise ValueError(f"magnetic charge q must be in [0, 1), got {q}")
-
+    _validate_real_adjacency(A, q)
     A_s = 0.5 * (A + A.mT)
     D_s = A_s.sum(dim=-1)                         # (B, n)
 
@@ -166,6 +154,30 @@ def symmetric_normalized(
 # ============================================================
 # Internal helpers
 # ============================================================
+
+
+def _validate_real_adjacency(A: torch.Tensor, q: float) -> None:
+    """Shared input validation for the magnetic Laplacian primitives.
+
+    Rejects complex-valued `A` outright: the phase factor
+    `H = exp(i · 2π · q · (A − A^T))` is only defined for real
+    antisymmetric arguments. Passing a complex `A` would let
+    `torch.cos`/`torch.sin` produce complex outputs and
+    `torch.complex(cos, sin)` would raise an opaque "expected real
+    tensors" error deep inside the helper.
+    """
+    if A.ndim < 2 or A.shape[-1] != A.shape[-2]:
+        raise ValueError(
+            f"A must be (..., n, n); got A.shape={tuple(A.shape)}"
+        )
+    if not A.is_floating_point():
+        raise ValueError(
+            f"A must be a real floating-point tensor; got dtype={A.dtype}. "
+            f"The magnetic Laplacian's phase factor is defined for real "
+            f"adjacencies only."
+        )
+    if not (0.0 <= q < 1.0):
+        raise ValueError(f"magnetic charge q must be in [0, 1), got {q}")
 
 
 def _magnetic_phase_times_adj(

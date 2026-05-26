@@ -127,9 +127,12 @@ def heat_kernel_chebyshev(
             f"L must be (..., n, n); got L.shape={tuple(L.shape)}"
         )
     if signal is not None:
+        # `signal` is (..., n, k_signal); the check compares
+        # (..., n) against L's (..., n) — this covers both the leading
+        # batch dims and the node count in a single equality test.
         if signal.shape[:-1] != L.shape[:-1]:
             raise ValueError(
-                f"signal batch/leading dims {tuple(signal.shape[:-1])} must "
+                f"signal's batch + node dims {tuple(signal.shape[:-1])} must "
                 f"match L's {tuple(L.shape[:-1])}"
             )
 
@@ -141,14 +144,17 @@ def heat_kernel_chebyshev(
 
     # Chebyshev coefficients: c_k(τ) = (2 − δ_{k,0}) · (−1)^k · ive(k, τ).
     # ive(k, τ) = exp(−τ) · I_k(τ) is numerically stable for any τ.
-    # We compute the coeffs in float64 on CPU then cast to L's dtype.
+    # We compute the coeffs in float64 on CPU then move to L's device.
+    # `torch.from_numpy().to(device=...)` is robust across CPU/CUDA/ROCm;
+    # `torch.as_tensor(numpy, device='cuda')` historically raises on
+    # some backends because numpy is CPU-bound.
     coeffs_np = scipy.special.ive(np.arange(K + 1), tau)
     coeffs_np = coeffs_np * np.where(
         np.arange(K + 1) == 0, 1.0, 2.0
     ) * np.where(np.arange(K + 1) % 2 == 0, 1.0, -1.0)
-    coeffs = torch.as_tensor(
-        coeffs_np, dtype=L.dtype, device=L.device,
-    )
+    coeffs = torch.from_numpy(coeffs_np.astype(
+        np.float64 if L.dtype == torch.float64 else np.float32
+    )).to(device=L.device, dtype=L.dtype)
 
     if signal is not None:
         return _chebyshev_apply_to_signal(L_scaled, signal, coeffs)

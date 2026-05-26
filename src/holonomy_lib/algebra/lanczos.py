@@ -136,9 +136,13 @@ def lanczos_eigsh(
     v0 = torch.randn(*batch, n, generator=generator, device=device, dtype=dtype)
     v0 = v0 / torch.linalg.norm(v0, dim=-1, keepdim=True)
 
-    # Lanczos basis: store columns of V as a list-of-tensors for clarity.
-    # Each entry is (B, n). After the loop we stack to (B, n, n_iter).
-    V_cols: list[torch.Tensor] = [v0]
+    # Pre-allocate the Lanczos basis tensor and accumulators. Writing
+    # in-place to `V[..., j]` avoids the O(m² · n) of re-stacking
+    # `V_cols` every iteration. The (n_iter)-th column is the boundary
+    # vector v_{n_iter}; it's computed inside the loop for the
+    # 3-term recurrence but not used in the projected problem.
+    V = torch.empty(*batch, n, n_iter + 1, device=device, dtype=dtype)
+    V[..., 0] = v0
     alphas: list[torch.Tensor] = []                     # each (B,)
     betas: list[torch.Tensor] = []                      # each (B,)
 
@@ -147,7 +151,7 @@ def lanczos_eigsh(
     beta_prev = torch.zeros(*batch, device=device, dtype=dtype)
 
     for j in range(n_iter):
-        v_curr = V_cols[j]
+        v_curr = V[..., j]
         # Matmul: A · v_curr.
         w = torch.matmul(A, v_curr.unsqueeze(dim=-1)).squeeze(dim=-1)
         alpha_j = (w * v_curr).sum(dim=-1)
@@ -160,14 +164,13 @@ def lanczos_eigsh(
             - beta_prev.unsqueeze(dim=-1) * v_prev
         )
 
-        # Full reorthogonalization against all V[:, 0..j].
-        # Stack V_cols into a (B, n, j+1) matrix and project w onto its
-        # column space, then subtract. One matmul + one matmul.
-        V_stack = torch.stack(V_cols, dim=-1)            # (B, n, j+1)
+        # Full reorthogonalization against all V[:, :j+1]. Slicing
+        # the pre-allocated tensor is O(1) — no copy.
+        V_used = V[..., :j + 1]                          # (B, n, j+1)
         coeffs = torch.matmul(
-            V_stack.mT, w.unsqueeze(dim=-1),
+            V_used.mT, w.unsqueeze(dim=-1),
         ).squeeze(dim=-1)                                 # (B, j+1)
-        w = w - torch.matmul(V_stack, coeffs.unsqueeze(dim=-1)).squeeze(dim=-1)
+        w = w - torch.matmul(V_used, coeffs.unsqueeze(dim=-1)).squeeze(dim=-1)
 
         beta_j = torch.linalg.norm(w, dim=-1)             # (B,)
         # Avoid division by zero on Lanczos breakdown. We clamp to the
@@ -178,16 +181,16 @@ def lanczos_eigsh(
         # vector and continue — left as future work.)
         floor = torch.finfo(dtype).tiny
         safe_beta = beta_j.clamp(min=floor)
-        v_next = w / safe_beta.unsqueeze(dim=-1)
+        V[..., j + 1] = w / safe_beta.unsqueeze(dim=-1)
 
         betas.append(beta_j)
-        V_cols.append(v_next)
         v_prev = v_curr
         beta_prev = beta_j
 
-    # Stack final basis: (B, n, n_iter). We drop the (n_iter+1)-th
-    # basis vector — it's not needed for the projected problem.
-    V = torch.stack(V_cols[:n_iter], dim=-1)              # (B, n, n_iter)
+    # The Krylov basis we project onto is the first `n_iter` columns
+    # of V; the (n_iter)-th column is the boundary vector for the
+    # 3-term recurrence and is not part of the projected problem.
+    V_basis = V[..., :n_iter]                             # (B, n, n_iter)
 
     # Build tridiagonal T = diag(alpha) + offdiag(beta).
     # alphas: list of (B,) of length n_iter
@@ -199,7 +202,7 @@ def lanczos_eigsh(
     ritz_vals, ritz_vecs = torch.linalg.eigh(T)            # ascending
 
     # Approximate eigenvectors of A.
-    approx_eigvecs = torch.matmul(V, ritz_vecs)            # (B, n, n_iter)
+    approx_eigvecs = torch.matmul(V_basis, ritz_vecs)      # (B, n, n_iter)
 
     # Take top-k by VALUE (descending). eigh returns ascending; flip.
     top_vals = ritz_vals.flip(dims=(-1,))[..., :k]
@@ -227,10 +230,14 @@ def _build_tridiagonal(
       T: (B, n, n) tridiagonal.
     """
     n = len(alphas)
-    assert len(betas) == n - 1, (
-        f"need {n - 1} off-diagonal entries for {n}x{n} tridiagonal, "
-        f"got {len(betas)}"
-    )
+    # Explicit ValueError (rather than assert) so this guard survives
+    # `python -O`: an internal indexing mismatch would silently
+    # produce a wrong-sized T and corrupt the Ritz pairs.
+    if len(betas) != n - 1:
+        raise ValueError(
+            f"need {n - 1} off-diagonal entries for {n}x{n} tridiagonal, "
+            f"got {len(betas)}"
+        )
     diag = torch.stack(alphas, dim=-1)                    # (B, n)
     T = torch.diag_embed(diag)
     if n > 1:

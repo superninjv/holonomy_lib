@@ -16,6 +16,11 @@ embedded in dense sub-communities get positive curvature. For large
 networks where Ollivier is infeasible, Forman-Ricci is the standard
 substitute (Sreejith et al. 2016).
 
+Cost note: the implementations here are O(B · n²) for the simple
+form and O(B · n³) for the augmented form (the triangle-count
+matmul). A future sparse path would be O(B · |E| · max_deg²) for
+the augmented form; the dense path is fine up to n ~ 10⁴.
+
 Two forms are exposed:
 
   forman_ricci_simple(A)
@@ -114,6 +119,7 @@ def forman_ricci_simple(A: torch.Tensor) -> torch.Tensor:
       Forman (2003), §"Combinatorial Ricci curvature for graphs".
     """
     _validate_adjacency(A)
+    A = _drop_self_loops(A)
     *batch, n, _ = A.shape
 
     # Mask of which positions are edges. We avoid `A > 0` host syncs by
@@ -201,6 +207,7 @@ def forman_ricci_augmented(A: torch.Tensor) -> torch.Tensor:
       Samal et al. (2018), §"Augmented Forman curvature".
     """
     _validate_adjacency(A)
+    A = _drop_self_loops(A)
 
     # Common-neighbor count, masked to actual edges.
     # For unweighted graphs (A binary), (A @ A)[u, v] counts the number
@@ -210,15 +217,20 @@ def forman_ricci_augmented(A: torch.Tensor) -> torch.Tensor:
     # the augmented form's 2-face contribution is combinatorial in
     # nature. (A weighted 2-face theory exists but is not implemented.)
     edge_mask = (A != 0).to(A.dtype)
-    triangle_count = torch.matmul(edge_mask, edge_mask)
-    # Only count triangles on actual edges; mask out non-edges.
-    triangle_count = triangle_count * edge_mask
-    # Also zero the diagonal so self-loops don't contribute.
+    # IMPORTANT: zero the diagonal of edge_mask BEFORE the matmul.
+    # Otherwise a self-loop at node i contributes spurious length-2
+    # walks `j → i → i → k` to the triangle count for every edge
+    # incident to i, double-counting the augmented term.
     *batch, n, _ = A.shape
     eye = torch.eye(n, device=A.device, dtype=A.dtype).expand_as(A)
-    triangle_count = torch.where(
-        eye > 0, torch.zeros_like(triangle_count), triangle_count,
+    edge_mask_no_diag = torch.where(
+        eye > 0, torch.zeros_like(edge_mask), edge_mask,
     )
+    triangle_count = torch.matmul(edge_mask_no_diag, edge_mask_no_diag)
+    # Only count triangles on actual edges; mask out non-edges. We use
+    # `edge_mask_no_diag` here too — a self-loop "edge" shouldn't get
+    # an augmented Forman contribution.
+    triangle_count = triangle_count * edge_mask_no_diag
 
     return (
         forman_ricci_simple(A)
@@ -229,6 +241,17 @@ def forman_ricci_augmented(A: torch.Tensor) -> torch.Tensor:
 # ============================================================
 # Internal helpers
 # ============================================================
+
+
+def _drop_self_loops(A: torch.Tensor) -> torch.Tensor:
+    """Zero out the diagonal — Forman-Ricci is defined on simple graphs
+    (no self-loops). Treating `A[i, i]` as a degree contributor is a
+    common silent-bug source; zero it upfront so both `simple` and
+    `augmented` give the same curvature regardless of whether the
+    caller included self-loops in `A`."""
+    n = A.shape[-1]
+    eye = torch.eye(n, device=A.device, dtype=A.dtype).expand_as(A)
+    return torch.where(eye > 0, torch.zeros_like(A), A)
 
 
 def _validate_adjacency(A: torch.Tensor) -> None:

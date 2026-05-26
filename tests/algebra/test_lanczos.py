@@ -177,3 +177,29 @@ class TestShapes:
         A = _random_symmetric(15, batch=batch, seed=21)
         _, vecs = lanczos_eigsh(A, k=3, generator=_seeded(0))
         assert vecs.shape == (batch, 15, 3)
+
+
+class TestEdgeCaseShapes:
+    def test_batch_zero(self):
+        """B=0 must work — project convention is `B ∈ {0, 1, >1}`."""
+        A = torch.zeros(0, 8, 8, dtype=torch.float64)
+        vals, vecs = lanczos_eigsh(A, k=2, n_iter=4, generator=_seeded(0))
+        assert vals.shape == (0, 2)
+        assert vecs.shape == (0, 8, 2)
+
+
+class TestOrthonormalityTight:
+    """Tighter orthonormality assertion: with full reorthogonalization
+    and `n_iter = n`, the basis should be orthonormal to ~1e-9, not
+    just 1e-6. This catches drift from missing reorthogonalization
+    that the looser test would let through."""
+
+    def test_full_iter_basis_orthonormal_tight(self):
+        n = 15
+        A = _random_symmetric(n, seed=11)
+        _, vecs = lanczos_eigsh(
+            A, k=n, n_iter=n, oversample=0, generator=_seeded(2),
+        )
+        gram = torch.matmul(vecs.mT, vecs)
+        I_k = torch.eye(n, dtype=vecs.dtype).unsqueeze(0)
+        torch.testing.assert_close(gram, I_k, atol=1e-9, rtol=0)

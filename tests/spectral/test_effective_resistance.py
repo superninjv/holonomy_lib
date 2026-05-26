@@ -154,3 +154,29 @@ class TestShapes:
         A = _complete_graph(5, batch=batch)
         C = commute_time(A)
         assert C.shape == (batch, 5, 5)
+
+
+class TestEdgeCases:
+    def test_batch_zero(self):
+        """B=0 must work — project convention is `B ∈ {0, 1, >1}`."""
+        A = torch.zeros(0, 4, 4, dtype=torch.float64)
+        R = effective_resistance(A)
+        assert R.shape == (0, 4, 4)
+        C = commute_time(A)
+        assert C.shape == (0, 4, 4)
+
+    def test_n_one(self):
+        """Single-node "graph": R(0, 0) = 0 trivially."""
+        A = torch.zeros(1, 1, 1, dtype=torch.float64)
+        R = effective_resistance(A)
+        assert R.shape == (1, 1, 1)
+        assert R[0, 0, 0].item() == pytest.approx(0.0, abs=1e-12)
+
+    def test_all_zeros_graph(self):
+        """An empty adjacency (no edges anywhere) is a valid degenerate
+        input. R must be all zeros: every node is isolated, the
+        Laplacian is identically zero, the pseudoinverse is zero, and
+        the formula R = L⁺[u,u] + L⁺[v,v] − 2 L⁺[u,v] evaluates to 0."""
+        A = torch.zeros(1, 5, 5, dtype=torch.float64)
+        R = effective_resistance(A)
+        torch.testing.assert_close(R, torch.zeros_like(R), atol=1e-12, rtol=0)

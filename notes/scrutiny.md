@@ -302,6 +302,142 @@ silently. Infrastructure ready for ROCm / CUDA runs.
 
 ---
 
+## Pass 3 — 2026-05-27 (new primitives + targeted perf)
+
+Three parallel `feature-dev:code-reviewer` agents on the 8 primitives
+added across two work sessions (Forman-Ricci, magnetic Laplacian, heat
+kernel, effective resistance, commute time, diffusion map, Lanczos,
+info_geometry). Starting: 388 tests. Ending: 400 tests, audit clean.
+
+### ✅ Correctness — KL categorical: q=0 returns +inf when p>0
+
+**Found**: `kl_divergence_categorical` clamped both `p` and `q` to
+`1e-9` inside the log. When `p_i > 0` and `q_i = 0`, the correct
+value is `+inf` (Gibbs's inequality bound; KL diverges when
+`supp(p) ⊄ supp(q)`). The symmetric clamp returned `p_i · log(p_i/1e-9)
+≈ 20·p_i` — finite garbage. Verified empirically: `KL([1,0] ‖ [0,1])`
+returned ~20.7 instead of inf.
+
+**Fix**: replace the symmetric clamp with a `torch.where(q > 0, log,
+-inf)` branch. The `p > 0` outer guard preserves the `0·log(0/q) = 0`
+convention. Documented the autograd hazard near zero in the docstring.
+
+### ✅ Correctness — Forman-Ricci self-loop contamination
+
+**Found**: `forman_ricci_augmented`'s triangle count uses
+`(edge_mask @ edge_mask)`. A self-loop at node `i` (i.e. `A[i,i] ≠ 0`)
+makes `edge_mask[i,i] = 1`, so length-2 walks `j → i → i → k` get
+counted as triangles for every edge incident to `i`. Inflated κ by 2
+per self-loop per endpoint. Also: the simple form's `degree`
+calculation counted the self-loop as a regular edge.
+
+**Fix**: drop the diagonal of `A` upfront in both forms via a shared
+`_drop_self_loops` helper. Forman-Ricci is defined on simple graphs;
+this matches the literature convention and gives invariant outputs.
+
+### ✅ Correctness — magnetic Laplacian crashes on complex input
+
+**Found**: passing a complex-typed `A` to `magnetic.combinatorial(A,
+q=0.25)` crashed inside `torch.complex(cos, sin)` because cos/sin on
+complex inputs are complex, and `torch.complex(...)` requires real
+operands. The q=0 fast path masked this for that one case only.
+
+**Fix**: shared `_validate_real_adjacency` helper rejects non-real
+dtypes up front with a clear error. The phase factor `exp(i·2π·q·
+(A − A^T))` is mathematically defined only for real `A`.
+
+### ✅ Correctness — heat_kernel coefficient transfer
+
+**Found**: `torch.as_tensor(numpy_array, device='cuda')` is unreliable
+on some backends (CPU-only numpy bindings can't be placed on GPU
+directly). On the CPU test path this worked; on CUDA/ROCm it would
+fail at first invocation.
+
+**Fix**: `torch.from_numpy(...).to(device=L.device, dtype=L.dtype)` is
+the robust pattern. Same semantics, GPU-safe.
+
+### ✅ Correctness — diffusion_map silent on disconnected graphs
+
+**Found**: `diffusion_map` always drops index 0 (one null eigenvector)
+even on graphs with multiple connected components. For `c` components
+the indices `0..c-1` are all null modes; dropping just one leaves
+`c-1` degenerate constant-on-component vectors in the output, looking
+like valid slow modes (μ_j ≈ 1) but carrying no geometric information.
+
+**Fix**: detect `n_near_zero` eigenvalues at function entry; emit a
+`UserWarning` when more than one is present, telling the caller to
+mask by component before interpreting cross-component distances.
+
+### ✅ Correctness — KL Gaussian missing `mu_q` shape check
+
+**Found**: `kl_divergence_gaussian` validated `Sigma_p` and `Sigma_q`
+against `d = mu_p.shape[-1]` but not `mu_q`. A caller passing a
+shape-mismatched `mu_q` got an opaque error deep in `cholesky_solve`.
+
+**Fix**: explicit `ValueError` upfront, mirroring the existing
+Sigma checks.
+
+### ✅ Correctness — Lanczos `assert` survives `python -O`
+
+**Found**: `_build_tridiagonal` used `assert len(betas) == n - 1`. The
+`-O` flag strips asserts; a corrupted call would silently produce a
+wrong-sized tridiagonal and garbage Ritz pairs.
+
+**Fix**: replaced with `raise ValueError(...)`.
+
+### ✅ Performance — Lanczos `V_stack` pre-allocation
+
+**Found**: the full reorthogonalization loop did
+`torch.stack(V_cols, dim=-1)` at every iteration, copying j+1
+columns each time. Over `m` iterations this is `O(m² · n)` extra
+allocation traffic on top of the necessary work.
+
+**Fix**: pre-allocate `V = torch.empty(*batch, n, n_iter + 1, ...)`
+once and slice `V[..., :j+1]` inside the loop — `O(1)` slice, no copy.
+
+### 🟢 False positive — `effective_resistance` all-zeros graph
+
+Reviewer claimed an all-zeros adjacency would produce nonsense (1/tiny
+amplification). Empirically the `where(eigvals > threshold, ...)`
+branch correctly returns 0 because `0 > 0` is False. Verified by
+running on `A = zeros(1, 5, 5)`; the output is exactly `zeros(1, 5, 5)`.
+Added a regression test that pins this down.
+
+### Test additions
+
+- `kl_divergence_categorical`: `test_zero_in_q_with_support_in_p_returns_inf`
+- `kl_divergence_gaussian`: `test_mu_q_shape_mismatch_raises`
+- `forman_ricci_augmented`: `test_self_loop_does_not_inflate_augmented`
+- `magnetic.combinatorial` + `magnetic.symmetric_normalized`:
+  `test_rejects_complex_input`
+- `diffusion_map`: `test_warns_on_disconnected_graph`
+- `heat_kernel_chebyshev`: `test_rejects_signal_with_wrong_node_dim`
+- `lanczos_eigsh`: `test_batch_zero`, `test_full_iter_basis_orthonormal_tight`
+- `effective_resistance`: `test_batch_zero`, `test_n_one`,
+  `test_all_zeros_graph`
+
+### Benchmarks (CPU baseline, float64)
+
+| Primitive | n=64 | n=256 | n=1024 |
+|---|---|---|---|
+| `forman_ricci_simple` | 0.2 ms | 3.0 ms | 47 ms |
+| `forman_ricci_augmented` | 0.4 ms | 1.9 ms | 94 ms |
+| `magnetic.symmetric_normalized` | — | 2 ms (n=512) | — |
+| `heat_kernel_chebyshev` (dense, K=30) | 2.3 ms | — | 56 ms (n=512) |
+| `heat_kernel_chebyshev` (signal k=4) | 0.9 ms | 3.0 ms | 12 ms |
+| `effective_resistance` | 0.9 ms | 3.4 ms | 17.7 ms (n=512) |
+| `diffusion_map` (k=8) | 0.4 ms | 3.4 ms | 66 ms |
+| `lanczos_eigsh` (k=1, n_iter=30) | — | — | 11 ms |
+| `torch.linalg.eigvalsh` (reference) | — | — | 47 ms |
+
+Lanczos vs dense eigh crossover: ~n=512. Below that, the Krylov
+overhead dominates; above, Lanczos wins (4.2× at n=1024).
+
+Heat kernel signal-path is 4-5× faster than building the dense matrix
+when k_signal ≪ n — the expected win.
+
+---
+
 ## Open follow-ups (not yet acted on)
 
 ### 🔬 Randomized SVD silent fallback to exact mode

@@ -28,6 +28,12 @@ This module provides:
       0·log 0 = 0 convention. Equivalent to `bregman_divergence` with
       `potential = (x · log x − x).sum()`, but cheaper.
 
+      Autograd note: the `log(.)` is guarded by `torch.where` rather
+      than a symmetric clamp on `q`, so the function correctly returns
+      `+inf` when `p_i > 0` and `q_i = 0` (Gibbs's inequality bound).
+      Gradients through near-zero bins are not numerically reliable;
+      use only for inference unless you're sure about the support.
+
   kl_divergence_gaussian(mu_p, Sigma_p, mu_q, Sigma_q)
       KL between two multivariate Gaussians:
 
@@ -133,14 +139,25 @@ def kl_divergence_categorical(
             f"p and q must have matching last dim; got {p.shape[-1]} vs "
             f"{q.shape[-1]}"
         )
-    # Clamp inside the log to the library's numerical_floor_convention
-    # (`1e-9`, see ALLOWED_LITERALS). Underflows below 1e-9 are noise
-    # well below typical use cases.
+    # Conventions:
+    #   (a) `0 · log(0/q) = 0` for p_i = 0 (continuous limit).
+    #   (b) `p · log(p/0) = +∞` for p_i > 0, q_i = 0 (Gibbs;
+    #       supp(p) ⊄ supp(q) makes KL undefined / infinite).
+    # We use `torch.xlogy(p, p/q)` style with explicit guards so both
+    # conventions hold without silent finite garbage from a symmetric
+    # clamp on `q`.
     log_p = torch.log(p.clamp(min=1e-9))
-    log_q = torch.log(q.clamp(min=1e-9))
-    # `p * (log_p - log_q)` is the per-bin contribution; zeros in `p`
-    # zero the contribution by multiplication (the 0·log convention).
-    return (p * (log_p - log_q)).sum(dim=-1)
+    inf = torch.tensor(float("inf"), dtype=q.dtype, device=q.device)
+    # log_q: -inf where q_i = 0 (so `p_i · log(0)` = -inf, and the
+    # full term `p_i · (log_p - log_q)` = +inf when p_i > 0).
+    log_q = torch.where(q > 0, torch.log(q.clamp(min=1e-9)), -inf)
+    # Per-bin contribution. When p_i = 0, the multiplication zeros
+    # whatever (possibly inf) sits in (log_p - log_q), preserving the
+    # 0·log convention.
+    contributions = torch.where(
+        p > 0, p * (log_p - log_q), torch.zeros_like(p),
+    )
+    return contributions.sum(dim=-1)
 
 
 @with_provenance(
@@ -179,6 +196,11 @@ def kl_divergence_gaussian(
         eq. 380 — Gaussian-Gaussian KL.
     """
     d = mu_p.shape[-1]
+    if mu_q.shape[-1] != d:
+        raise ValueError(
+            f"mu_q's last dim must match mu_p's d={d}; "
+            f"got mu_q.shape={tuple(mu_q.shape)}"
+        )
     if Sigma_p.shape[-1] != d or Sigma_p.shape[-2] != d:
         raise ValueError(
             f"Sigma_p must be (..., d, d) with d={d}; "
