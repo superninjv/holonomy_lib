@@ -55,7 +55,7 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 
@@ -77,7 +77,7 @@ _SPARSE_LAYOUTS = (
 
 
 @with_provenance(
-    "holonomy_lib.algebra.lanczos_eigsh", op_version="0.2",
+    "holonomy_lib.algebra.lanczos_eigsh", op_version="0.3",
 )
 def lanczos_eigsh(
     A: torch.Tensor,
@@ -85,8 +85,10 @@ def lanczos_eigsh(
     n_iter: Optional[int] = None,
     oversample: int = LANCZOS_OVERSAMPLE_DEFAULT,
     generator: Optional[torch.Generator] = None,
+    which: Literal["LA", "SA"] = "LA",
+    sigma: Optional[float] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Top-k largest-algebraic eigenpairs of a symmetric matrix.
+    """Top-k symmetric eigenpairs via Lanczos (LA) or shift-invert (SA).
 
     Dispatches on layout: dense batched `(B, n, n)` runs the standard
     path; sparse `(n, n)` (CSR/CSC/COO) runs a single-instance path
@@ -105,13 +107,23 @@ def lanczos_eigsh(
         eigenvalues but more compute.
       oversample: extra iterations beyond `k`. Default 10.
       generator: torch.Generator for the random starting vector.
+      which: `"LA"` for largest-algebraic (default), or `"SA"` for
+        smallest-algebraic via shift-and-invert. SA mode runs Lanczos
+        on `(A − σ·I)^{−1}` whose dominant Ritz values converge to
+        the eigenvalues of `A` closest to σ. Currently dense-only.
+      sigma: shift used in SA mode. Default `0.0` (finds smallest |λ|,
+        which is exactly the smallest λ on positive-semidefinite `A`).
+        For indefinite `A` set σ below the smallest eigenvalue, or set
+        it close to whichever interior eigenvalues you want.
 
     Returns:
       Dense input  → `(eigvals: (B, k), eigvecs: (B, n, k))`.
       Sparse input → `(eigvals: (k,), eigvecs: (n, k))`.
 
-      Eigenvalues descending in value; eigenvectors orthonormal with
-      columns aligned to the eigenvalues.
+      LA mode: eigenvalues descending in value.
+      SA mode: eigenvalues ascending in value (smallest first).
+      In both cases, eigenvectors are orthonormal with columns aligned
+      to the eigenvalues.
 
     Notes:
       Cost is `O(B · n_iter · n²)` for the matmuls plus
@@ -125,7 +137,35 @@ def lanczos_eigsh(
 
     References:
       Lanczos (1950); Paige (1972); Saad (2011), §6.5.
+      Ericsson & Ruhe (1980). The spectral transformation Lanczos
+        method for the numerical solution of large sparse generalized
+        symmetric eigenvalue problems. Math. Comp. 35(152):1251–1268.
+        The shift-and-invert formulation.
     """
+    if which not in ("LA", "SA"):
+        raise ValueError(
+            f"which must be 'LA' (largest algebraic) or 'SA' "
+            f"(smallest algebraic); got which={which!r}"
+        )
+    # Shift-invert path (SA mode).
+    if which == "SA":
+        if A.layout in _SPARSE_LAYOUTS:
+            raise NotImplementedError(
+                "Shift-invert mode (which='SA') currently requires "
+                "dense A. Sparse SA needs an iterative solver "
+                "(CG/MINRES); planned as future work."
+            )
+        return _lanczos_shift_invert_dense(
+            A, k,
+            sigma=0.0 if sigma is None else sigma,
+            n_iter=n_iter, oversample=oversample, generator=generator,
+        )
+    # LA mode below — original code path.
+    if sigma is not None:
+        raise ValueError(
+            "sigma is only meaningful in shift-invert mode (which='SA'); "
+            "with which='LA' the spectrum is read directly off A."
+        )
     # Dispatch on layout. Sparse inputs go through a 2-D no-batch path.
     if A.layout in _SPARSE_LAYOUTS:
         return _lanczos_sparse(A, k, n_iter, oversample, generator)
@@ -324,6 +364,146 @@ def _lanczos_sparse(
     top_vals = ritz_vals.flip(dims=(0,))[:k]
     top_vecs = approx_eigvecs.flip(dims=(-1,))[:, :k]
     return top_vals, top_vecs
+
+
+def _lanczos_shift_invert_dense(
+    A: torch.Tensor,
+    k: int,
+    sigma: float,
+    n_iter: Optional[int],
+    oversample: int,
+    generator: Optional[torch.Generator],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Shift-and-invert Lanczos: top-k eigenpairs of `A` closest to σ.
+
+    Algorithm (Ericsson-Ruhe 1980): replace the action `A · v` with
+    `(A − σ·I)^{−1} · v` inside the Lanczos loop. The Ritz values μ_i
+    of the inverted operator satisfy `μ_i = 1/(λ_i − σ)`, so the
+    largest |μ_i| (which Lanczos converges to fastest) correspond to
+    the λ_i closest to σ. After the loop we recover
+    `λ_i = σ + 1/μ_i`.
+
+    Implementation:
+      - Pre-factor `A − σ·I` once with LU; each iteration is one
+        `lu_solve` instead of a fresh `solve`. n_iter solves total
+        plus one factorization → O(n³) for factor + O(n_iter · n²)
+        for solves, vs O(n_iter · n³) without caching.
+      - Returns smallest-first ordering: with σ ≤ smallest_λ, larger
+        μ_i means smaller (λ_i − σ) means smaller λ_i.
+    """
+    if A.ndim < 2 or A.shape[-1] != A.shape[-2]:
+        raise ValueError(
+            f"A must be (..., n, n); got A.shape={tuple(A.shape)}"
+        )
+    n = A.shape[-1]
+    if k <= 0 or k > n:
+        raise ValueError(f"k must satisfy 1 <= k <= n={n}, got k={k}")
+
+    if n_iter is None:
+        n_iter = k + oversample
+    n_iter = min(n_iter, n)
+    if n_iter < k:
+        raise ValueError(
+            f"n_iter={n_iter} must be >= k={k} to return k eigenpairs"
+        )
+
+    *batch, _ = A.shape[:-1]
+    device, dtype = A.device, A.dtype
+
+    # Pre-factor (A − σ·I). Done once outside the Lanczos loop. We
+    # build the shifted matrix without an explicit `torch.eye` expand
+    # by subtracting σ from the diagonal in-place on a clone.
+    A_shifted = A.clone()
+    diag_indices = torch.arange(n, device=device)
+    A_shifted[..., diag_indices, diag_indices] -= sigma
+    LU, piv = torch.linalg.lu_factor(A_shifted)
+
+    def solve(v: torch.Tensor) -> torch.Tensor:
+        """One application of (A − σ·I)^{−1} to a batched vector."""
+        return torch.linalg.lu_solve(
+            LU, piv, v.unsqueeze(dim=-1),
+        ).squeeze(dim=-1)
+
+    v0 = torch.randn(*batch, n, generator=generator, device=device, dtype=dtype)
+    v0 = v0 / torch.linalg.norm(v0, dim=-1, keepdim=True)
+
+    V = torch.empty(*batch, n, n_iter + 1, device=device, dtype=dtype)
+    V[..., 0] = v0
+    alphas: list[torch.Tensor] = []
+    betas: list[torch.Tensor] = []
+
+    v_prev = torch.zeros_like(v0)
+    beta_prev = torch.zeros(*batch, device=device, dtype=dtype)
+
+    for j in range(n_iter):
+        v_curr = V[..., j]
+        # Apply (A − σ·I)^{−1} in place of A.
+        w = solve(v_curr)
+        alpha_j = (w * v_curr).sum(dim=-1)
+        alphas.append(alpha_j)
+
+        w = (
+            w
+            - alpha_j.unsqueeze(dim=-1) * v_curr
+            - beta_prev.unsqueeze(dim=-1) * v_prev
+        )
+
+        V_used = V[..., :j + 1]
+        coeffs = torch.matmul(
+            V_used.mT, w.unsqueeze(dim=-1),
+        ).squeeze(dim=-1)
+        w = w - torch.matmul(V_used, coeffs.unsqueeze(dim=-1)).squeeze(dim=-1)
+
+        beta_j = torch.linalg.norm(w, dim=-1)
+        floor = torch.finfo(dtype).tiny
+        safe_beta = beta_j.clamp(min=floor)
+        V[..., j + 1] = w / safe_beta.unsqueeze(dim=-1)
+
+        betas.append(beta_j)
+        v_prev = v_curr
+        beta_prev = beta_j
+
+    V_basis = V[..., :n_iter]
+    T = _build_tridiagonal(alphas, betas[:-1] if len(betas) >= 1 else [])
+
+    # Ritz values of the inverted operator μ_i.
+    mu_vals, ritz_vecs = torch.linalg.eigh(T)               # ascending
+    approx_eigvecs = torch.matmul(V_basis, ritz_vecs)
+
+    # Pick top-k by |μ| (largest magnitude first). These are the Ritz
+    # values most converged in shift-invert, corresponding to the λ_i
+    # closest to σ. NB: picking by value (`mu_vals.flip`) only works
+    # when all μ_i have the same sign — e.g. σ ≤ smallest_λ on PSD —
+    # and silently picks the wrong end for interior σ.
+    abs_sort_idx = mu_vals.abs().argsort(dim=-1, descending=True)
+    top_idx = abs_sort_idx[..., :k]
+    top_mu = torch.gather(mu_vals, dim=-1, index=top_idx)
+    top_idx_expand = top_idx.unsqueeze(dim=-2).expand(
+        *approx_eigvecs.shape[:-1], k,
+    )
+    top_vecs = torch.gather(approx_eigvecs, dim=-1, index=top_idx_expand)
+
+    # Recover original eigenvalues. Guard against breakdown (|μ| ~ 0)
+    # which would otherwise produce inf — clamp by the dtype tiny so
+    # the recovered λ_i is a large finite value the caller can detect.
+    floor = torch.finfo(dtype).tiny
+    safe_mu = torch.where(
+        top_mu.abs() < floor,
+        torch.full_like(top_mu, floor),
+        top_mu,
+    )
+    lambdas = sigma + 1.0 / safe_mu
+
+    # SA convention: smallest first. Sort ascending across the k axis,
+    # carrying the eigenvectors along.
+    sort_idx = lambdas.argsort(dim=-1)
+    lambdas_sorted = torch.gather(lambdas, dim=-1, index=sort_idx)
+    # Reorder the eigenvector columns. `gather` doesn't easily handle
+    # the n-axis so we use index_select-style via expand+gather along
+    # the last axis of `top_vecs`.
+    idx_expand = sort_idx.unsqueeze(dim=-2).expand_as(top_vecs)
+    vecs_sorted = torch.gather(top_vecs, dim=-1, index=idx_expand)
+    return lambdas_sorted, vecs_sorted
 
 
 def _build_tridiagonal(

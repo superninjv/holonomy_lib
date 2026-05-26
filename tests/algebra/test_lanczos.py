@@ -203,3 +203,127 @@ class TestOrthonormalityTight:
         gram = torch.matmul(vecs.mT, vecs)
         I_k = torch.eye(n, dtype=vecs.dtype).unsqueeze(0)
         torch.testing.assert_close(gram, I_k, atol=1e-9, rtol=0)
+
+
+# ====================================================================
+# Shift-and-invert mode (which="SA")
+# ====================================================================
+
+
+def _random_spd(
+    n: int, batch: int = 1, dtype=torch.float64, seed: int = 0,
+) -> torch.Tensor:
+    """Random SPD matrix: A = X Xᵀ + n·I for strict positive-definiteness."""
+    g = _seeded(seed)
+    X = torch.randn(batch, n, n, dtype=dtype, generator=g)
+    return torch.matmul(X, X.mT) + n * torch.eye(n, dtype=dtype)
+
+
+class TestShiftInvertValidation:
+    def test_rejects_unknown_which(self):
+        A = _random_spd(5)
+        with pytest.raises(ValueError, match="which"):
+            lanczos_eigsh(A, k=2, which="SOMETHING_ELSE")
+
+    def test_rejects_sigma_with_LA(self):
+        A = _random_spd(5)
+        with pytest.raises(ValueError, match="sigma"):
+            lanczos_eigsh(A, k=2, which="LA", sigma=1.5)
+
+    def test_rejects_sparse_input_in_SA(self):
+        n = 5
+        A_dense = _random_spd(n).squeeze(0)
+        A_sparse = A_dense.to_sparse_csr()
+        with pytest.raises(NotImplementedError, match="dense"):
+            lanczos_eigsh(A_sparse, k=2, which="SA")
+
+
+class TestShiftInvertConvergence:
+    """SA mode must return smallest k eigenvalues, matching dense eigh."""
+
+    @pytest.mark.parametrize("n", [10, 20])
+    def test_smallest_eigvals_match_eigh_on_spd(self, n):
+        """For SPD `A`, `which="SA"` with default σ=0 returns the
+        smallest k eigenvalues. Compare to torch.linalg.eigvalsh
+        (which returns ascending)."""
+        A = _random_spd(n, seed=7)
+        k = 3
+        vals_sa, _ = lanczos_eigsh(
+            A, k=k, n_iter=n, oversample=0, which="SA",
+            generator=_seeded(0),
+        )
+        ref = torch.linalg.eigvalsh(A)[..., :k]   # ascending, smallest k
+        torch.testing.assert_close(vals_sa, ref, atol=1e-7, rtol=0)
+
+    def test_eigenvectors_satisfy_A_v_equals_lambda_v(self):
+        """A v_i ≈ λ_i v_i for each returned (λ_i, v_i) pair."""
+        n, k = 12, 3
+        A = _random_spd(n, seed=11)
+        vals, vecs = lanczos_eigsh(
+            A, k=k, n_iter=n, oversample=0, which="SA",
+            generator=_seeded(0),
+        )
+        # (B, n, k); residual ‖A v − λ v‖ should be small for each col.
+        Av = torch.matmul(A, vecs)                          # (B, n, k)
+        lambda_v = vecs * vals.unsqueeze(dim=-2)             # broadcast (B, n, k)
+        residual = torch.linalg.norm(Av - lambda_v, dim=-2)  # (B, k)
+        assert residual.max().item() < 1e-6
+
+    def test_sa_with_explicit_sigma_finds_closest_eigenvalues(self):
+        """With σ set to an interior value, SA recovers eigenvalues
+        closest to σ."""
+        # Diagonal matrix with known spectrum.
+        spectrum = torch.tensor(
+            [-5.0, -1.0, 0.5, 2.0, 4.0, 10.0], dtype=torch.float64,
+        )
+        A = torch.diag(spectrum).unsqueeze(0)               # (1, 6, 6)
+        # σ = 1.0 → closest eigenvalues are 0.5 and 2.0.
+        vals, _ = lanczos_eigsh(
+            A, k=2, n_iter=6, oversample=0, which="SA", sigma=1.0,
+            generator=_seeded(0),
+        )
+        sorted_by_dist = sorted(vals[0].tolist(), key=lambda x: abs(x - 1.0))
+        assert sorted_by_dist[0] == pytest.approx(0.5, abs=1e-8)
+        assert sorted_by_dist[1] == pytest.approx(2.0, abs=1e-8)
+
+    def test_sa_returns_ascending(self):
+        """SA convention: smallest-first ordering."""
+        n = 10
+        A = _random_spd(n, seed=3)
+        vals, _ = lanczos_eigsh(
+            A, k=4, n_iter=n, oversample=0, which="SA",
+            generator=_seeded(0),
+        )
+        # Ascending: each entry ≤ the next.
+        diffs = vals[..., 1:] - vals[..., :-1]
+        assert (diffs >= 0).all()
+
+
+class TestShiftInvertOnLaplacian:
+    """The motivating use case: smallest eigenvalues of a graph
+    Laplacian = Fiedler eigenvalues. The smallest is always 0 for a
+    connected graph, the second smallest controls algebraic
+    connectivity (Cheeger's inequality)."""
+
+    def test_path_graph_laplacian_smallest_eigenvalues(self):
+        # Path graph P_5: combinatorial Laplacian with known smallest
+        # eigenvalues 0, 2 − √3, ...
+        n = 5
+        L = (
+            2 * torch.eye(n, dtype=torch.float64)
+            - torch.diag(torch.ones(n - 1, dtype=torch.float64), 1)
+            - torch.diag(torch.ones(n - 1, dtype=torch.float64), -1)
+        )
+        # Endpoints have degree 1 not 2 — fix the corner entries.
+        L[0, 0] = 1.0
+        L[n - 1, n - 1] = 1.0
+        L = L.unsqueeze(0)
+        # Shift sigma slightly below 0 so (L - σI) is strictly PD and
+        # numerically clean (L itself has 0 in spectrum which makes the
+        # LU factor near-singular).
+        vals, _ = lanczos_eigsh(
+            L, k=2, n_iter=n, oversample=0, which="SA", sigma=-0.1,
+            generator=_seeded(0),
+        )
+        ref = torch.linalg.eigvalsh(L)[..., :2]
+        torch.testing.assert_close(vals, ref, atol=1e-7, rtol=0)
