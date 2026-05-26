@@ -28,7 +28,9 @@ This library aims to do all four.
 
 ## Status
 
-Pre-implementation. See `HANDOFF.md` for the build plan. The audit infrastructure (ported from `synoros-substrate`) is the only thing currently implemented — it's both the first useful piece AND the discipline that shapes everything else.
+Initial primitives shipped across `manifolds`, `algebra`, `tensor_calculus`, `spectral`, `discrete_geometry`, and `provenance` (per-operation content-addressable hex for mechanistic interpretability). See `AGENT.md` for the full inventory, signatures, and citations — that's the reference you (or an LLM agent using this library) want when you need to know "what's available, what does it take, what should I cite."
+
+`HANDOFF.md` is the original build plan from the seeding session; some scope language there is outdated (says "what synoros-substrate needs" — actually general-purpose).
 
 ## Relationship to synoros-substrate
 

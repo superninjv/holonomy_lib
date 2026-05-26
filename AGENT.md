@@ -1,0 +1,261 @@
+# synoros-lib — agent reference
+
+A research-grade PyTorch math library: GPU-native, batched-first, audit-clean,
+cited. This file is a **flat inventory** for an LLM agent doing research with
+synoros-lib — every primitive, its signature, what it does in one line, and
+the paper to cite. Read this *before* grepping or reading source.
+
+If something you want isn't here, it isn't implemented. Don't reinvent;
+either ask the user or pick the closest existing primitive.
+
+## How to read this file
+
+Each primitive entry has the form:
+
+> `module.thing(signature) → returns`
+> One-line what-it-does. Math citation. Cross-references.
+
+All tensors are batched-first: leading batch dim B, then the math dims.
+Shapes use `B` for batch, `n`/`m`/`r`/etc. for math.
+
+## Conventions (binding)
+
+- **Batched-first.** Inputs take leading batch dim. Single-point use = pass `B = 1`.
+  Operations are verified for `B ∈ {0, 1, > 1}`.
+- **Device-agnostic.** Operations work on whatever device the input tensor is on.
+  Use `dtype` and `device` constructor params to pin precision/placement.
+- **Cited.** Every primitive's docstring has a `References:` section with the
+  paper. The citations below are short; the full docstring has the eq. numbers.
+- **Audit-clean.** No magic numerical literals in source. Posited constants
+  cataloged in `notes/magic_numbers.md` with scale-of-validity.
+- **Provenance-aware.** Top-level primitives are decorated with
+  `@with_provenance`, so they emit content-addressable hex IDs when called
+  inside `provenance.record()`. See §Provenance.
+
+## Available imports (canonical paths)
+
+```python
+from synoros_lib.manifolds import FixedRankManifold, SPDManifold
+from synoros_lib.algebra import truncated_svd
+from synoros_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
+from synoros_lib.spectral import laplacian, laplacian_eigenmaps
+from synoros_lib.discrete_geometry import (
+    ollivier_ricci_curvature,
+    discrete_ricci_flow,
+    ricci_flow_with_surgery,
+)
+from synoros_lib import provenance
+```
+
+---
+
+## §Manifolds — `synoros_lib.manifolds`
+
+Riemannian manifolds with batched-first, GPU-native operations.
+
+### `FixedRankManifold(m, n, r, device="cpu", dtype=torch.float64)`
+Fixed-rank matrix manifold M_r(m, n) ⊂ R^{m×n}. Points stored as SVD triples
+(U, S, Vt) of shapes (B, m, r), (B, r), (B, r, n). Manifold dim `r·(m + n − r)`.
+
+| Method | Signature | Returns |
+|---|---|---|
+| `random_point` | `(batch_size=1, generator=None)` | `(U, S, Vt)` |
+| `dense` | `(point)` | `(B, m, n)` |
+| `projection` | `(point, Z)` | `(B, m, n)` tangent |
+| `inner` | `(point, U, V)` | `(B,)` |
+| `norm` | `(point, V)` | `(B,)` |
+| `retraction` | `(point, tangent)` | new `(U, S, Vt)` |
+| `dim` | property | int |
+
+Refs: Vandereycken (2013), Absil-Mahony-Sepulchre (2008), Mezzadri (2007).
+
+### `SPDManifold(n, device="cpu", dtype=torch.float64)`
+Symmetric positive definite matrices P(n) with the **affine-invariant** metric
+`⟨U,V⟩_S = tr(S⁻¹ U S⁻¹ V)`. Points and tangents both `(B, n, n)` symmetric.
+Manifold dim `n(n+1)/2`.
+
+| Method | Signature | Returns |
+|---|---|---|
+| `random_point` | `(batch_size=1, generator=None)` | `(B, n, n)` SPD |
+| `is_spd` | `(S)` | `(B,)` bool |
+| `projection` | `(S, Z)` | symmetric `(B, n, n)` |
+| `inner` | `(S, U, V)` | `(B,)` |
+| `norm` | `(S, V)` | `(B,)` |
+| `exp` | `(S, V)` | `(B, n, n)` exp_S(V) |
+| `log` | `(S, T)` | `(B, n, n)` log_S(T) |
+| `distance` | `(S, T)` | `(B,)` geodesic |
+| `retraction` | `(S, V)` | = `exp(S, V)` |
+
+Refs: Pennec-Fillard-Ayache (2006), Bhatia (2007), Sra-Hosseini (2015).
+
+---
+
+## §Algebra — `synoros_lib.algebra`
+
+Linear-algebra primitives.
+
+### `truncated_svd(M, r, mode="exact", oversample=5, n_iter=2, generator=None)`
+Batched top-r SVD of `M: (..., m, n) → (U: (..., m, r), S: (..., r), Vt: (..., r, n))`.
+- `mode="exact"`: full SVD then truncate (Eckart-Young optimal).
+- `mode="randomized"`: Halko-Martinsson-Tropp projection; faster when r ≪ min(m, n).
+  Accuracy controlled by `oversample` + `n_iter`.
+
+Refs: Eckart-Young (1936), Halko-Martinsson-Tropp (2011).
+
+---
+
+## §Tensor calculus — `synoros_lib.tensor_calculus`
+
+Multilinear algebra on tensors with leading batch dim.
+
+### `mode_product(T, A, axis)`
+n-mode product T ×_axis A. Contracts axis `axis` of `T: (B, n_1, ..., n_d)` with
+the last axis of `A: (B, j, n_axis)`. Result has `j` at position `axis`.
+Ref: Kolda-Bader (2009), §2.5.
+
+### `mode_unfolding(T, axis)`
+Matricize T along an axis: bring `axis` to position 1, flatten the rest.
+Output `(B, n_axis, prod_of_other_modes)`. Ref: Kolda-Bader (2009), §2.4.
+
+### `hosvd(T, ranks, mode="exact", generator=None) → (core, factors)`
+Truncated Higher-Order SVD. For `T: (B, n_1, ..., n_d)`, returns
+`core: (B, r_1, ..., r_d)` and a list `factors[k]: (B, n_k, r_k)` with
+orthonormal columns. `T ≈ core ×_1 factors[0] ×_2 factors[1] × ... ×_d factors[d−1]`.
+Refs: De Lathauwer-De Moor-Vandewalle (2000), Vannieuwenhoven et al. (2012).
+
+---
+
+## §Spectral — `synoros_lib.spectral`
+
+Graph Laplacians + spectral embedding. All take symmetric adjacency `A: (B, n, n)`.
+Isolated nodes handled via Moore-Penrose convention (Cheng-Wu 2024).
+
+### `laplacian.combinatorial(A)`
+L = D − A. PSD. Eigenvalue 0 multiplicity = # connected components.
+Ref: Chung (1997).
+
+### `laplacian.symmetric_normalized(A)`
+L_sym = I − D^{−1/2} A D^{−1/2}. Spectrum ⊂ [0, 2]. Ref: Chung (1997), von Luxburg (2007).
+
+### `laplacian.random_walk(A)`
+L_rw = I − D^{−1} A. Same eigenvalues as L_sym (similar via D^{1/2}). Ref: von Luxburg (2007).
+
+### `laplacian.signed(A)`
+L^σ = D^{|σ|} − A,  D^{|σ|}_{ii} = Σ_j |A_{ij}|. PSD even with negative weights.
+Eigenvalue 0 iff signed graph is balanced. Ref: Kunegis et al. (2010), Thm 3.4.
+
+### `laplacian.degree(A, signed=False)`
+Weighted degree `(B, n)`. With `signed=True`, uses |A| (Kunegis convention).
+
+### `laplacian_eigenmaps(A, k, laplacian_type="symmetric_normalized") → (eigvals, eigvecs)`
+Bottom-k spectral embedding. `laplacian_type ∈ {"combinatorial", "symmetric_normalized",
+"random_walk", "signed"}`. Does **not** auto-drop the trivial null eigenvector
+(caller decides). Refs: Belkin-Niyogi (2003), von Luxburg (2007).
+
+---
+
+## §Discrete geometry — `synoros_lib.discrete_geometry`
+
+Combinatorial / Ricci-style curvature on graphs. The Perelman-on-networks
+thread (Ollivier curvature → flow → surgery for community detection).
+
+### `ollivier_ricci_curvature(A, alpha=0.0, reg=0.01, n_iter=100) → (B, n, n)`
+Ollivier-Ricci curvature κ on all pairs via Sinkhorn Wasserstein-1 with the
+shortest-path metric. `alpha` is laziness (0 = standard Ollivier; α → 1 → LLY).
+For unweighted K_n: κ(edge) = (n − 2)/(n − 1).
+Refs: Ollivier (2009), Liu-Lin-Yau (2011), Cuturi (2013).
+
+### `discrete_ricci_flow(A, n_steps, dt=1.0, alpha=0.0, normalize=True, ...) → (B, n, n)`
+Iterate `w_ij(t+1) = (1 − dt · κ_ij(t)) · w_ij(t)`. Negative-curvature edges
+elongate (forming necks); positive-curvature edges shrink. Optional Frobenius-norm
+normalization. Refs: Sia-Jonckheere-Bogdan (2019), Ni-Lin-Luo-Gao (2019).
+
+### `ricci_flow_with_surgery(A, n_steps, surgery_period=10, surgery_threshold=3.0, ...) → (B, n, n)`
+Discrete Ricci flow with periodic edge removal — the Perelman-spirit primitive.
+Every `surgery_period` steps, edges whose weight ≥ `surgery_threshold` × initial
+mean weight are removed. After enough iterations, the graph splits into communities.
+Inspiration: Perelman (2002, 2003 surgery, 2003 extinction). Discrete: Sia (2019),
+Ni-Lin-Luo-Gao (2019), Liu-Wang-Yau-Zeng (2017).
+
+---
+
+## §Provenance — `synoros_lib.provenance`
+
+Content-addressable hex provenance for **mechanistic interpretability**. Every
+decorated primitive emits a Merkle-DAG node when called inside `record()`.
+Same op + same inputs ⇒ same hex (deterministic). The layer TransformerLens /
+nnsight / SAELens ride on top of for geometric/spectral mech interp.
+
+### Context managers
+
+```python
+with provenance.record(cache_tensors=False, hash_algorithm=...) as reg:
+    out = pipeline(...)
+    # reg is a ProvenanceRegistry
+```
+
+### `ProvenanceRegistry` — what you get inside `record()`
+
+| Method | What it does |
+|---|---|
+| `reg[hex]` | Look up a ProvenanceNode by hex |
+| `reg.where(op_id=..., op_version=...)` | Filter nodes by op |
+| `reg.ancestors(hex)` | Walk DAG upstream |
+| `reg.parents(hex)` | Direct parents |
+| `reg.get_tensor(hex)` | Cached output (if `cache_tensors=True`) |
+| `reg.on_op(op_id, callback)` | TransformerLens-style observation hook |
+| `reg.substitute({hex: value})` | Context mgr: activation patching at call time |
+| `reg.replay({hex: value})` | Re-execute downstream DAG with substitution |
+| `reg.to_networkx()` | Export DAG to networkx DiGraph |
+| `reg.to_dataframe()` | Export node table to pandas |
+| `reg.to_dict()` | JSON-friendly export |
+| `reg.to_sae_dataset(op_id=None)` | Yield `(tensor, metadata)` for SAE training |
+| `reg.diff(other)` | Structural diff of two recordings |
+| `reg.save(path)` / `Registry.load(path)` | JSON persistence (no tensors) |
+
+### Decorating new primitives
+
+```python
+from synoros_lib.provenance import with_provenance
+
+@with_provenance("synoros_lib.module.op_name", op_version="0.1")
+def op_name(x: torch.Tensor, k: int = 3) -> torch.Tensor:
+    ...
+```
+
+Hex computation: `sha256(op_id || op_version || canonical(params) || ":".join(input_hexes))`
+truncated to 16 chars. Pluggable hash function (blake3 if installed, else sha256).
+
+---
+
+## Files an agent should know about
+
+- `README.md` — vision, what this library is and why.
+- `HANDOFF.md` — original build plan from the seeding session. Some scope
+  framing is outdated (says "only build what substrate needs" — actually
+  general-purpose); flagged in memory.
+- `CLAUDE.md` — agent operating constraints for *developers* (citations
+  required, batched-first, audit-clean, tests-before-commit, etc.).
+- `AGENT.md` — this file (research-agent quick reference).
+- `notes/magic_numbers.md` — every posited numerical constant with
+  scale-of-validity. Update when you add a tunable constant.
+- `pyproject.toml` — Python ≥3.12, install with `uv pip install -e ".[dev]"`.
+  Torch must be installed separately per-platform (ROCm wheels on AMD).
+- `src/synoros_lib/audit.py` — `python -m synoros_lib.audit src/ --strict`
+  scans source for undocumented numerical literals. CI gate.
+- `.github/workflows/ci.yml` — runs audit + tests on every push.
+
+## What's *not* here (yet)
+
+Open frontiers an agent might assume exist but don't:
+- Sign-magnetic / magnetic Laplacian (planned; see `spectral/__init__.py`).
+- Hodge Laplacians on simplicial complexes.
+- Lanczos sparse-eigensolver for large graphs (currently `linalg.eigh` dense only).
+- Heat kernel via Chebyshev polynomials.
+- Persistent homology.
+- Forman-Ricci curvature.
+- Riemannian optimizers (SGD/Adam/trust-region on the manifold module).
+- Conjugate priors / Bregman divergences / information geometry.
+- Hardware-optimization sweep (benchmarks haven't been run).
+- Mech-interp class-method provenance (FixedRankManifold/SPDManifold method
+  calls aren't yet captured by `record()` — top-level functions only).
