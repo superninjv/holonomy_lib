@@ -1,8 +1,8 @@
-# synoros-lib — agent reference
+# holonomy-lib — agent reference
 
 A research-grade PyTorch math library: GPU-native, batched-first, audit-clean,
 cited. This file is a **flat inventory** for an LLM agent doing research with
-synoros-lib — every primitive, its signature, what it does in one line, and
+holonomy-lib — every primitive, its signature, what it does in one line, and
 the paper to cite. Read this *before* grepping or reading source.
 
 If something you want isn't here, it isn't implemented. Don't reinvent;
@@ -35,21 +35,21 @@ Shapes use `B` for batch, `n`/`m`/`r`/etc. for math.
 ## Available imports (canonical paths)
 
 ```python
-from synoros_lib.manifolds import FixedRankManifold, SPDManifold
-from synoros_lib.algebra import truncated_svd
-from synoros_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
-from synoros_lib.spectral import laplacian, laplacian_eigenmaps
-from synoros_lib.discrete_geometry import (
+from holonomy_lib.manifolds import FixedRankManifold, SPDManifold
+from holonomy_lib.algebra import truncated_svd
+from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
+from holonomy_lib.spectral import laplacian, laplacian_eigenmaps
+from holonomy_lib.discrete_geometry import (
     ollivier_ricci_curvature,
     discrete_ricci_flow,
     ricci_flow_with_surgery,
 )
-from synoros_lib import provenance
+from holonomy_lib import provenance
 ```
 
 ---
 
-## §Manifolds — `synoros_lib.manifolds`
+## §Manifolds — `holonomy_lib.manifolds`
 
 Riemannian manifolds with batched-first, GPU-native operations.
 
@@ -90,7 +90,7 @@ Refs: Pennec-Fillard-Ayache (2006), Bhatia (2007), Sra-Hosseini (2015).
 
 ---
 
-## §Algebra — `synoros_lib.algebra`
+## §Algebra — `holonomy_lib.algebra`
 
 Linear-algebra primitives.
 
@@ -104,7 +104,7 @@ Refs: Eckart-Young (1936), Halko-Martinsson-Tropp (2011).
 
 ---
 
-## §Tensor calculus — `synoros_lib.tensor_calculus`
+## §Tensor calculus — `holonomy_lib.tensor_calculus`
 
 Multilinear algebra on tensors with leading batch dim.
 
@@ -125,7 +125,7 @@ Refs: De Lathauwer-De Moor-Vandewalle (2000), Vannieuwenhoven et al. (2012).
 
 ---
 
-## §Spectral — `synoros_lib.spectral`
+## §Spectral — `holonomy_lib.spectral`
 
 Graph Laplacians + spectral embedding. All take symmetric adjacency `A: (B, n, n)`.
 Isolated nodes handled via Moore-Penrose convention (Cheng-Wu 2024).
@@ -154,7 +154,7 @@ Bottom-k spectral embedding. `laplacian_type ∈ {"combinatorial", "symmetric_no
 
 ---
 
-## §Discrete geometry — `synoros_lib.discrete_geometry`
+## §Discrete geometry — `holonomy_lib.discrete_geometry`
 
 Combinatorial / Ricci-style curvature on graphs. The Perelman-on-networks
 thread (Ollivier curvature → flow → surgery for community detection).
@@ -179,7 +179,7 @@ Ni-Lin-Luo-Gao (2019), Liu-Wang-Yau-Zeng (2017).
 
 ---
 
-## §Provenance — `synoros_lib.provenance`
+## §Provenance — `holonomy_lib.provenance`
 
 Content-addressable hex provenance for **mechanistic interpretability**. Every
 decorated primitive emits a Merkle-DAG node when called inside `record()`.
@@ -216,9 +216,9 @@ with provenance.record(cache_tensors=False, hash_algorithm=...) as reg:
 ### Decorating new primitives
 
 ```python
-from synoros_lib.provenance import with_provenance
+from holonomy_lib.provenance import with_provenance
 
-@with_provenance("synoros_lib.module.op_name", op_version="0.1")
+@with_provenance("holonomy_lib.module.op_name", op_version="0.1")
 def op_name(x: torch.Tensor, k: int = 3) -> torch.Tensor:
     ...
 ```
@@ -241,7 +241,7 @@ truncated to 16 chars. Pluggable hash function (blake3 if installed, else sha256
   scale-of-validity. Update when you add a tunable constant.
 - `pyproject.toml` — Python ≥3.12, install with `uv pip install -e ".[dev]"`.
   Torch must be installed separately per-platform (ROCm wheels on AMD).
-- `src/synoros_lib/audit.py` — `python -m synoros_lib.audit src/ --strict`
+- `src/holonomy_lib/audit.py` — `python -m holonomy_lib.audit src/ --strict`
   scans source for undocumented numerical literals. CI gate.
 - `.github/workflows/ci.yml` — runs audit + tests on every push.
 

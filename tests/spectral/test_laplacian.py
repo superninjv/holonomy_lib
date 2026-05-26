@@ -1,11 +1,11 @@
-"""Tests for synoros_lib.spectral.laplacian."""
+"""Tests for holonomy_lib.spectral.laplacian."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from synoros_lib.spectral import laplacian
+from holonomy_lib.spectral import laplacian
 
 
 def _seeded_generator(seed: int) -> torch.Generator:

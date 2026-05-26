@@ -1,4 +1,4 @@
-"""synoros_lib.spectral — graph Laplacians and spectral utilities.
+"""holonomy_lib.spectral — graph Laplacians and spectral utilities.
 
 Currently implemented:
   laplacian.combinatorial(A)          — L = D − A
@@ -18,7 +18,7 @@ Planned (per HANDOFF.md §4):
   Effective resistance / commute-time distances.
 """
 
-from synoros_lib.spectral import laplacian
-from synoros_lib.spectral.embedding import laplacian_eigenmaps
+from holonomy_lib.spectral import laplacian
+from holonomy_lib.spectral.embedding import laplacian_eigenmaps
 
 __all__ = ["laplacian", "laplacian_eigenmaps"]

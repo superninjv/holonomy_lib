@@ -29,12 +29,13 @@ import hashlib
 import inspect
 import json
 import threading
-from collections import deque
+import weakref
+from collections import OrderedDict, deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 import torch
 
@@ -85,7 +86,7 @@ class ProvenanceNode:
 
     Attributes:
       hex: content-addressable identifier for this op call.
-      op_id: dotted-name identifier, e.g. "synoros_lib.algebra.linear.truncated_svd".
+      op_id: dotted-name identifier, e.g. "holonomy_lib.algebra.linear.truncated_svd".
       op_version: version string; bump when the implementation changes.
       params: canonicalized non-tensor kwargs (sorted JSON-serializable).
       input_hexes: hex codes of input tensors, in argument order.
@@ -126,12 +127,35 @@ class ProvenanceRegistry:
         self,
         cache_tensors: bool = False,
         hash_algorithm: str = _DEFAULT_HASHER_NAME,
+        max_cache_size: Optional[int] = None,
+        cache_ops: Optional[Iterable[str]] = None,
     ):
         self._nodes: dict[str, ProvenanceNode] = {}
-        self._tensor_cache: dict[str, torch.Tensor] = {}
+        # OrderedDict so we can evict in insertion order ("oldest first")
+        # when `max_cache_size` is enforced. Mech-interp users typically
+        # want recent intermediates around; if a workload needs LRU-by-
+        # access, swap to `move_to_end` on read here.
+        self._tensor_cache: "OrderedDict[str, torch.Tensor]" = OrderedDict()
         self._cache_tensors: bool = cache_tensors
-        # tensor_id (Python id) → hex, for chaining inputs to upstream outputs.
-        self._tensor_id_to_hex: dict[int, str] = {}
+        self._max_cache_size: Optional[int] = max_cache_size
+        # Selective caching: if set, only outputs from these op_ids are
+        # cached. Implies caching is on for those ops regardless of
+        # `cache_tensors`. None means "cache all when cache_tensors=True".
+        self._cache_ops: Optional[set[str]] = (
+            set(cache_ops) if cache_ops is not None else None
+        )
+        if max_cache_size is not None and max_cache_size <= 0:
+            raise ValueError(
+                f"max_cache_size must be > 0 or None, got {max_cache_size}"
+            )
+        # tensor_id (Python id) → (weakref, hex), for chaining inputs to
+        # upstream outputs. The weakref guards against id reuse: when a
+        # tensor is GC'd, Python may hand out its memory address to a
+        # new allocation; without the weakref check, the new tensor
+        # would inherit the dead tensor's hex (silent corruption).
+        self._tensor_id_to_hex: dict[
+            int, tuple[weakref.ReferenceType, str]
+        ] = {}
         # User-set substitutions: hex → tensor (or tuple of tensors).
         self._substitutions: dict[str, Any] = {}
         # Hook callbacks: op_id → list[Callable[[ProvenanceNode, Any], None]]
@@ -154,20 +178,58 @@ class ProvenanceRegistry:
         output: Any,
     ) -> None:
         self._nodes[node.hex] = node
-        if self._cache_tensors:
-            if isinstance(output, torch.Tensor):
-                self._tensor_cache[node.hex] = output
-            elif isinstance(output, tuple):
-                for i, o in enumerate(output):
-                    if isinstance(o, torch.Tensor):
-                        self._tensor_cache[f"{node.hex}:{i}"] = o
+        # Decide whether to cache this output:
+        #   - if `cache_ops` was set, only cache when op_id is in the set
+        #     (this implicitly enables caching for those ops, regardless
+        #      of `cache_tensors`)
+        #   - else, fall through to the boolean `cache_tensors`
+        if self._cache_ops is not None:
+            should_cache = node.op_id in self._cache_ops
+        else:
+            should_cache = self._cache_tensors
+        if not should_cache:
+            return
+        if isinstance(output, torch.Tensor):
+            self._cache_put(node.hex, output)
+        elif isinstance(output, tuple):
+            for i, o in enumerate(output):
+                if isinstance(o, torch.Tensor):
+                    self._cache_put(f"{node.hex}:{i}", o)
+
+    def _cache_put(self, key: str, value: torch.Tensor) -> None:
+        """Insert into the tensor cache, evicting oldest if size-bounded."""
+        if key in self._tensor_cache:
+            # Refresh to the end so it's not the next eviction victim.
+            self._tensor_cache.move_to_end(key)
+        self._tensor_cache[key] = value
+        if (
+            self._max_cache_size is not None
+            and len(self._tensor_cache) > self._max_cache_size
+        ):
+            # popitem(last=False) pops the oldest entry.
+            self._tensor_cache.popitem(last=False)
 
     def _register_tensor_hex(self, t: torch.Tensor, hex_id: str) -> None:
         """Tag a tensor with its hex so downstream ops can chain."""
-        self._tensor_id_to_hex[id(t)] = hex_id
+        self._tensor_id_to_hex[id(t)] = (weakref.ref(t), hex_id)
 
     def _lookup_tensor_hex(self, t: torch.Tensor) -> Optional[str]:
-        return self._tensor_id_to_hex.get(id(t))
+        """Return the stored hex for `t`, or None if no live entry exists.
+
+        The stored weakref must still resolve to the same tensor object;
+        if it has been GC'd and `id(t)` was reused for a different tensor,
+        we treat the entry as stale and let the caller fall back to a
+        fresh content hash.
+        """
+        entry = self._tensor_id_to_hex.get(id(t))
+        if entry is None:
+            return None
+        ref, hex_id = entry
+        if ref() is not t:
+            # id reuse: drop the stale entry so we don't keep checking.
+            self._tensor_id_to_hex.pop(id(t), None)
+            return None
+        return hex_id
 
     # ----- public query API -----
 
@@ -244,7 +306,7 @@ class ProvenanceRegistry:
 
         Example:
           activations = []
-          reg.on_op("synoros_lib.spectral.laplacian.combinatorial",
+          reg.on_op("holonomy_lib.spectral.laplacian.combinatorial",
                       lambda node, out: activations.append((node.hex, out)))
           # ... run the pipeline ...
           # activations now lists every Laplacian computed
@@ -512,7 +574,12 @@ class ProvenanceRegistry:
                 )
             fn, _ver = OP_REGISTRY[node.op_id]
             # Reconstruct call kwargs from input_hexes + params.
-            call_kwargs: dict[str, Any] = node.parsed_params()
+            # Restore canonicalized values (e.g. torch.Generator) before
+            # invoking the op — params serialize to JSON-stable forms
+            # but the op expects real objects.
+            call_kwargs: dict[str, Any] = {
+                k: _restore_value(v) for k, v in node.parsed_params().items()
+            }
             for input_hex in node.input_hexes:
                 name, _, hex_part = input_hex.partition("=")
                 if hex_part not in shadow:
@@ -531,9 +598,19 @@ class ProvenanceRegistry:
                         shadow[f"{h}:{i}"] = o
                         new_outputs[f"{h}:{i}"] = o
             if final_hex is not None and h.split(":")[0] == final_hex.split(":")[0]:
-                # Hit the requested terminus.
-                key = final_hex if final_hex in shadow else h
-                return {key: shadow[key]}
+                # Hit the requested terminus. For multi-output nodes,
+                # `shadow` holds the outputs under `h:0`, `h:1`, ... —
+                # so a `final_hex` matching only the base (no :i) cannot
+                # be looked up directly. Return every shadow entry that
+                # belongs to this node, plus the exact-match key if the
+                # caller passed `h:i` for a specific output.
+                base = h.split(":")[0]
+                if final_hex in shadow:
+                    return {final_hex: shadow[final_hex]}
+                return {
+                    k: v for k, v in new_outputs.items()
+                    if k.split(":")[0] == base
+                }
 
         if final_hex is not None:
             return {final_hex: shadow[final_hex]} if final_hex in shadow else {}
@@ -586,6 +663,8 @@ class ProvenanceRegistry:
 def record(
     cache_tensors: bool = False,
     hash_algorithm: str = _DEFAULT_HASHER_NAME,
+    max_cache_size: Optional[int] = None,
+    cache_ops: Optional[Iterable[str]] = None,
 ) -> Iterator[ProvenanceRegistry]:
     """Activate provenance recording for decorated primitives.
 
@@ -597,6 +676,15 @@ def record(
         available at import (blake3 if installed, else sha256). All
         hexes within a registry are computed with this algorithm; you
         cannot mix.
+      max_cache_size: hard cap on the number of cached output tensors.
+        When exceeded, the oldest cached entry is evicted (FIFO). None
+        means unbounded — convenient for short pipelines but
+        a memory hazard for long ones, especially on GPU.
+      cache_ops: if provided, only outputs whose op_id is in this set
+        are cached. Overrides `cache_tensors` for selectivity: caching
+        is enabled for the listed ops and disabled for everything else.
+        Use this when you want to keep, say, every Laplacian but not
+        every intermediate matmul.
 
     Yields:
       The active ProvenanceRegistry.
@@ -604,6 +692,8 @@ def record(
     registry = ProvenanceRegistry(
         cache_tensors=cache_tensors,
         hash_algorithm=hash_algorithm,
+        max_cache_size=max_cache_size,
+        cache_ops=cache_ops,
     )
     prev = getattr(_local, "context", None)
     _local.context = registry
@@ -622,13 +712,46 @@ def _current_context() -> Optional[ProvenanceRegistry]:
 # ============================================================
 
 
-def _canonical_params(kwargs: dict[str, Any]) -> str:
-    """JSON-canonicalize non-tensor kwargs (sorted keys, str-defaulted)."""
-    cleaned = {
-        k: v for k, v in kwargs.items()
-        if not isinstance(v, torch.Tensor)
-    }
-    return json.dumps(cleaned, sort_keys=True, default=str)
+# Sentinel tag for torch.Generator canonicalization. A Generator's
+# Python repr is its memory address — two generators with the same
+# seed get different reprs and therefore different hexes, which
+# silently breaks reproducibility. Canonicalize to {seed, device}
+# so that "same seed → same hex" holds, and replay can reconstruct
+# a Generator with that seed.
+_TORCH_GENERATOR_TAG = "__torch_generator__"
+
+
+def _canonicalize_value(v: Any) -> Any:
+    """Replace non-JSON-stable objects with canonical representations.
+
+    Currently handles torch.Generator. Other un-serializable values fall
+    through to `default=str` in the JSON encoder; if those become a
+    reproducibility hazard, add cases here.
+    """
+    if isinstance(v, torch.Generator):
+        return {
+            _TORCH_GENERATOR_TAG: True,
+            "seed": int(v.initial_seed()),
+            "device": str(v.device),
+        }
+    return v
+
+
+def _restore_value(v: Any) -> Any:
+    """Inverse of `_canonicalize_value` — rebuild objects from params dict.
+
+    Used by `ProvenanceRegistry.replay` to reconstruct call kwargs.
+    A torch.Generator restored here is freshly seeded with the recorded
+    `initial_seed()`; it does not preserve consumed-state, so replaying
+    through stochastic ops that consume the generator partway will
+    produce different bits past that consumption point. The replay
+    docstring already warns about stochastic ops.
+    """
+    if isinstance(v, dict) and v.get(_TORCH_GENERATOR_TAG):
+        g = torch.Generator(device=v["device"])
+        g.manual_seed(int(v["seed"]))
+        return g
+    return v
 
 
 def _tensor_content_hex(t: torch.Tensor, hasher_factory: Callable) -> str:
@@ -694,6 +817,19 @@ def with_provenance(op_id: str, op_version: str = "0.1") -> Callable:
     """
     def decorator(fn: Callable) -> Callable:
         sig = inspect.signature(fn)
+        # *args / **kwargs would not be addressable by name, so the
+        # hex would lose information and replay couldn't reconstruct
+        # the call. Reject at decoration time — fail fast, not later.
+        for p in sig.parameters.values():
+            if p.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                raise TypeError(
+                    f"@with_provenance({op_id!r}): function {fn.__qualname__} "
+                    f"uses {p.kind.name.lower()} parameter {p.name!r}; "
+                    f"only named parameters are supported"
+                )
         if op_id in OP_REGISTRY and OP_REGISTRY[op_id][0] is not fn:
             raise ValueError(
                 f"op_id {op_id!r} already registered to a different function"
@@ -721,7 +857,7 @@ def with_provenance(op_id: str, op_version: str = "0.1") -> Callable:
                 if isinstance(value, torch.Tensor):
                     tensor_inputs[name] = _resolve_tensor_hex(value, ctx)
                 else:
-                    non_tensor_params[name] = value
+                    non_tensor_params[name] = _canonicalize_value(value)
 
             # Deterministic input_hexes: sorted by name, "name=hex" each.
             input_hexes = tuple(

@@ -1,4 +1,4 @@
-# Handoff — synoros-lib — initial build
+# Handoff — holonomy-lib — initial build
 
 You're the first session on this project. The repo was seeded by a session running on `synoros-substrate` (sibling repo at `~/projects/synoros-substrate/`). Read `README.md` first for project vision.
 
@@ -13,7 +13,7 @@ You're the first session on this project. The repo was seeded by a session runni
 
 The result: drift. Sessions add `lr = 0.01` or `epsilon = 1e-5` because the principled value would require a research detour. The substrate accumulates technical debt that's hard to back out.
 
-`synoros-lib` is the library that, if it existed, would have prevented all of this.
+`holonomy-lib` is the library that, if it existed, would have prevented all of this.
 
 ## What to build
 
@@ -48,7 +48,7 @@ A PyTorch-native, GPU-capable, batched-first, audit-compliant math library cover
 - `pymanopt` — comprehensive but numpy-only
 
 **synoros-substrate prior art**:
-- `src/synoros_library/manifolds/fixed_rank.py` — PyTorch-native FixedRankManifold with batched operations (Vandereycken 2013). **PORT THIS DIRECTLY.**
+- `src/holonomy_library/manifolds/fixed_rank.py` — PyTorch-native FixedRankManifold with batched operations (Vandereycken 2013). **PORT THIS DIRECTLY.**
 
 **What to do**:
 - Move synoros-substrate's FixedRankManifold here as the first manifold
@@ -163,7 +163,7 @@ A PyTorch-native, GPU-capable, batched-first, audit-compliant math library cover
 
 ## Audit infrastructure
 
-**Already ported**: `src/synoros_lib/audit.py` (from synoros-substrate's `src/synoros_library/audit.py`). Scans Python source for numeric literals; flags any that aren't:
+**Already ported**: `src/holonomy_lib/audit.py` (from synoros-substrate's `src/holonomy_library/audit.py`). Scans Python source for numeric literals; flags any that aren't:
 - In ALLOWED_LITERALS (mathematical identities, universal unit conversions)
 - Documented in `notes/magic_numbers.md` catalog
 
@@ -172,7 +172,7 @@ A PyTorch-native, GPU-capable, batched-first, audit-compliant math library cover
 2. **Universal invariant** — π, e, log N, 1/N, √N, mathematical identities
 3. **Experimentally set with documented procedure** — value tuned via documented sweep, scale-of-validity recorded
 
-The audit tool enforces this. CI integration is the first non-trivial task (run `synoros_lib.audit` in pre-commit / GH Actions).
+The audit tool enforces this. CI integration is the first non-trivial task (run `holonomy_lib.audit` in pre-commit / GH Actions).
 
 ## Architectural principles
 
@@ -187,12 +187,12 @@ The audit tool enforces this. CI integration is the first non-trivial task (run 
 ## Package structure (skeleton already in place)
 
 ```
-synoros-lib/
+holonomy-lib/
   README.md                   — vision + relationship to synoros-substrate
   HANDOFF.md                  — this file
   CLAUDE.md                   — operating constraints (for agents working here)
   pyproject.toml              — Python package config
-  src/synoros_lib/
+  src/holonomy_lib/
     audit.py                  — discipline enforcement (ported)
     __init__.py
     manifolds/                — TO BUILD
@@ -216,8 +216,8 @@ synoros-lib/
 In order:
 
 1. **Set up the package** — finalize `pyproject.toml`, install in dev mode, verify imports work.
-2. **Wire CI for the audit** — pre-commit hook or GH Action that runs `python -m synoros_lib.audit src/` on every push. Failing audit = failing build.
-3. **Port the first manifold** — copy `src/synoros_library/manifolds/fixed_rank.py` from synoros-substrate, adapt namespace to `synoros_lib.manifolds.fixed_rank`, write tests.
+2. **Wire CI for the audit** — pre-commit hook or GH Action that runs `python -m holonomy_lib.audit src/` on every push. Failing audit = failing build.
+3. **Port the first manifold** — copy `src/holonomy_library/manifolds/fixed_rank.py` from synoros-substrate, adapt namespace to `holonomy_lib.manifolds.fixed_rank`, write tests.
 4. **Choose the second section to build out** — probably differential geometry (build out from the fixed-rank seed) OR spectral theory (we have prior art there too via the spectral_prior_init).
 5. **Pick a citation/docs convention** — e.g., every public function has a `References:` section in docstring with paper title + year + author. Decide on the convention and apply consistently.
 
@@ -234,7 +234,7 @@ In order:
 ## Relationship management
 
 - `synoros-substrate` is the primary consumer. When something works here, synoros-substrate should be updated to depend on it and stop carrying its own implementation.
-- Currently: `synoros-substrate/src/synoros_library/` contains audit + some manifold code that should EVENTUALLY migrate here. When it does, synoros-substrate gets `synoros-lib` as a dependency.
+- Currently: `synoros-substrate/src/holonomy_library/` contains audit + some manifold code that should EVENTUALLY migrate here. When it does, synoros-substrate gets `holonomy-lib` as a dependency.
 - For now: independent development. Migration happens as primitives stabilize.
 
 ## What to ignore
@@ -246,7 +246,7 @@ In order:
 
 ## What success looks like
 
-A year from now: a researcher building a new cognitive-substrate or geometric-ML project can `pip install synoros-lib` and immediately have access to:
+A year from now: a researcher building a new cognitive-substrate or geometric-ML project can `pip install holonomy-lib` and immediately have access to:
 - All the manifolds they'd need without arbitrary defaults
 - Tensor decompositions they don't have to re-derive
 - Persistent-homology utilities that work on GPU

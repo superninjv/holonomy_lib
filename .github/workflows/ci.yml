@@ -22,16 +22,20 @@ jobs:
           uv venv
           uv pip install -e ".[dev]"
       - name: Run audit (strict)
-        run: .venv/bin/python -m synoros_lib.audit src/ --strict
+        run: .venv/bin/python -m holonomy_lib.audit src/ --strict
 
   test:
-    name: Tests (CPU)
+    name: Tests (CPU, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install uv
         run: pip install uv
       - name: Create venv + install (with CPU torch)
@@ -39,6 +43,15 @@ jobs:
           uv venv
           uv pip install -e ".[dev]"
           uv pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Install comparison libraries (best-effort)
+        # Used by the comparison test suites — agreement against
+        # pymanopt, geoopt, tensorly, networkx + GraphRicciCurvature.
+        # Tests skip silently when any of these aren't available.
+        run: |
+          .venv/bin/pip install pymanopt autograd || true
+          .venv/bin/pip install geoopt || true
+          .venv/bin/pip install tensorly || true
+          .venv/bin/pip install networkx GraphRicciCurvature || true
+          .venv/bin/pip install pandas networkx || true
       - name: Run pytest
-        run: .venv/bin/python -m pytest tests/ -v
-        continue-on-error: true  # tests/ may be empty during early build-out
+        run: .venv/bin/python -m pytest tests/ -v --tb=short

@@ -1,4 +1,4 @@
-"""synoros-lib — research-oriented PyTorch math library.
+"""holonomy-lib — research-oriented PyTorch math library.
 
 See README.md for vision; HANDOFF.md for current build state.
 

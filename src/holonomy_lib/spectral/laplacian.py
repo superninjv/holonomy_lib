@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import torch
 
-from synoros_lib.provenance import with_provenance
+from holonomy_lib.provenance import with_provenance
 
 
 def degree(A: torch.Tensor, signed: bool = False) -> torch.Tensor:
@@ -67,7 +67,7 @@ def degree(A: torch.Tensor, signed: bool = False) -> torch.Tensor:
     return A.abs().sum(dim=-1) if signed else A.sum(dim=-1)
 
 
-@with_provenance("synoros_lib.spectral.laplacian.combinatorial", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.laplacian.combinatorial", op_version="0.1")
 def combinatorial(A: torch.Tensor) -> torch.Tensor:
     """Combinatorial Laplacian L = D − A.
 
@@ -88,7 +88,7 @@ def combinatorial(A: torch.Tensor) -> torch.Tensor:
     return torch.diag_embed(d) - A
 
 
-@with_provenance("synoros_lib.spectral.laplacian.symmetric_normalized", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.laplacian.symmetric_normalized", op_version="0.1")
 def symmetric_normalized(A: torch.Tensor) -> torch.Tensor:
     """Symmetric normalized Laplacian L_sym = I − D^{−1/2} A D^{−1/2}.
 
@@ -115,7 +115,7 @@ def symmetric_normalized(A: torch.Tensor) -> torch.Tensor:
     return eye - A_norm
 
 
-@with_provenance("synoros_lib.spectral.laplacian.random_walk", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.laplacian.random_walk", op_version="0.1")
 def random_walk(A: torch.Tensor) -> torch.Tensor:
     """Random-walk Laplacian L_rw = I − D^{−1} A.
 
@@ -141,7 +141,7 @@ def random_walk(A: torch.Tensor) -> torch.Tensor:
     return eye - A_rw
 
 
-@with_provenance("synoros_lib.spectral.laplacian.signed", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.laplacian.signed", op_version="0.1")
 def signed(A: torch.Tensor) -> torch.Tensor:
     """Signed Laplacian L^σ = D^{|σ|} − A,  D^{|σ|}_{ii} = Σ_j |A_{ij}|.
 
@@ -188,22 +188,25 @@ def _safe_inv_sqrt(d: torch.Tensor) -> torch.Tensor:
     """Pseudoinverse of D^{1/2}: 1/√d where d > 0, zero where d = 0.
 
     Moore-Penrose convention for isolated nodes (Cheng-Wu 2024).
+    Uses `torch.where` rather than boolean-mask assignment so the
+    operation stays fully vectorized — important for `torch.vmap`,
+    second-order autograd, and `torch.compile`. We pre-clamp the
+    rsqrt input so the unselected branch never evaluates to `inf`
+    (which would still appear in the autograd graph even though
+    `where` masks it out at the value level).
     """
-    out = torch.zeros_like(d)
-    mask = d > 0
-    out[mask] = torch.rsqrt(d[mask])
-    return out
+    safe_d = d.clamp(min=torch.finfo(d.dtype).tiny)
+    return torch.where(d > 0, torch.rsqrt(safe_d), torch.zeros_like(d))
 
 
 def _safe_inv(d: torch.Tensor) -> torch.Tensor:
     """Pseudoinverse of D: 1/d where d > 0, zero where d = 0.
 
     Moore-Penrose convention for isolated nodes (Cheng-Wu 2024).
+    See `_safe_inv_sqrt` for the `torch.where` rationale.
     """
-    out = torch.zeros_like(d)
-    mask = d > 0
-    out[mask] = torch.reciprocal(d[mask])
-    return out
+    safe_d = d.clamp(min=torch.finfo(d.dtype).tiny)
+    return torch.where(d > 0, torch.reciprocal(safe_d), torch.zeros_like(d))
 
 
 def _batched_eye(

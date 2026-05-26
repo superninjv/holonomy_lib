@@ -1,8 +1,8 @@
-"""synoros_lib.discrete_geometry — combinatorial curvatures and discrete
+"""holonomy_lib.discrete_geometry — combinatorial curvatures and discrete
 differential geometry on graphs / meshes.
 
 This module exists because the continuous Riemannian primitives in
-`synoros_lib.manifolds` answer "what is the geometry of this smooth
+`holonomy_lib.manifolds` answer "what is the geometry of this smooth
 manifold?", while many research problems instead ask "what is the
 discrete geometry of this graph or simplicial complex?". The discrete
 versions have their own well-developed theory — discrete Ricci flow,
@@ -34,7 +34,7 @@ References (program-level):
     Perelman's surgery in 3-D, on simplicial complexes.
 """
 
-from synoros_lib.discrete_geometry.ricci import (
+from holonomy_lib.discrete_geometry.ricci import (
     discrete_ricci_flow,
     ollivier_ricci_curvature,
     ricci_flow_with_surgery,

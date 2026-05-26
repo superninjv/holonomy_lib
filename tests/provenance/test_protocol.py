@@ -1,4 +1,4 @@
-"""Tests for synoros_lib.provenance.protocol.
+"""Tests for holonomy_lib.provenance.protocol.
 
 Covers:
   1. Determinism — same op + inputs → same hex.
@@ -24,9 +24,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from synoros_lib import provenance
-from synoros_lib.algebra import truncated_svd
-from synoros_lib.spectral import laplacian
+from holonomy_lib import provenance
+from holonomy_lib.algebra import truncated_svd
+from holonomy_lib.spectral import laplacian
 
 
 def _seeded(seed: int) -> torch.Generator:
@@ -71,7 +71,7 @@ class TestRecording:
             U, S, Vt = truncated_svd(M, r=3, mode="exact")
         assert len(reg) == 1
         node = next(iter(reg))
-        assert node.op_id == "synoros_lib.algebra.linear.truncated_svd"
+        assert node.op_id == "holonomy_lib.algebra.linear.truncated_svd"
         assert node.op_version == "0.1"
         # Output shape captured per-tensor (truncated_svd returns 3 tensors).
         assert len(node.output_shape) == 3
@@ -143,8 +143,8 @@ class TestDagChaining:
         # Two nodes recorded
         assert len(reg) == 2
         # Find each by op_id
-        comb_node = reg.where(op_id="synoros_lib.spectral.laplacian.combinatorial")[0]
-        svd_node = reg.where(op_id="synoros_lib.algebra.linear.truncated_svd")[0]
+        comb_node = reg.where(op_id="holonomy_lib.spectral.laplacian.combinatorial")[0]
+        svd_node = reg.where(op_id="holonomy_lib.algebra.linear.truncated_svd")[0]
         # SVD's input_hexes are name=hex; comb_node.hex appears as the
         # hex part of one of those.
         hex_parts = [h.partition("=")[2] for h in svd_node.input_hexes]
@@ -156,7 +156,7 @@ class TestDagChaining:
         with provenance.record() as reg:
             L = laplacian.combinatorial(A)
             U, _, _ = truncated_svd(L, r=2, mode="exact")
-        svd_hex = reg.where(op_id="synoros_lib.algebra.linear.truncated_svd")[0].hex
+        svd_hex = reg.where(op_id="holonomy_lib.algebra.linear.truncated_svd")[0].hex
         ancestors = reg.ancestors(svd_hex)
         # Should include the combinatorial node + the SVD itself
         assert len(ancestors) == 2
@@ -225,7 +225,7 @@ class TestInterop:
         d = reg.to_dict()
         assert "nodes" in d
         assert len(d["nodes"]) == 1
-        assert d["nodes"][0]["op_id"] == "synoros_lib.spectral.laplacian.combinatorial"
+        assert d["nodes"][0]["op_id"] == "holonomy_lib.spectral.laplacian.combinatorial"
 
     def test_to_networkx(self):
         nx = pytest.importorskip("networkx")
@@ -287,7 +287,7 @@ class TestMechInterpDemo:
 
         # Find the Laplacian node, prepare a "zero ablation"
         lap_node = reg_base.where(
-            op_id="synoros_lib.spectral.laplacian.symmetric_normalized",
+            op_id="holonomy_lib.spectral.laplacian.symmetric_normalized",
         )[0]
         zero_L = torch.zeros(1, 6, 6, dtype=torch.float64)
 
@@ -304,7 +304,7 @@ class TestMechInterpDemo:
         )
         #   2. Ablated DAG has the substituted Laplacian.
         ablated_lap = reg_ablated.where(
-            op_id="synoros_lib.spectral.laplacian.symmetric_normalized",
+            op_id="holonomy_lib.spectral.laplacian.symmetric_normalized",
         )[0]
         assert ablated_lap.hex == lap_node.hex, (
             "same op call → same hex even with substitution active"
@@ -323,7 +323,7 @@ class TestHooks:
         captured = []
         with provenance.record() as reg:
             reg.on_op(
-                "synoros_lib.spectral.laplacian.combinatorial",
+                "holonomy_lib.spectral.laplacian.combinatorial",
                 lambda node, out: captured.append((node.hex, out.shape)),
             )
             L = laplacian.combinatorial(A)
@@ -338,7 +338,7 @@ class TestHooks:
         captured = []
         with provenance.record() as reg:
             # Hook for an op we don't call
-            reg.on_op("synoros_lib.algebra.linear.truncated_svd",
+            reg.on_op("holonomy_lib.algebra.linear.truncated_svd",
                         lambda n, o: captured.append(n))
             laplacian.combinatorial(A)
         assert captured == []
@@ -348,9 +348,9 @@ class TestHooks:
         A = (A + A.mT).abs()
         order = []
         with provenance.record() as reg:
-            reg.on_op("synoros_lib.spectral.laplacian.combinatorial",
+            reg.on_op("holonomy_lib.spectral.laplacian.combinatorial",
                         lambda n, o: order.append("first"))
-            reg.on_op("synoros_lib.spectral.laplacian.combinatorial",
+            reg.on_op("holonomy_lib.spectral.laplacian.combinatorial",
                         lambda n, o: order.append("second"))
             laplacian.combinatorial(A)
         assert order == ["first", "second"]
@@ -363,7 +363,7 @@ class TestHooks:
         A = (A + A.mT).abs()
         with provenance.record() as reg:
             # Hook that "tries" to mutate (its return value is ignored)
-            reg.on_op("synoros_lib.spectral.laplacian.combinatorial",
+            reg.on_op("holonomy_lib.spectral.laplacian.combinatorial",
                         lambda n, o: torch.zeros_like(o))
             L = laplacian.combinatorial(A)
         # L is the real Laplacian, not zeros
@@ -397,11 +397,11 @@ class TestSaeDataset:
             laplacian.combinatorial(A)
             truncated_svd(A, r=2, mode="exact")
         only_svd = list(reg.to_sae_dataset(
-            op_id="synoros_lib.algebra.linear.truncated_svd",
+            op_id="holonomy_lib.algebra.linear.truncated_svd",
         ))
         assert len(only_svd) == 3  # U, S, Vt
         assert all(
-            meta["op_id"] == "synoros_lib.algebra.linear.truncated_svd"
+            meta["op_id"] == "holonomy_lib.algebra.linear.truncated_svd"
             for _, meta in only_svd
         )
 
@@ -435,7 +435,7 @@ class TestDiff:
             laplacian.combinatorial(B)
         d = reg1.diff(reg2)
         # Both runs have the combinatorial op, but with different hexes
-        op = "synoros_lib.spectral.laplacian.combinatorial"
+        op = "holonomy_lib.spectral.laplacian.combinatorial"
         assert op in d["only_in_self"]
         assert op in d["only_in_other"]
         assert d["shared"].get(op, []) == []
@@ -448,8 +448,8 @@ class TestDiff:
         with provenance.record() as reg2:
             laplacian.symmetric_normalized(A)
         d = reg1.diff(reg2)
-        assert "synoros_lib.spectral.laplacian.combinatorial" in d["op_ids_only_in_self"]
-        assert "synoros_lib.spectral.laplacian.symmetric_normalized" in d["op_ids_only_in_other"]
+        assert "holonomy_lib.spectral.laplacian.combinatorial" in d["op_ids_only_in_self"]
+        assert "holonomy_lib.spectral.laplacian.symmetric_normalized" in d["op_ids_only_in_other"]
 
 
 # --------------------------------------------------------------------
@@ -513,12 +513,12 @@ class TestReplay:
 
         # Find the Laplacian node; substitute it with zeros.
         lap_hex = reg.where(
-            op_id="synoros_lib.spectral.laplacian.combinatorial",
+            op_id="holonomy_lib.spectral.laplacian.combinatorial",
         )[0].hex
         new_outputs = reg.replay({lap_hex: torch.zeros(1, 5, 5, dtype=torch.float64)})
 
         # The SVD should have been re-executed; outputs differ from cache.
-        svd_hex = reg.where(op_id="synoros_lib.algebra.linear.truncated_svd")[0].hex
+        svd_hex = reg.where(op_id="holonomy_lib.algebra.linear.truncated_svd")[0].hex
         original_U = reg.get_tensor(f"{svd_hex}:0")
         new_U = new_outputs[f"{svd_hex}:0"]
         diff = (original_U - new_U).abs().max().item()
@@ -537,9 +537,9 @@ class TestReplay:
             U, S, Vt = truncated_svd(L, r=2, mode="exact")
 
         lap_hex = reg.where(
-            op_id="synoros_lib.spectral.laplacian.combinatorial",
+            op_id="holonomy_lib.spectral.laplacian.combinatorial",
         )[0].hex
-        svd_hex = reg.where(op_id="synoros_lib.algebra.linear.truncated_svd")[0].hex
+        svd_hex = reg.where(op_id="holonomy_lib.algebra.linear.truncated_svd")[0].hex
         new_outputs = reg.replay({lap_hex: torch.zeros(1, 4, 4, dtype=torch.float64)})
 
         # Only SVD outputs in new_outputs (combinatorial wasn't re-executed
@@ -551,6 +551,333 @@ class TestReplay:
 # --------------------------------------------------------------------
 # Hash-algorithm pluggability
 # --------------------------------------------------------------------
+
+
+class TestReplayMultiOutput:
+    """Multi-output parents (ops returning tuples) feeding a single child
+    must replay correctly. The topological sort in `replay()` uses
+    `children_of` with one entry per parent-input edge, which means a
+    child consuming two outputs of the same parent appears twice in
+    children_of[parent]; the indegree count also counts both edges.
+    The two cancel out — verifying this here so it stays correct.
+    """
+
+    def test_replay_multi_output_parent_to_single_child(self):
+        from holonomy_lib.provenance import with_provenance
+
+        @with_provenance("test.replay_two_outputs", op_version="0.1")
+        def two_outputs(M: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            return M + 1, M - 1
+
+        @with_provenance("test.replay_consume_both", op_version="0.1")
+        def consume_both(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+            return A * B
+
+        @with_provenance("test.replay_head", op_version="0.1")
+        def head(M: torch.Tensor) -> torch.Tensor:
+            return M * 2
+
+        M = torch.randn(1, 3, 3, dtype=torch.float64, generator=_seeded(120))
+        with provenance.record(cache_tensors=True) as reg:
+            H = head(M)
+            A, B = two_outputs(H)
+            consume_both(A, B)
+
+        head_hex = reg.where(op_id="test.replay_head")[0].hex
+        two_hex = reg.where(op_id="test.replay_two_outputs")[0].hex
+        cb_hex = reg.where(op_id="test.replay_consume_both")[0].hex
+
+        new = reg.replay({head_hex: torch.zeros_like(reg.get_tensor(head_hex))})
+        # Both downstream nodes must appear in new (consume_both depends
+        # on BOTH of two_outputs's outputs — if indegree counting were
+        # wrong, consume_both would be silently dropped).
+        assert f"{two_hex}:0" in new
+        assert f"{two_hex}:1" in new
+        assert cb_hex in new
+
+
+class TestReplayFinalHex:
+    """The `final_hex` argument to replay() short-circuits once that
+    node has been re-executed. Previously untested."""
+
+    def test_replay_final_hex_short_circuits(self):
+        from holonomy_lib.algebra import truncated_svd
+        from holonomy_lib.spectral import laplacian
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(125))
+        A = (A + A.mT).abs() + torch.eye(5, dtype=torch.float64).unsqueeze(0)
+        with provenance.record(cache_tensors=True) as reg:
+            L = laplacian.combinatorial(A)
+            truncated_svd(L, r=2, mode="exact")
+
+        lap_hex = reg.where(
+            op_id="holonomy_lib.spectral.laplacian.combinatorial",
+        )[0].hex
+        svd_hex = reg.where(
+            op_id="holonomy_lib.algebra.linear.truncated_svd",
+        )[0].hex
+        # Ask for early stop at the SVD's main hex. The SVD is multi-
+        # output so the result holds U/S/Vt under svd_hex:0/1/2.
+        new = reg.replay(
+            {lap_hex: torch.zeros_like(reg.get_tensor(lap_hex))},
+            final_hex=svd_hex,
+        )
+        # Three SVD outputs returned; no extraneous downstream entries
+        # (which would indicate the early-stop didn't fire).
+        assert len(new) == 3
+        assert all(k.split(":")[0] == svd_hex for k in new)
+
+    def test_replay_final_hex_specific_output(self):
+        """Asking for `svd_hex:1` (the singular values specifically)
+        returns only that output, not all three."""
+        from holonomy_lib.algebra import truncated_svd
+        from holonomy_lib.spectral import laplacian
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(126))
+        A = (A + A.mT).abs() + torch.eye(5, dtype=torch.float64).unsqueeze(0)
+        with provenance.record(cache_tensors=True) as reg:
+            L = laplacian.combinatorial(A)
+            truncated_svd(L, r=2, mode="exact")
+        lap_hex = reg.where(
+            op_id="holonomy_lib.spectral.laplacian.combinatorial",
+        )[0].hex
+        svd_hex = reg.where(
+            op_id="holonomy_lib.algebra.linear.truncated_svd",
+        )[0].hex
+        S_key = f"{svd_hex}:1"
+        new = reg.replay(
+            {lap_hex: torch.zeros_like(reg.get_tensor(lap_hex))},
+            final_hex=S_key,
+        )
+        assert list(new) == [S_key]
+
+
+class TestParentsMultiOutput:
+    """`parents()` extracts base hexes from `name=hex:i`-form input_hexes."""
+
+    def test_parents_strips_output_index(self):
+        from holonomy_lib.algebra import truncated_svd
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(130))
+        with provenance.record() as reg:
+            U, S, Vt = truncated_svd(A, r=2, mode="exact")
+            # Chain U → another op so parents() walks across hex:0 → svd hex
+            from holonomy_lib.spectral import laplacian
+            laplacian.combinatorial(U @ U.mT)
+        comb_node = reg.where(
+            op_id="holonomy_lib.spectral.laplacian.combinatorial",
+        )[0]
+        # The Laplacian's input was U @ U.mT (an unrecorded compute);
+        # so its input is a leaf, not the SVD itself. Instead exercise
+        # parents() with an input chain that produces multi-output edge.
+        # Build a simple chain manually.
+        from holonomy_lib.provenance import with_provenance
+
+        @with_provenance("test.parents_multi", op_version="0.1")
+        def emit_pair(M: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            return M, M.mT
+
+        @with_provenance("test.parents_consume", op_version="0.1")
+        def consume_first(X: torch.Tensor) -> torch.Tensor:
+            return X * 2
+
+        with provenance.record() as reg2:
+            pair = emit_pair(A)
+            consume_first(pair[0])
+        pair_hex = reg2.where(op_id="test.parents_multi")[0].hex
+        cons_hex = reg2.where(op_id="test.parents_consume")[0].hex
+        parents = reg2.parents(cons_hex)
+        # parents() should resolve "X=pair_hex:0" → base pair_hex
+        assert len(parents) == 1
+        assert parents[0].hex == pair_hex
+
+
+class TestTensorIdReuse:
+    """Python recycles `id()` after garbage collection. Earlier
+    versions of the registry keyed `_tensor_id_to_hex` on raw `id(t)`
+    and returned the dead tensor's hex when the id was reused for a
+    new tensor — silently producing wrong provenance hashes. The fix
+    stores a weakref alongside the hex and treats stale entries as
+    missing.
+    """
+
+    def test_id_reuse_does_not_corrupt_hex(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(95))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg:
+            # Each iteration's intermediate tensor is unreferenced after
+            # the call returns — Python is free to reuse its id for the
+            # next iteration's allocation.
+            for i in range(4):
+                laplacian.combinatorial(A + i * 0.1)
+        # All four inputs differ in content → four distinct nodes.
+        assert len(reg) == 4
+        hexes = [n.hex for n in reg]
+        assert len(set(hexes)) == 4
+
+
+class TestTensorCacheBounds:
+    """Cache bounding — `max_cache_size` (FIFO eviction) and
+    `cache_ops` (selective caching by op_id)."""
+
+    def test_max_cache_size_evicts_oldest(self):
+        """With max_cache_size=N, only the latest N cached entries
+        survive; earlier ones get evicted in FIFO order."""
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(90))
+        A = (A + A.mT).abs()
+        # Run several combinatorial Laplacian calls on different inputs
+        with provenance.record(
+            cache_tensors=True, max_cache_size=2,
+        ) as reg:
+            for i in range(5):
+                laplacian.combinatorial(A + i * 0.1)
+        # Five recorded nodes, but cache holds at most 2.
+        assert len(reg) == 5
+        cached_count = sum(
+            1 for n in reg if reg.get_tensor(n.hex) is not None
+        )
+        assert cached_count == 2, (
+            f"cache should hold exactly max_cache_size=2 entries, "
+            f"got {cached_count}"
+        )
+
+    def test_max_cache_size_keeps_most_recent(self):
+        """The entries that survive are the most recent ones."""
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(91))
+        A = (A + A.mT).abs()
+        with provenance.record(
+            cache_tensors=True, max_cache_size=2,
+        ) as reg:
+            for i in range(4):
+                laplacian.combinatorial(A + i * 0.1)
+        # Nodes in recording order
+        nodes = list(reg)
+        # Last 2 nodes should have cache entries; first 2 should not.
+        assert reg.get_tensor(nodes[-1].hex) is not None
+        assert reg.get_tensor(nodes[-2].hex) is not None
+        assert reg.get_tensor(nodes[0].hex) is None
+        assert reg.get_tensor(nodes[1].hex) is None
+
+    def test_cache_ops_selective(self):
+        """cache_ops restricts caching to the named op_ids."""
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(92))
+        A = (A + A.mT).abs() + torch.eye(5, dtype=torch.float64).unsqueeze(0)
+        with provenance.record(
+            cache_ops=["holonomy_lib.spectral.laplacian.combinatorial"],
+        ) as reg:
+            laplacian.combinatorial(A)
+            truncated_svd(A, r=2, mode="exact")
+        comb_node = reg.where(
+            op_id="holonomy_lib.spectral.laplacian.combinatorial",
+        )[0]
+        svd_node = reg.where(
+            op_id="holonomy_lib.algebra.linear.truncated_svd",
+        )[0]
+        assert reg.get_tensor(comb_node.hex) is not None
+        # truncated_svd is a multi-output op (hex:0, hex:1, hex:2)
+        assert reg.get_tensor(f"{svd_node.hex}:0") is None
+
+    def test_invalid_max_cache_size(self):
+        with pytest.raises(ValueError, match="max_cache_size"):
+            with provenance.record(max_cache_size=0) as _:
+                pass
+
+
+class TestGeneratorCanonicalization:
+    """torch.Generator params canonicalize to (seed, device) so that two
+    Generators with the same seed produce the same hex and replay can
+    reconstruct them."""
+
+    # Use a matrix large enough that randomized mode does not fall
+    # back to exact (which would silently drop the generator from
+    # params). `ell = r + oversample = 2 + 5 = 7` must be ≤ min(m, n);
+    # 12×12 with r=2 satisfies this.
+    _M_SHAPE = (1, 12, 12)
+    _R = 2
+
+    def test_same_seed_different_generator_same_hex(self):
+        """Two Generators built from the same seed → same hex, even
+        though their default str() reprs differ by memory address.
+        """
+        M = torch.randn(*self._M_SHAPE, dtype=torch.float64, generator=_seeded(80))
+        g_a = _seeded(123)
+        g_b = _seeded(123)
+        # Sanity: the two Generators are distinct Python objects
+        assert g_a is not g_b
+        with provenance.record() as r1:
+            truncated_svd(M, r=self._R, mode="randomized", generator=g_a)
+        with provenance.record() as r2:
+            truncated_svd(M, r=self._R, mode="randomized", generator=g_b)
+        h1 = next(iter(r1)).hex
+        h2 = next(iter(r2)).hex
+        assert h1 == h2, (
+            "same-seed generators must produce identical hexes; got "
+            f"{h1!r} vs {h2!r}"
+        )
+
+    def test_different_seed_different_hex(self):
+        M = torch.randn(*self._M_SHAPE, dtype=torch.float64, generator=_seeded(81))
+        with provenance.record() as r1:
+            truncated_svd(M, r=self._R, mode="randomized", generator=_seeded(1))
+        with provenance.record() as r2:
+            truncated_svd(M, r=self._R, mode="randomized", generator=_seeded(2))
+        h1 = next(iter(r1)).hex
+        h2 = next(iter(r2)).hex
+        assert h1 != h2
+
+    def test_params_carry_canonical_generator(self):
+        """The serialized params should contain the canonical form
+        (seed + device), not a memory-address string."""
+        M = torch.randn(*self._M_SHAPE, dtype=torch.float64, generator=_seeded(82))
+        with provenance.record() as reg:
+            truncated_svd(
+                M, r=self._R, mode="randomized", generator=_seeded(777),
+            )
+        params = next(iter(reg)).parsed_params()
+        g = params["generator"]
+        assert isinstance(g, dict)
+        assert g["seed"] == 777
+        assert "device" in g
+
+    def test_replay_reconstructs_generator_param(self):
+        """Replay can re-execute through an op that consumes a Generator.
+
+        The canonical-form params reconstruct into a real Generator with
+        the recorded seed, so the op can run. (Generator state past
+        seeding doesn't survive replay — replay's docstring warns about
+        stochastic ops — but reconstruction itself must not raise.)
+        """
+        M = torch.randn(*self._M_SHAPE, dtype=torch.float64, generator=_seeded(83))
+        with provenance.record(cache_tensors=True) as reg:
+            # Chain: laplacian.combinatorial(A) → truncated_svd(L, generator=g)
+            A = M @ M.mT + torch.eye(M.shape[-1], dtype=M.dtype).unsqueeze(0)
+            L = laplacian.combinatorial(A)
+            truncated_svd(L, r=self._R, mode="randomized", generator=_seeded(42))
+
+        # Substitute the upstream Laplacian → replay must re-execute the
+        # randomized SVD, which means reconstructing its Generator param.
+        lap_hex = reg.where(
+            op_id="holonomy_lib.spectral.laplacian.combinatorial",
+        )[0].hex
+        fake_L = torch.zeros_like(reg.get_tensor(lap_hex))
+        new = reg.replay({lap_hex: fake_L})
+        # The SVD's outputs come back under its hex:i; the assertion is
+        # just that replay completes without raising.
+        svd_hex = reg.where(
+            op_id="holonomy_lib.algebra.linear.truncated_svd",
+        )[0].hex
+        assert any(h.startswith(svd_hex) for h in new)
+
+
+class TestVarArgsRejection:
+    def test_rejects_var_positional(self):
+        with pytest.raises(TypeError, match="var_positional"):
+            @provenance.with_provenance("test.bad_var_args", op_version="0.1")
+            def bad(*tensors):  # noqa: ARG001
+                return tensors[0]
+
+    def test_rejects_var_keyword(self):
+        with pytest.raises(TypeError, match="var_keyword"):
+            @provenance.with_provenance("test.bad_var_kwargs", op_version="0.1")
+            def bad(x: torch.Tensor, **kw):  # noqa: ARG001
+                return x
 
 
 class TestHashAlgorithm:

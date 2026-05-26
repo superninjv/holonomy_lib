@@ -35,15 +35,15 @@ from typing import Literal
 
 import torch
 
-from synoros_lib.provenance import with_provenance
-from synoros_lib.spectral import laplacian as _L
+from holonomy_lib.provenance import with_provenance
+from holonomy_lib.spectral import laplacian as _L
 
 LaplacianType = Literal[
     "combinatorial", "symmetric_normalized", "random_walk", "signed",
 ]
 
 
-@with_provenance("synoros_lib.spectral.embedding.laplacian_eigenmaps", op_version="0.1")
+@with_provenance("holonomy_lib.spectral.embedding.laplacian_eigenmaps", op_version="0.1")
 def laplacian_eigenmaps(
     A: torch.Tensor,
     k: int,

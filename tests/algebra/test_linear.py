@@ -1,11 +1,11 @@
-"""Tests for synoros_lib.algebra.linear.truncated_svd."""
+"""Tests for holonomy_lib.algebra.linear.truncated_svd."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from synoros_lib.algebra import truncated_svd
+from holonomy_lib.algebra import truncated_svd
 
 
 def _seeded_generator(seed: int) -> torch.Generator:

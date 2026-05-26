@@ -1,19 +1,57 @@
 [project]
-name = "synoros-lib"
-version = "0.0.0"
-description = "Research-oriented PyTorch math library: topology, differential geometry, algebra, persistent homology, tensor calculus, information geometry — audit-compliant, GPU-native, cited"
+name = "holonomy-lib"
+version = "0.1.0"
+description = "Research-grade PyTorch math: differential geometry, spectral graph theory, discrete Ricci flow, tensor decompositions, content-addressable provenance. GPU-native, batched-first, audit-clean, cited."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Jack" }]
 requires-python = ">=3.12"
+keywords = [
+    "pytorch",
+    "differential-geometry",
+    "riemannian-manifolds",
+    "spectral-graph-theory",
+    "ricci-flow",
+    "ollivier-ricci-curvature",
+    "tensor-decomposition",
+    "hosvd",
+    "optimal-transport",
+    "sinkhorn",
+    "mechanistic-interpretability",
+    "provenance",
+    "merkle-dag",
+    "numerical-linear-algebra",
+    "gpu-computing",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "numpy",
     "scipy",
 ]
 
-# torch is intentionally NOT in dependencies. Install platform-appropriate wheel
-# manually since uv's lockfile resolution tends to prefer PyPI CUDA-13 wheels
-# even when ROCm is configured. Same convention as synoros-substrate.
+[project.urls]
+Homepage = "https://github.com/superninjv/holonomy_lib"
+Repository = "https://github.com/superninjv/holonomy_lib"
+Issues = "https://github.com/superninjv/holonomy_lib/issues"
+
+# torch is intentionally NOT in dependencies. Install platform-appropriate
+# wheel manually — uv's resolver tends to prefer PyPI CUDA-13 wheels even
+# when ROCm is configured.
 #   Workstation (AMD gfx1200 / 9060 XT):
 #     uv pip install --index-url https://download.pytorch.org/whl/rocm6.4 torch
-#   Rental (NVIDIA CUDA 12+):
+#   NVIDIA CUDA 12+:
+#     uv pip install torch
+#   CPU only:
 #     uv pip install torch
 
 [project.optional-dependencies]

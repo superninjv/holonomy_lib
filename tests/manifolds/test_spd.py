@@ -1,4 +1,4 @@
-"""Tests for synoros_lib.manifolds.spd.SPDManifold.
+"""Tests for holonomy_lib.manifolds.spd.SPDManifold.
 
 Three layers:
   1. Unit tests — shapes correct across B ∈ {0, 1, several}.
@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from synoros_lib.manifolds import SPDManifold
+from holonomy_lib.manifolds import SPDManifold
 
 
 N_DEFAULT = 4
@@ -238,6 +238,87 @@ class TestProperties:
 # --------------------------------------------------------------------
 # Comparison against geoopt's SymmetricPositiveDefinite
 # --------------------------------------------------------------------
+
+
+class TestNumericalRobustness:
+    """SPD operations must survive near-singular inputs (low eigenvalue
+    near zero) without producing NaN/inf, and exp/log outputs must
+    stay symmetric to machine precision so chained calls don't drift
+    off the SPD cone."""
+
+    def test_n_equal_one_is_spd(self):
+        """Trivial n=1 case — output is a scalar SPD matrix."""
+        mfd = SPDManifold(n=1)
+        S = mfd.random_point(batch_size=4, generator=_seeded_generator(110))
+        assert S.shape == (4, 1, 1)
+        assert mfd.is_spd(S).all()
+
+    def test_near_singular_does_not_explode(self):
+        """For an SPD matrix with one tiny but well-above-tiny eigenvalue,
+        exp/log/distance produce finite (if large) values. The clamp
+        protects against exact-zero or float-noise-negative eigenvalues
+        produced by eigh on numerically singular SPD; it does NOT
+        promise finite results for inputs at the cone boundary, which
+        are mathematically undefined under the affine-invariant metric.
+        """
+        mfd = SPDManifold(n=4)
+        # eigvals = [1e-12, 1, 1, 1] — tiny but well-conditioned for
+        # the clamp's guarantee. Pre-clamp this would still be finite,
+        # but the test pins down that the clamp doesn't *hurt* the
+        # well-conditioned case.
+        eigs = torch.tensor([[1e-12, 1.0, 1.0, 1.0]], dtype=torch.float64)
+        Q, _ = torch.linalg.qr(
+            torch.randn(1, 4, 4, dtype=torch.float64,
+                        generator=_seeded_generator(111))
+        )
+        S = Q @ torch.diag_embed(eigs) @ Q.mT
+        S = 0.5 * (S + S.mT)
+        T = torch.eye(4, dtype=torch.float64).unsqueeze(0)
+        d = mfd.distance(S, T)
+        assert torch.isfinite(d).all(), f"distance produced non-finite: {d}"
+        log_ST = mfd.log(S, T)
+        assert torch.isfinite(log_ST).all(), "log produced non-finite"
+
+    def test_zero_eigenvalue_does_not_nan(self):
+        """The critical case: an eigenvalue at EXACTLY 0 (e.g. an SPD
+        matrix that has been projected onto the cone boundary). Before
+        the clamp, `torch.rsqrt(0)` produced inf → NaN propagation.
+        After the clamp we get a finite (huge) result for inv_sqrt, and
+        downstream values stay finite-or-overflow rather than NaN.
+        """
+        mfd = SPDManifold(n=3)
+        # Force a zero eigenvalue
+        eigs = torch.tensor([[0.0, 1.0, 1.0]], dtype=torch.float64)
+        Q, _ = torch.linalg.qr(
+            torch.randn(1, 3, 3, dtype=torch.float64,
+                        generator=_seeded_generator(116))
+        )
+        S = Q @ torch.diag_embed(eigs) @ Q.mT
+        S = 0.5 * (S + S.mT)
+        # We only require: no NaN. inf is mathematically expected at
+        # the cone boundary; the test guards against the silent-NaN
+        # regression.
+        S_sqrt, S_inv_sqrt = mfd._sqrt_and_inv_sqrt(S)
+        assert not torch.isnan(S_sqrt).any()
+        assert not torch.isnan(S_inv_sqrt).any()
+
+    def test_exp_output_is_symmetric_to_machine_precision(self):
+        """After the symmetrize-output fix, exp_S(V) is symmetric to
+        roundoff, not just the inner argument."""
+        mfd = SPDManifold(n=5)
+        S = mfd.random_point(batch_size=3, generator=_seeded_generator(112))
+        V = torch.randn(3, 5, 5, dtype=torch.float64,
+                        generator=_seeded_generator(113))
+        V = 0.5 * (V + V.mT)  # symmetric tangent
+        out = mfd.exp(S, V)
+        torch.testing.assert_close(out, out.mT, atol=1e-12, rtol=0)
+
+    def test_log_output_is_symmetric_to_machine_precision(self):
+        mfd = SPDManifold(n=5)
+        S = mfd.random_point(batch_size=3, generator=_seeded_generator(114))
+        T = mfd.random_point(batch_size=3, generator=_seeded_generator(115))
+        out = mfd.log(S, T)
+        torch.testing.assert_close(out, out.mT, atol=1e-12, rtol=0)
 
 
 try:

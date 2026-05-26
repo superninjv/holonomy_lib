@@ -206,10 +206,18 @@ class SPDManifold:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (S^{1/2}, S^{−1/2}) via eigh.
 
-        Both are symmetric. Assumes S is SPD; eigenvalues are positive.
+        Both are symmetric. S must be SPD; we clamp eigenvalues from
+        below by the dtype's smallest-representable-positive to guard
+        against floating-point eigh returning a slightly negative value
+        for nearly-singular SPD matrices (a common artifact near the
+        SPD-cone boundary, e.g. from low-sample-count Wishart draws or
+        from accumulated drift in iterative pipelines). Without this
+        clamp, `torch.rsqrt(0)` would propagate `inf` through all
+        downstream exp/log/distance computations.
         """
         eigvals, eigvecs = torch.linalg.eigh(S)
-        sqrt_eig = torch.sqrt(eigvals)
+        floor = torch.finfo(S.dtype).tiny
+        sqrt_eig = torch.sqrt(eigvals.clamp(min=floor))
         inv_sqrt_eig = torch.reciprocal(sqrt_eig)
         S_sqrt = torch.matmul(eigvecs * sqrt_eig.unsqueeze(dim=-2), eigvecs.mT)
         S_inv_sqrt = torch.matmul(
@@ -217,7 +225,27 @@ class SPDManifold:
         )
         return S_sqrt, S_inv_sqrt
 
-    def exp(self, S: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+    def precompute_whitening(
+        self, S: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute (S^{1/2}, S^{-1/2}) once for reuse across geodesic ops.
+
+        The affine-invariant exp/log/distance all need S^{1/2} and S^{-1/2}
+        at the base point. Computing them once and passing to multiple
+        geodesic queries avoids redundant eighs in code paths like
+        "compare distances from S to many T_i" or "step along several
+        tangent directions at S in one iteration". Each eigh is
+        O(n³) and dominates the operations on large n.
+
+        Returns:
+          (S_sqrt, S_inv_sqrt) — both (..., n, n), symmetric.
+        """
+        return self._sqrt_and_inv_sqrt(S)
+
+    def exp(
+        self, S: torch.Tensor, V: torch.Tensor,
+        whitening: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
         """Exponential map exp_S(V) = S^{1/2} expm(S^{−1/2} V S^{−1/2}) S^{1/2}.
 
         References:
@@ -226,17 +254,28 @@ class SPDManifold:
         Args:
           S: base point (B, n, n), SPD.
           V: tangent (B, n, n), symmetric.
+          whitening: optional (S^{1/2}, S^{-1/2}) precomputed via
+            `precompute_whitening(S)`. Pass when calling exp/log
+            multiple times at the same S to skip the redundant eigh.
         Returns:
           (B, n, n) SPD result.
         """
-        S_sqrt, S_inv_sqrt = self._sqrt_and_inv_sqrt(S)
+        S_sqrt, S_inv_sqrt = whitening if whitening is not None \
+                                       else self._sqrt_and_inv_sqrt(S)
         inner = S_inv_sqrt @ V @ S_inv_sqrt
         # Symmetrize against numerical drift before matrix_exp; result of
         # symmetric @ symmetric @ symmetric is symmetric in exact arithmetic.
         inner = 0.5 * (inner + inner.mT)
-        return S_sqrt @ torch.matrix_exp(inner) @ S_sqrt
+        # The outer S_sqrt @ ... @ S_sqrt is symmetric in exact arithmetic
+        # but accumulates float drift; symmetrize so callers can chain
+        # exp() into is_spd / further geodesics without false negatives.
+        out = S_sqrt @ torch.matrix_exp(inner) @ S_sqrt
+        return 0.5 * (out + out.mT)
 
-    def log(self, S: torch.Tensor, T: torch.Tensor) -> torch.Tensor:
+    def log(
+        self, S: torch.Tensor, T: torch.Tensor,
+        whitening: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
         """Logarithm map log_S(T) = S^{1/2} logm(S^{−1/2} T S^{−1/2}) S^{1/2}.
 
         Matrix log via eigh: logm(M) = U diag(log λ) Uᵀ for M = U diag(λ) Uᵀ
@@ -248,16 +287,25 @@ class SPDManifold:
 
         Args:
           S, T: base point and target, both (B, n, n) SPD.
+          whitening: optional (S^{1/2}, S^{-1/2}) precomputed via
+            `precompute_whitening(S)`. See `exp` for the use case.
         Returns:
           (B, n, n) symmetric tangent.
         """
-        S_sqrt, S_inv_sqrt = self._sqrt_and_inv_sqrt(S)
+        S_sqrt, S_inv_sqrt = whitening if whitening is not None \
+                                       else self._sqrt_and_inv_sqrt(S)
         inner = S_inv_sqrt @ T @ S_inv_sqrt
         inner = 0.5 * (inner + inner.mT)  # symmetrize
         _, _, log_inner = self._eigh_symmetric_func(inner, torch.log)
-        return S_sqrt @ log_inner @ S_sqrt
+        # log_S(T) lives in Sym(n); symmetrize the outer product to
+        # absorb float drift, consistent with exp() above.
+        out = S_sqrt @ log_inner @ S_sqrt
+        return 0.5 * (out + out.mT)
 
-    def distance(self, S: torch.Tensor, T: torch.Tensor) -> torch.Tensor:
+    def distance(
+        self, S: torch.Tensor, T: torch.Tensor,
+        whitening: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
         """Geodesic distance d(S, T) = ‖log(S^{−1/2} T S^{−1/2})‖_F.
 
         Equivalently d(S, T)² = Σ_i log²(λ_i) where λ_i are generalized
@@ -267,13 +315,25 @@ class SPDManifold:
         References:
           Pennec et al. (2006), eq. 7.
 
+        Args:
+          S, T: base point and target, both (B, n, n) SPD.
+          whitening: optional (S^{1/2}, S^{-1/2}) precomputed via
+            `precompute_whitening(S)` to skip the S-eigh.
         Returns:
           (B,) geodesic distances.
         """
-        _, S_inv_sqrt = self._sqrt_and_inv_sqrt(S)
+        if whitening is not None:
+            _, S_inv_sqrt = whitening
+        else:
+            _, S_inv_sqrt = self._sqrt_and_inv_sqrt(S)
         whitened = S_inv_sqrt @ T @ S_inv_sqrt
         whitened = 0.5 * (whitened + whitened.mT)
-        eigvals = torch.linalg.eigvalsh(whitened)  # (B, n), all positive
+        # Eigenvalues of S^{-1/2} T S^{-1/2} are positive in exact
+        # arithmetic (congruent to the SPD T). Clamp by the dtype tiny
+        # to guard against float error driving an eigenvalue slightly
+        # below zero and producing NaN through log().
+        floor = torch.finfo(S.dtype).tiny
+        eigvals = torch.linalg.eigvalsh(whitened).clamp(min=floor)
         log_eig = torch.log(eigvals)
         return torch.sqrt((log_eig * log_eig).sum(dim=-1))
 
@@ -281,7 +341,10 @@ class SPDManifold:
     # Retraction (exponential map is the canonical choice on SPD)
     # ----------------------------------------------------------------
 
-    def retraction(self, S: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+    def retraction(
+        self, S: torch.Tensor, V: torch.Tensor,
+        whitening: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
         """Retraction = exponential map.
 
         On SPD with the affine-invariant metric, exp is the canonical
@@ -293,4 +356,4 @@ class SPDManifold:
         References:
           Absil-Mahony-Sepulchre (2008), §4.1 — exponential as retraction.
         """
-        return self.exp(S, V)
+        return self.exp(S, V, whitening=whitening)

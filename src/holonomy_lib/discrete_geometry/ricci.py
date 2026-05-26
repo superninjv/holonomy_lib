@@ -59,11 +59,12 @@ References:
 
 from __future__ import annotations
 
+import warnings
 from typing import Optional
 
 import torch
 
-from synoros_lib.provenance import with_provenance
+from holonomy_lib.provenance import with_provenance
 
 
 # Default regularization for entropic Sinkhorn, per Cuturi (2013) §4.
@@ -79,6 +80,37 @@ SINKHORN_REG_DEFAULT: float = 0.01
 # achieves convergence (relative change < 1e-4) for graph-metric costs
 # at the default regularization. Catalog: `sinkhorn_n_iter_default`.
 SINKHORN_N_ITER_DEFAULT: int = 100
+
+# Default convergence tolerance for Sinkhorn early stopping: stop when
+# the max-abs change of the dual variable log_u between successive
+# iterations falls below this value. Reuses the library's
+# `numerical_floor_convention` (1e-9) — small enough that the
+# transport plan is symmetric to well below typical use cases' noise
+# floor, large enough that we don't chase machine-precision residuals.
+# When `tol` is not exceeded after `n_iter` iterations, iteration
+# stops at `n_iter`; we do not warn (caller chose n_iter).
+SINKHORN_TOL_DEFAULT: float = 1e-9
+
+# Sync cadence for Sinkhorn convergence checks. The `.item()` call
+# on the delta tensor forces a host sync on GPU; doing it every iter
+# adds tens of µs per iter to wait for the kernel queue. Checking
+# every 8 iters keeps the asymptotic work the same (within 8 iters
+# of true convergence) while cutting host sync count by 8×.
+# **Scale of validity**: dimensionless cadence — does not need
+# re-derivation across input sizes or precisions. Cataloged as
+# `sinkhorn_sync_every_default`.
+SINKHORN_SYNC_EVERY_DEFAULT: int = 8
+
+# Default tile size (in pairs) for the batched Sinkhorn computation.
+# The unrolled `(*batch, n², n)` source/target plus the inner broadcast
+# `(*batch, n², n, n)` is the dominant memory cost of Ollivier curvature.
+# Tiling caps the pairs processed simultaneously at this value, trading
+# a small Python-loop overhead for an n²/tile_size reduction in peak
+# memory. **Scale of validity**: 256 keeps the inner `n·n` broadcast
+# under ~16 MB for n up to ~256 in float64, comfortable on most GPUs.
+# Bump higher when memory headroom is generous and lower when n is
+# big. Cataloged as `sinkhorn_tile_default`.
+SINKHORN_TILE_DEFAULT: int = 256
 
 # Convention: distance from a node to itself is 0; "no path" is +inf.
 # We represent +inf with a large finite value derived from the matrix
@@ -100,12 +132,14 @@ RICCI_FLOW_SURGERY_PERIOD_DEFAULT: int = 10
 RICCI_FLOW_SURGERY_THRESHOLD_DEFAULT: float = 3.0
 
 
-@with_provenance("synoros_lib.discrete_geometry.ollivier_ricci_curvature", op_version="0.1")
+@with_provenance("holonomy_lib.discrete_geometry.ollivier_ricci_curvature", op_version="0.3")
 def ollivier_ricci_curvature(
     A: torch.Tensor,
     alpha: float = 0.0,
     reg: float = SINKHORN_REG_DEFAULT,
     n_iter: int = SINKHORN_N_ITER_DEFAULT,
+    tol: float = SINKHORN_TOL_DEFAULT,
+    tile_size: int = SINKHORN_TILE_DEFAULT,
 ) -> torch.Tensor:
     """Pairwise Ollivier-Ricci curvature on a (batched) weighted graph.
 
@@ -117,7 +151,22 @@ def ollivier_ricci_curvature(
       alpha: laziness in [0, 1]. 0 is Ollivier's original convention;
         0.5 is a common "half lazy" choice in network analysis.
       reg: entropic-Sinkhorn regularization ε > 0. See module docstring.
-      n_iter: Sinkhorn iteration count.
+      n_iter: maximum Sinkhorn iteration count.
+      tol: Sinkhorn convergence tolerance — iteration stops early once
+        the max-abs change in log_u across all pairs is below `tol`.
+        With log-domain Sinkhorn at small `reg`, partial convergence
+        can plateau for hundreds of iterations and only flip into the
+        symmetric basin past some threshold; tol-based stopping lets
+        easy cases finish fast while still allowing hard cases to run
+        the full `n_iter` budget.
+      tile_size: chunk the n² pairs into tiles of this size before
+        running Sinkhorn. The peak memory cost of one Sinkhorn iter
+        is O(B · tile_size · n²) bytes; the wall-clock cost is
+        roughly constant in `tile_size` once the GPU is saturated.
+        Default 256 keeps the inner broadcast under ~16 MB at n=256
+        in float64. Smaller tiles → less memory + slightly more
+        Python overhead; larger tiles → more memory + slightly less
+        loop overhead.
 
     Returns:
       κ: (B, n, n) curvature tensor. κ[..., i, j] is the curvature
@@ -134,6 +183,20 @@ def ollivier_ricci_curvature(
       for shortest paths; for large n use a sparse/edge-only follow-on
       (planned).
 
+    Disconnected components:
+      Ollivier curvature has no standard definition between nodes in
+      different components. We replace the +inf shortest-path distance
+      with a large finite sentinel (DISCONNECTED_DISTANCE_MULTIPLIER ×
+      max finite distance) so Sinkhorn stays numerically stable; the
+      resulting κ for cross-component pairs is close to 1 (since the
+      transport cost is dominated by the within-component support and
+      thus small relative to the inflated d_G). These cross-component
+      values are NOT geometrically meaningful — mask by `A > 0` (or by
+      a connectivity mask) before interpreting κ. The Ricci-flow
+      primitives in this module already do this internally, so the
+      flow is unaffected; only direct consumers of the dense κ tensor
+      need to filter.
+
     References:
       Ollivier (2009), Definition 1.
       Cuturi (2013), Algorithm 1 — Sinkhorn iteration.
@@ -142,9 +205,30 @@ def ollivier_ricci_curvature(
         raise ValueError(f"alpha must be in [0, 1], got {alpha}")
     if reg <= 0:
         raise ValueError(f"reg must be > 0, got {reg}")
+    if tol <= 0:
+        raise ValueError(f"tol must be > 0, got {tol}")
     if A.ndim < 2 or A.shape[-1] != A.shape[-2]:
         raise ValueError(
             f"A must be (..., n, n) symmetric; got A.shape={tuple(A.shape)}"
+        )
+    # Ollivier curvature is defined for symmetric (undirected) graphs.
+    # The Floyd-Warshall step happily returns directed shortest paths
+    # if A is asymmetric; the resulting κ would be silently meaningless.
+    # We warn rather than raise so callers can intentionally feed a
+    # symmetrized form of an asymmetric matrix without first cloning
+    # (`0.5*(A+A.mT)` is one common preprocess); the warning serves as
+    # documentation that we noticed the asymmetry.
+    # 1e-9 is the library's numerical_floor_convention (audit ALLOWED).
+    # Roundoff on any reasonable symmetric construction is far below
+    # 1e-9 even in float32, so this only fires when A is meaningfully
+    # asymmetric (e.g. a directed graph passed by mistake).
+    if not torch.allclose(A, A.mT, atol=1e-9, rtol=0):
+        warnings.warn(
+            "ollivier_ricci_curvature received an asymmetric adjacency; "
+            "the curvature is only well-defined for symmetric (undirected) "
+            "graphs. Symmetrize A first (e.g. `0.5 * (A + A.mT)`) for "
+            "meaningful results.",
+            stacklevel=2,
         )
 
     *batch, n, _ = A.shape
@@ -160,7 +244,9 @@ def ollivier_ricci_curvature(
 
     # 3. Sinkhorn-based W_1 between μ_x and μ_y for every pair (x, y).
     #    All pairs of rows of `mu` — the cost matrix is d_G.
-    W1 = _batched_sinkhorn_w1(mu, d_G, reg=reg, n_iter=n_iter)  # (B, n, n)
+    W1 = _batched_sinkhorn_w1(
+        mu, d_G, reg=reg, n_iter=n_iter, tol=tol, tile_size=tile_size,
+    )  # (B, n, n)
 
     # 4. Curvature κ(x, y) = 1 - W_1 / d_G.
     # Diagonal: d_G is 0 there; set κ to 1 by convention (vacuous).
@@ -178,7 +264,7 @@ def ollivier_ricci_curvature(
 
 
 @with_provenance(
-    "synoros_lib.discrete_geometry.discrete_ricci_flow", op_version="0.1",
+    "holonomy_lib.discrete_geometry.discrete_ricci_flow", op_version="0.3",
 )
 def discrete_ricci_flow(
     A: torch.Tensor,
@@ -188,6 +274,8 @@ def discrete_ricci_flow(
     normalize: bool = True,
     reg: float = SINKHORN_REG_DEFAULT,
     n_sinkhorn_iters: int = SINKHORN_N_ITER_DEFAULT,
+    sinkhorn_tol: float = SINKHORN_TOL_DEFAULT,
+    sinkhorn_tile_size: int = SINKHORN_TILE_DEFAULT,
 ) -> torch.Tensor:
     """Discrete Ricci flow on edge weights (Sia 2019, Ni 2019).
 
@@ -238,6 +326,7 @@ def discrete_ricci_flow(
         # Compute curvature on current edge weights
         kappa = ollivier_ricci_curvature(
             W, alpha=alpha, reg=reg, n_iter=n_sinkhorn_iters,
+            tol=sinkhorn_tol, tile_size=sinkhorn_tile_size,
         )
         # Update: w *= (1 - dt * kappa). Mask to existing edges only;
         # non-edges (W == 0) stay zero — surgery is separate.
@@ -257,7 +346,7 @@ def discrete_ricci_flow(
 
 
 @with_provenance(
-    "synoros_lib.discrete_geometry.ricci_flow_with_surgery", op_version="0.1",
+    "holonomy_lib.discrete_geometry.ricci_flow_with_surgery", op_version="0.3",
 )
 def ricci_flow_with_surgery(
     A: torch.Tensor,
@@ -269,6 +358,8 @@ def ricci_flow_with_surgery(
     normalize: bool = True,
     reg: float = SINKHORN_REG_DEFAULT,
     n_sinkhorn_iters: int = SINKHORN_N_ITER_DEFAULT,
+    sinkhorn_tol: float = SINKHORN_TOL_DEFAULT,
+    sinkhorn_tile_size: int = SINKHORN_TILE_DEFAULT,
 ) -> torch.Tensor:
     """Discrete Ricci flow with surgery — Perelman-on-networks.
 
@@ -294,7 +385,15 @@ def ricci_flow_with_surgery(
       n_steps: total flow iterations.
       surgery_period: perform surgery every N steps. Catalog default.
       surgery_threshold: edge-removal threshold, as a multiplier of
-        initial mean edge weight. Catalog default.
+        initial mean edge weight. Catalog default. Note that when
+        `normalize=True`, the cutoff uses the **pre-normalization**
+        initial mean as a fixed reference; the per-step normalization
+        rescales the weights but the threshold does not move with it.
+        This matches Ni-Lin-Luo-Gao (2019)'s intent of "remove edges
+        that have stretched far past their initial relative scale," but
+        the practical sensitivity of the surgery is then conditioned on
+        the interaction between `dt`, `normalize`, and the curvature
+        magnitudes — tune `surgery_threshold` empirically per dataset.
       Other args: as in `discrete_ricci_flow`.
 
     Returns:
@@ -338,6 +437,7 @@ def ricci_flow_with_surgery(
         # One Ricci-flow step
         kappa = ollivier_ricci_curvature(
             W, alpha=alpha, reg=reg, n_iter=n_sinkhorn_iters,
+            tol=sinkhorn_tol, tile_size=sinkhorn_tile_size,
         )
         edge_mask = (W > 1e-9).to(W.dtype)
         update = (1.0 - dt * kappa) * edge_mask
@@ -398,14 +498,13 @@ def _shortest_path_distances(A: torch.Tensor) -> torch.Tensor:
 
     # Replace any remaining +inf with a large finite value derived from
     # the existing finite distances, to keep Sinkhorn numerics sane.
+    # Always run the replacement (no `.all()` host sync on the happy
+    # path) — `torch.where` is a near-noop when no infs are present,
+    # and the explicit branch would force a GPU→CPU sync every call.
     finite_mask = torch.isfinite(D)
-    if finite_mask.all():
-        return D
-    # max finite distance per-batch, then multiply by sentinel
     D_finite = torch.where(finite_mask, D, torch.zeros_like(D))
-    per_batch_max = D_finite.flatten(start_dim=-2).max(dim=-1).values  # (B,)
+    per_batch_max = D_finite.flatten(start_dim=-2).max(dim=-1).values  # (..., )
     big = (per_batch_max * DISCONNECTED_DISTANCE_MULTIPLIER).clamp(min=1.0)
-    # Broadcast `big` back to D's shape
     big_full = big.view(*per_batch_max.shape, 1, 1).expand_as(D)
     return torch.where(finite_mask, D, big_full)
 
@@ -445,6 +544,8 @@ def _batched_sinkhorn_w1(
     cost: torch.Tensor,
     reg: float,
     n_iter: int,
+    tol: float,
+    tile_size: int,
 ) -> torch.Tensor:
     """W_1(μ_i, μ_j) for every pair (i, j) of rows of `mu`, Sinkhorn-based.
 
@@ -452,7 +553,9 @@ def _batched_sinkhorn_w1(
       mu:   (..., n, n) — row i is the source distribution μ_i.
       cost: (..., n, n) — pairwise cost matrix (used for all pairs).
       reg:  entropic regularization ε > 0.
-      n_iter: Sinkhorn iteration count.
+      n_iter: maximum Sinkhorn iteration count.
+      tol: stop early when max|Δ log_u| across all pairs is < tol.
+      tile_size: max pairs processed simultaneously inside the loop.
 
     Returns:
       (..., n, n) — entry [i, j] is the Sinkhorn-approximated
@@ -472,47 +575,66 @@ def _batched_sinkhorn_w1(
     *batch, n, _ = mu.shape
     n_pairs = n * n
 
-    # For each pair (i, j): source = mu[i], target = mu[j].
-    # Build (..., n_pairs, n) source/target batches.
-    source = mu.unsqueeze(dim=-2).expand(*batch, n, n, n).reshape(*batch, n_pairs, n)
-    target = mu.unsqueeze(dim=-3).expand(*batch, n, n, n).reshape(*batch, n_pairs, n)
+    # Cost is shared across all pairs. The log-kernel `-cost / reg` is
+    # also shared; compute once. cost_b has the (..., 1, n, n) shape so
+    # broadcasts cleanly against (..., tile, n, ·) duals.
+    cost_b = cost.unsqueeze(dim=-3)            # (*batch, 1, n, n)
+    log_K = -cost_b / reg                       # (*batch, 1, n, n)
+    # Library numerical_floor_convention (1e-9 = `ALLOWED_LITERALS`).
+    log_mu = torch.log(mu.clamp(min=1e-9))      # (*batch, n, n)
 
-    # The cost is shared across all pairs (it's the metric on the support).
-    # cost broadcasts to (*batch, 1, n, n) → applied to each pair.
-    cost_b = cost.unsqueeze(dim=-3)  # (*batch, 1, n, n)
+    # Output buffer for all pair W_1 values.
+    sink_w1 = torch.empty(*batch, n_pairs, dtype=mu.dtype, device=mu.device)
 
-    # Log-domain Sinkhorn:
-    #   K = -cost / reg                          (log-kernel)
-    #   log_u, log_v initialized to 0.
-    #   Repeat:
-    #     log_u = log(source) - logsumexp(K + log_v[:, None, :], dim=-1)
-    #     log_v = log(target) - logsumexp(K + log_u[:, :, None], dim=-2)
-    log_K = -cost_b / reg  # (*batch, 1, n, n)
+    # Tile over pairs to keep the inner broadcast tensor bounded.
+    # Pair p ∈ [0, n²) decomposes as p = i·n + j where i is the source
+    # row index and j the target row index in `mu`. We compute the
+    # (i, j) indices via the arange→divmod trick so we never have to
+    # materialize a full (n², n) source or target tensor — each tile
+    # gathers only its own slice.
+    pair_idx = torch.arange(n_pairs, device=mu.device)
+    src_idx_all = pair_idx // n   # (n_pairs,)
+    tgt_idx_all = pair_idx % n    # (n_pairs,)
 
-    # Use the library's numerical_floor_convention to avoid log(0).
-    # 1e-9 is comfortably below any realistic probability mass for n < 1e9.
-    log_source = torch.log(source.clamp(min=1e-9))  # (*batch, n_pairs, n)
-    log_target = torch.log(target.clamp(min=1e-9))
+    chunk = max(1, int(tile_size))
+    for start in range(0, n_pairs, chunk):
+        end = min(start + chunk, n_pairs)
+        src_idx = src_idx_all[start:end]       # (tile,)
+        tgt_idx = tgt_idx_all[start:end]       # (tile,)
+        # Gather per-tile sources and targets via advanced indexing.
+        # Result shapes: (*batch, tile, n).
+        log_src = log_mu[..., src_idx, :]
+        log_tgt = log_mu[..., tgt_idx, :]
 
-    log_u = torch.zeros_like(log_source)
-    log_v = torch.zeros_like(log_target)
+        log_u = torch.zeros_like(log_src)
+        log_v = torch.zeros_like(log_tgt)
+        sync_cadence = SINKHORN_SYNC_EVERY_DEFAULT
+        prev_log_u = log_u
+        for it in range(n_iter):
+            # Sum over target support — `dim=-1`. log_K broadcasts from
+            # (*batch, 1, n, n) to (*batch, tile, n, n).
+            log_u = log_src - torch.logsumexp(
+                log_K + log_v.unsqueeze(dim=-2), dim=-1,
+            )
+            # Sum over source support — `dim=-2`.
+            log_v = log_tgt - torch.logsumexp(
+                log_K + log_u.unsqueeze(dim=-1), dim=-2,
+            )
+            # Early stop. The `.item()` host sync amortizes when checked
+            # every `sync_cadence` iters: typically a 8× reduction in
+            # GPU→CPU syncs versus per-iter checking, at the cost of
+            # at most `sync_cadence - 1` extra iters past true
+            # convergence. Bracket the check by `it >= sync_cadence` so
+            # the loop never exits on iter 0 (warmup).
+            if (it + 1) % sync_cadence == 0:
+                delta = (log_u - prev_log_u).abs().max().item()
+                if delta < tol:
+                    break
+                prev_log_u = log_u
 
-    for _ in range(n_iter):
-        # log_u_i = log_source_i - logsumexp_k (log_K[i,k] + log_v_k)
-        log_u = log_source - torch.logsumexp(
-            log_K + log_v.unsqueeze(dim=-2), dim=-1,
-        )
-        log_v = log_target - torch.logsumexp(
-            log_K + log_u.unsqueeze(dim=-1), dim=-2,
-        )
+        # Transport plan + transport cost for this tile.
+        log_pi = log_u.unsqueeze(dim=-1) + log_K + log_v.unsqueeze(dim=-2)
+        pi = torch.exp(log_pi)
+        sink_w1[..., start:end] = (pi * cost_b).sum(dim=(-2, -1))
 
-    # Transport plan in log space: log_pi = log_u[:, None] + log_K + log_v[None, :]
-    log_pi = log_u.unsqueeze(dim=-1) + log_K + log_v.unsqueeze(dim=-2)
-    pi = torch.exp(log_pi)
-
-    # Sinkhorn cost ⟨π, cost⟩ (the entropic-W_1, slightly biased; we
-    # use ⟨π, C⟩ which is the transport cost component, not the
-    # entropy-regularized objective). Bias is O(reg · H) and small
-    # for our default reg=0.01.
-    sink_w1 = (pi * cost_b).sum(dim=(-2, -1))  # (*batch, n_pairs)
     return sink_w1.reshape(*batch, n, n)

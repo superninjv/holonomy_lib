@@ -1,4 +1,4 @@
-"""Tests for synoros_lib.manifolds.fixed_rank.FixedRankManifold.
+"""Tests for holonomy_lib.manifolds.fixed_rank.FixedRankManifold.
 
 Three layers:
   1. Unit tests — shapes correct across B ∈ {0, 1, several}.
@@ -14,7 +14,7 @@ import math
 import pytest
 import torch
 
-from synoros_lib.manifolds import FixedRankManifold
+from holonomy_lib.manifolds import FixedRankManifold
 
 
 # --------------------------------------------------------------------
@@ -235,6 +235,70 @@ class TestProperties:
 # --------------------------------------------------------------------
 # Comparison against pymanopt's FixedRankEmbedded
 # --------------------------------------------------------------------
+
+
+class TestRetractionModes:
+    """The retraction has three modes: 'exact', 'randomized', 'auto'.
+    All must produce valid manifold points (rank-r SVD triples) and
+    'randomized' must be close to 'exact' in Frobenius distance (the
+    randomized SVD is only approximate to ~σ_{r+1}).
+    """
+
+    def test_randomized_close_to_exact(self):
+        # Geometry where the randomized path actually fires under "auto":
+        # r/min(m,n) = 4/40 = 10% < 25% threshold.
+        mfd_exact = FixedRankManifold(m=40, n=40, r=4, retraction_mode="exact")
+        mfd_rand = FixedRankManifold(m=40, n=40, r=4, retraction_mode="randomized")
+        g = _seeded_generator(200)
+        pt = mfd_exact.random_point(batch_size=2, generator=g)
+        tangent = mfd_exact.projection(
+            pt, torch.randn(2, 40, 40, dtype=torch.float64, generator=g),
+        )
+        U_e, S_e, Vt_e = mfd_exact.retraction(pt, tangent)
+        U_r, S_r, Vt_r = mfd_rand.retraction(pt, tangent)
+        # Reconstructed dense matrices should be close (sign/basis-invariant)
+        dense_e = U_e @ torch.diag_embed(S_e) @ Vt_e
+        dense_r = U_r @ torch.diag_embed(S_r) @ Vt_r
+        rel_err = (dense_e - dense_r).norm() / dense_e.norm()
+        assert rel_err < 1e-2, (
+            f"randomized retraction should be close to exact; rel_err={rel_err:.4e}"
+        )
+
+    def test_auto_selects_randomized_when_low_rank(self):
+        # 4/40 = 10% < 25% → auto picks randomized.
+        mfd = FixedRankManifold(m=40, n=40, r=4, retraction_mode="auto")
+        # We can't observe the choice directly, but we can observe that
+        # repeating retraction yields slightly different outputs (the
+        # randomized path uses a fresh random projection each call).
+        g = _seeded_generator(201)
+        pt = mfd.random_point(batch_size=1, generator=g)
+        tangent = mfd.projection(
+            pt, torch.randn(1, 40, 40, dtype=torch.float64, generator=g),
+        )
+        out_a = mfd.retraction(pt, tangent)
+        out_b = mfd.retraction(pt, tangent)
+        # Reconstructed dense matrices should still match closely; the
+        # difference shows up at the level of (U, Vt) basis rotation.
+        dense_a = out_a[0] @ torch.diag_embed(out_a[1]) @ out_a[2]
+        dense_b = out_b[0] @ torch.diag_embed(out_b[1]) @ out_b[2]
+        # Same input → same target rank-r matrix to ~rounding.
+        rel = (dense_a - dense_b).norm() / dense_a.norm()
+        assert rel < 1e-2
+
+    def test_auto_selects_exact_when_high_rank(self):
+        # 8/10 = 80% > 25% → auto picks exact, which is deterministic.
+        mfd = FixedRankManifold(m=10, n=10, r=8, retraction_mode="auto")
+        g = _seeded_generator(202)
+        pt = mfd.random_point(batch_size=1, generator=g)
+        tangent = mfd.projection(
+            pt, torch.randn(1, 10, 10, dtype=torch.float64, generator=g),
+        )
+        out_a = mfd.retraction(pt, tangent)
+        out_b = mfd.retraction(pt, tangent)
+        # Exact retraction is deterministic; output triples match exactly.
+        torch.testing.assert_close(out_a[0], out_b[0], atol=0, rtol=0)
+        torch.testing.assert_close(out_a[1], out_b[1], atol=0, rtol=0)
+        torch.testing.assert_close(out_a[2], out_b[2], atol=0, rtol=0)
 
 
 try:

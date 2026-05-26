@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from synoros_lib.discrete_geometry import (
+from holonomy_lib.discrete_geometry import (
     discrete_ricci_flow,
     ricci_flow_with_surgery,
 )
@@ -182,7 +182,7 @@ class TestSurgery:
         )
 
         # Count connected components via Laplacian rank deficiency
-        from synoros_lib.spectral import laplacian
+        from holonomy_lib.spectral import laplacian
         L = laplacian.combinatorial(out)
         eigvals = torch.linalg.eigvalsh(L)
         # Components = number of near-zero eigenvalues
@@ -199,21 +199,21 @@ class TestSurgery:
 
 class TestProvenanceIntegration:
     def test_flow_emits_provenance_node(self):
-        from synoros_lib import provenance
+        from holonomy_lib import provenance
         A = _complete_graph(4)
         with provenance.record() as reg:
             discrete_ricci_flow(A, n_steps=1, dt=0.5)
         # Should have the outer flow node + the inner curvature node(s)
         op_ids = {n.op_id for n in reg}
-        assert "synoros_lib.discrete_geometry.discrete_ricci_flow" in op_ids
-        assert "synoros_lib.discrete_geometry.ollivier_ricci_curvature" in op_ids
+        assert "holonomy_lib.discrete_geometry.discrete_ricci_flow" in op_ids
+        assert "holonomy_lib.discrete_geometry.ollivier_ricci_curvature" in op_ids
 
     def test_surgery_emits_provenance_node(self):
-        from synoros_lib import provenance
+        from holonomy_lib import provenance
         A = _two_cliques_with_bridge(cluster_size=3)
         with provenance.record() as reg:
             ricci_flow_with_surgery(
                 A, n_steps=1, surgery_period=1, surgery_threshold=2.0, dt=0.3,
             )
         op_ids = {n.op_id for n in reg}
-        assert "synoros_lib.discrete_geometry.ricci_flow_with_surgery" in op_ids
+        assert "holonomy_lib.discrete_geometry.ricci_flow_with_surgery" in op_ids

@@ -1,4 +1,4 @@
-"""synoros_lib.provenance — content-addressable hex provenance for math primitives.
+"""holonomy_lib.provenance — content-addressable hex provenance for math primitives.
 
 The point of this module is to give mechanistic-interpretability researchers
 a library where activation tracing, ablation, and circuit analysis are
@@ -32,7 +32,7 @@ What this module does NOT try to be:
   - An MLOps experiment tracker (MLflow / W&B exist for that).
 """
 
-from synoros_lib.provenance.protocol import (
+from holonomy_lib.provenance.protocol import (
     OP_REGISTRY,
     ProvenanceNode,
     ProvenanceRegistry,

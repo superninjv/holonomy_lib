@@ -1,4 +1,4 @@
-"""synoros_lib.audit — find undocumented numeric constants in source.
+"""holonomy_lib.audit — find undocumented numeric constants in source.
 
 Per the "no magic numbers" rule (CLAUDE.md constraint #8, direction.md 2026-05-23),
 every numerical constant in the architecture must be derived from substrate state,
@@ -8,8 +8,8 @@ literals that don't match a safe whitelist and cross-referencing them against th
 `notes/magic_numbers.md` catalog.
 
 Usage:
-    python -m synoros_lib.audit <path>...      # scan files or directories
-    python -m synoros_lib.audit --strict ...   # exit code 1 if any literal found
+    python -m holonomy_lib.audit <path>...      # scan files or directories
+    python -m holonomy_lib.audit --strict ...   # exit code 1 if any literal found
 
 Output flags:
     🟢 Allowed   — literal is in the safe set (0, 1, -1, 0.5, 2.0, math constants)
@@ -41,7 +41,7 @@ from typing import Optional
 #      quadratic-form coefficients (½)xᵀAx, triangular numbers n(n+1)/2,
 #      2π, 2-norm, second-derivative coefficients, etc. Treated as
 #      identity-level since both are canonical halve/double constants; on
-#      par with 0, 1, -1 for math libraries (added 2026-05-26 for synoros-lib).
+#      par with 0, 1, -1 for math libraries (added 2026-05-26 for holonomy-lib).
 #      Note: 2 carries some false-negative risk for non-math code (e.g.,
 #      "2 retries" magic numbers) — accepted tradeoff for math-library
 #      readability.
@@ -92,19 +92,23 @@ SAFE_VAR_NAMES: set[str] = {
     "start", "end", "stop",
 }
 
-# Universal-invariant patterns we recognize as derived
-DERIVED_PATTERNS = [
-    r"1\s*/\s*N",
-    r"1\s*/\s*\w*n_(nodes|ent|ents)",
-    r"1\s*/\s*sqrt",
-    r"math\.(log|sqrt|pi|e)",
-    r"torch\.(log|sqrt|pi)",
-    r"log\(\s*\w*N\w*\s*\)",
-    # Tensor-rank / shape assertions: `X.ndim [op] N` or `len(X.shape) [op] N`.
-    # Structural shape requirements, not numerical tuning — common in
-    # math-library input validation. Treated as derived (added 2026-05-26).
-    r"\.ndim\s*[!=<>]+",
-    r"len\(\s*\w+\.shape\s*\)\s*[!=<>]+",
+# Universal-invariant patterns we recognize as derived.
+# Compiled once at import — the audit runs these against every line of
+# every source file, so a per-call `re.compile` is wasteful.
+DERIVED_PATTERNS: list[re.Pattern] = [
+    re.compile(p) for p in (
+        r"1\s*/\s*N",
+        r"1\s*/\s*\w*n_(nodes|ent|ents)",
+        r"1\s*/\s*sqrt",
+        r"math\.(log|sqrt|pi|e)",
+        r"torch\.(log|sqrt|pi)",
+        r"log\(\s*\w*N\w*\s*\)",
+        # Tensor-rank / shape assertions: `X.ndim [op] N` or `len(X.shape) [op] N`.
+        # Structural shape requirements, not numerical tuning — common in
+        # math-library input validation. Treated as derived (added 2026-05-26).
+        r"\.ndim\s*[!=<>]+",
+        r"len\(\s*\w+\.shape\s*\)\s*[!=<>]+",
+    )
 ]
 
 # Files that are themselves the audit/catalog infrastructure and must not
@@ -114,8 +118,18 @@ DERIVED_PATTERNS = [
 # undocumented-literal reports in 2026-05-24 cleanup.
 EXCLUDE_FILES: set[str] = {
     "audit.py",       # this file — contains ALLOWED_LITERALS and exclude lists
-    "_posited.py",    # posited-constants registry (by design)
 }
+
+# Default directories to skip when walking a path tree. Shared between
+# scan_path and extract_live_names so they stay in sync.
+DEFAULT_EXCLUDE_DIRS: tuple[str, ...] = (
+    "__pycache__", ".venv", ".venv-local", ".venv-hyplora",
+    "tests", ".git", "node_modules",
+)
+
+# Regex matching backticked identifiers in the catalog markdown.
+# Pre-compiled because we evaluate it per-line of magic_numbers.md.
+_BACKTICK_NAME_RE = re.compile(r"`([A-Za-z_][A-Za-z_0-9]*)`")
 
 
 @dataclass
@@ -234,7 +248,7 @@ class ConstantVisitor(ast.NodeVisitor):
         # If the line contains a derived-pattern, mark as documented
         severity = "🔴"
         for pat in DERIVED_PATTERNS:
-            if re.search(pat, line_text):
+            if pat.search(line_text):
                 severity = "🟡"
                 break
         self.literals.append(FoundLiteral(
@@ -254,8 +268,7 @@ def load_catalog(catalog_path: Path) -> set[str]:
         return set()
     text = catalog_path.read_text()
     # Grab anything in backticks — magic_numbers.md uses `name` for constant names
-    names = set(re.findall(r"`([A-Za-z_][A-Za-z_0-9]*)`", text))
-    return names
+    return set(_BACKTICK_NAME_RE.findall(text))
 
 
 def load_catalog_status(catalog_path: Path,
@@ -284,7 +297,7 @@ def load_catalog_status(catalog_path: Path,
         if "|" not in line:
             continue
         # Try to extract the first backticked name in the row
-        names_in_row = re.findall(r"`([A-Za-z_][A-Za-z_0-9]*)`", line)
+        names_in_row = _BACKTICK_NAME_RE.findall(line)
         if not names_in_row:
             continue
         primary_name = names_in_row[0]
@@ -297,11 +310,10 @@ def load_catalog_status(catalog_path: Path,
     return by_status
 
 
-def extract_live_names(paths: list[Path],
-                         exclude_dirs: tuple[str, ...] = (
-                             "__pycache__", ".venv", ".venv-local",
-                             ".venv-hyplora", "tests", ".git", "node_modules",
-                         )) -> set[str]:
+def extract_live_names(
+    paths: list[Path],
+    exclude_dirs: tuple[str, ...] = DEFAULT_EXCLUDE_DIRS,
+) -> set[str]:
     """Walk source paths; return the set of identifier names that appear as
     AnnAssign targets, function arg names with defaults, or assignment targets.
 
@@ -367,11 +379,10 @@ def scan_file(path: Path, catalog_names: set[str]) -> list[FoundLiteral]:
     return visitor.literals
 
 
-def scan_path(root: Path, catalog_names: set[str],
-                  exclude_dirs: tuple[str, ...] = (
-                      "__pycache__", ".venv", ".venv-local", ".venv-hyplora",
-                      "tests", ".git", "node_modules",
-                  )) -> list[FoundLiteral]:
+def scan_path(
+    root: Path, catalog_names: set[str],
+    exclude_dirs: tuple[str, ...] = DEFAULT_EXCLUDE_DIRS,
+) -> list[FoundLiteral]:
     """Scan a path (file or directory) recursively."""
     all_literals: list[FoundLiteral] = []
     if root.is_file() and root.suffix == ".py":

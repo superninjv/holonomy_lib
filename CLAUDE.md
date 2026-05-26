@@ -1,4 +1,4 @@
-# synoros-lib — agent operating constraints
+# holonomy-lib — agent operating constraints
 
 This project's purpose, scope, and architectural commitments are in `README.md` and `HANDOFF.md`. Read those first.
 
@@ -32,9 +32,9 @@ This project's purpose, scope, and architectural commitments are in `README.md` 
 
 ## Relationship to synoros-substrate
 
-Sibling repo at `~/projects/synoros-substrate/`. That project's experience shaped this library's design. Primitives developed there should migrate here as they stabilize; once migrated, synoros-substrate depends on synoros-lib instead of carrying its own copy. The two repos co-evolve.
+Sibling repo at `~/projects/synoros-substrate/`. That project's experience shaped this library's design. Primitives developed there should migrate here as they stabilize; once migrated, synoros-substrate depends on holonomy-lib instead of carrying its own copy. The two repos co-evolve.
 
-For now: synoros-substrate has its own `src/synoros_library/` which is the parent of this library. Migration happens piece-by-piece — DON'T break synoros-substrate's imports while migrating.
+For now: synoros-substrate has its own `src/holonomy_library/` which is the parent of this library. Migration happens piece-by-piece — DON'T break synoros-substrate's imports while migrating.
 
 ## Posture
 

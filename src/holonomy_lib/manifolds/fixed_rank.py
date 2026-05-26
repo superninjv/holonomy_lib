@@ -30,13 +30,24 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
+
+from holonomy_lib.algebra.linear import truncated_svd
 
 # A batched manifold point is the triple (U, S, Vt) of stacked tensors.
 # Shapes: U (B, m, r), S (B, r), Vt (B, r, n).
 FixedRankPoint = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+
+# Threshold above which exact SVD is competitive with randomized for
+# the retraction's top-r truncation. Empirical (see notes/benchmark_
+# baseline.md): at r/min(m,n) ≥ 0.25 the exact-SVD constant factor
+# wins back the gap, and accuracy / determinism matter more for
+# research workloads. Below this ratio, randomized SVD (HMT 2011) is
+# strictly faster — 37× at 1024×1024, r=32 in our CPU baseline.
+# Cataloged as `fixed_rank_randomized_threshold`.
+RETRACTION_RANDOMIZED_THRESHOLD: float = 0.25
 
 
 class FixedRankManifold:
@@ -63,16 +74,37 @@ class FixedRankManifold:
 
     def __init__(self, m: int, n: int, r: int,
                  device: str | torch.device = "cpu",
-                 dtype: torch.dtype = torch.float64):
+                 dtype: torch.dtype = torch.float64,
+                 retraction_mode: Literal["auto", "exact", "randomized"] = "auto"):
+        """Args (in addition to m/n/r/device/dtype):
+
+          retraction_mode: how to compute the SVD inside `retraction`.
+            - "auto" (default): pick "randomized" when `r / min(m, n)` is
+              below `RETRACTION_RANDOMIZED_THRESHOLD`, else "exact".
+              Empirically a 5-37× speedup on tall-and-thin truncations.
+            - "exact": always full SVD then slice (Eckart-Young exact).
+              Slower but deterministic; pick this when downstream code
+              depends on bit-for-bit reproducibility.
+            - "randomized": always Halko-Martinsson-Tropp via
+              `torch.svd_lowrank`. Non-deterministic — the random
+              projection differs across calls — and approximate to
+              ~σ_{r+1}-precision.
+        """
         if r <= 0 or r > min(m, n):
             raise ValueError(
                 f"rank r={r} must satisfy 0 < r <= min(m={m}, n={n})"
+            )
+        if retraction_mode not in {"auto", "exact", "randomized"}:
+            raise ValueError(
+                f"retraction_mode must be 'auto'/'exact'/'randomized', "
+                f"got {retraction_mode!r}"
             )
         self.m = m
         self.n = n
         self.r = r
         self.device = torch.device(device)
         self.dtype = dtype
+        self.retraction_mode = retraction_mode
 
     # ----------------------------------------------------------------
     # Manifold dimension (informational)
@@ -231,6 +263,12 @@ class FixedRankManifold:
         where SVD_r truncates to the top r singular triples. This is a
         first-order retraction (Absil et al. 2008, §4.1).
 
+        Performance: full SVD scales O(m·n·min(m, n)). For r ≪ min(m, n)
+        we switch to `torch.svd_lowrank` (Halko-Martinsson-Tropp) which
+        scales O(m·n·r); on our CPU baseline the speedup is 8-37× at
+        common ranks. The threshold is governed by
+        `retraction_mode` (default "auto"); see `__init__` docstring.
+
         Numerically may produce degenerate singular values when the
         truncation rank coincides with a spectral gap — caller can detect
         S[r-1] ≈ S[r] and halve the step.
@@ -238,6 +276,7 @@ class FixedRankManifold:
         References:
           Absil, Mahony, Sepulchre (2008), §4.1 — retractions.
           Vandereycken (2013), eq. 2.7.
+          Halko, Martinsson, Tropp (2011) — randomized SVD.
 
         Args:
           point: (U, S, Vt) — used only to call dense().
@@ -246,8 +285,20 @@ class FixedRankManifold:
           (U', S', Vt') with shapes (B, m, r), (B, r), (B, r, n).
         """
         M_plus = self.dense(point) + tangent  # (B, m, n)
-        U_full, S_full, Vt_full = torch.linalg.svd(M_plus, full_matrices=False)
         r = self.r
+        mode = self.retraction_mode
+        if mode == "auto":
+            min_dim = min(M_plus.shape[-2], M_plus.shape[-1])
+            mode = "randomized" if r <= RETRACTION_RANDOMIZED_THRESHOLD * min_dim \
+                                 else "exact"
+        if mode == "randomized":
+            # Use our `truncated_svd` (HMT with oversample=5, n_iter=2)
+            # rather than `torch.svd_lowrank` directly. svd_lowrank with
+            # q=r has NO oversampling and produces ~40% relative error
+            # on retraction inputs — unacceptable for an optimizer step.
+            # Our randomized path oversamples per Halko-Martinsson-Tropp.
+            return truncated_svd(M_plus, r=r, mode="randomized")
+        U_full, S_full, Vt_full = torch.linalg.svd(M_plus, full_matrices=False)
         U_r = U_full[..., :, :r].contiguous()
         S_r = S_full[..., :r].contiguous()
         Vt_r = Vt_full[..., :r, :].contiguous()

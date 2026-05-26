@@ -1,11 +1,11 @@
-"""Tests for synoros_lib.tensor_calculus.decomposition."""
+"""Tests for holonomy_lib.tensor_calculus.decomposition."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from synoros_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
+from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
 
 
 def _seeded_generator(seed: int) -> torch.Generator:
@@ -273,7 +273,9 @@ except ImportError:
 )
 class TestAgainstTensorly:
     """Cross-check the truncated HOSVD reconstruction against tensorly's
-    Tucker decomposition initialized with HOSVD (`init='svd'`).
+    Tucker decomposition initialized with HOSVD (`init='svd',
+    n_iter_max=0`) — pure HOSVD with no ALS refinement, which is
+    apples-to-apples with our `hosvd`.
 
     Tensorly returns slightly different factor/core conventions; we
     compare the dense reconstruction, which is invariant to sign /
@@ -299,21 +301,21 @@ class TestAgainstTensorly:
         R = mode_product(R, factors[2], axis=3)
         recon_ours = R[0].numpy()
 
-        # Tensorly truncated HOSVD via the dedicated function (no ALS).
+        # Tensorly pure HOSVD: init="svd" with n_iter_max=0 skips the
+        # ALS refinement, returning the truncated HOSVD as-is.
         from tensorly.decomposition import tucker
         core_tl, factors_tl = tucker(
-            T[0].numpy(), rank=list(ranks), init="svd", n_iter_max=1,
+            T[0].numpy(), rank=list(ranks), init="svd", n_iter_max=0,
             tol=1.0,
         )
         recon_tl = tl.tucker_to_tensor((core_tl, factors_tl))
 
-        # Both should approximate T with the same Frobenius error.
+        # Pure-HOSVD vs pure-HOSVD: identical reconstruction up to
+        # floating-point rounding.
         T_np = T[0].numpy()
         err_ours = np.linalg.norm(recon_ours - T_np)
         err_tl = np.linalg.norm(recon_tl - T_np)
-        # Tensorly may run one ALS step, slightly improving on pure HOSVD;
-        # our pure-HOSVD error should be at most a small factor worse.
-        assert err_ours / max(err_tl, 1e-15) < 1.05, (
-            f"our HOSVD error {err_ours:.6e} significantly worse than "
-            f"tensorly's {err_tl:.6e} (ratio {err_ours / err_tl:.3f})"
+        assert abs(err_ours - err_tl) / max(err_tl, 1e-15) < 1e-10, (
+            f"pure-HOSVD reconstruction errors should match tensorly's: "
+            f"ours={err_ours:.10e}, tl={err_tl:.10e}"
         )
