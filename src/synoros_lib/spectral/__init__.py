@@ -19,5 +19,6 @@ Planned (per HANDOFF.md §4):
 """
 
 from synoros_lib.spectral import laplacian
+from synoros_lib.spectral.embedding import laplacian_eigenmaps
 
-__all__ = ["laplacian"]
+__all__ = ["laplacian", "laplacian_eigenmaps"]
