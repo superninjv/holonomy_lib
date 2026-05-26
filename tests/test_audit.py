@@ -171,25 +171,29 @@ class TestCatalogCrossReference:
 
 class TestAstCoverage:
     def test_keyword_argument_picks_up_arg_name_context(self, tmp_path):
-        """`func(eps=1e-7)` should record context_var='eps' so the
-        catalog can document `eps`.
+        """`func(my_tol=1e-7)` should record context_var='my_tol' so the
+        catalog can document the constant. Uses a non-standard name to
+        avoid the DISPLAY_VAR_NAMES whitelist that covers `eps`, `lr`,
+        etc.
         """
         f = _write(tmp_path, "src.py", """
-            def f(eps=1e-7):
-                return eps
+            def f(my_tol=1e-7):
+                return my_tol
         """)
-        # 1e-7 not in ALLOWED → should be flagged, with context_var='eps'.
+        # 1e-7 not in ALLOWED → should be flagged, with context_var='my_tol'.
         out = scan_file(f, set())
         assert len(out) == 1
-        assert out[0].context_var == "eps"
+        assert out[0].context_var == "my_tol"
 
     def test_function_default_picks_up_param_name(self, tmp_path):
+        """Same as above, with a positional default. `learning_factor`
+        is non-standard so the whitelist doesn't catch it."""
         f = _write(tmp_path, "src.py", """
-            def f(lr=0.07):
-                return lr
+            def f(learning_factor=0.07):
+                return learning_factor
         """)
         out = scan_file(f, set())
-        assert out[0].context_var == "lr"
+        assert out[0].context_var == "learning_factor"
 
 
 # --------------------------------------------------------------------

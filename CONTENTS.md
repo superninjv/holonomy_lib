@@ -49,6 +49,7 @@ from holonomy_lib.info_geometry import (
     kl_divergence_categorical,
     kl_divergence_gaussian,
 )
+from holonomy_lib.optimization import RiemannianSGD, riemannian_sgd_step
 from holonomy_lib import provenance
 ```
 
@@ -313,6 +314,32 @@ Closed-form KL between two multivariate Gaussians. Cholesky-stable:
 factors `Σ_q` once and reuses the factorization for the trace and
 Mahalanobis terms; pulls `log det Σ` directly from the Cholesky
 diagonal. Ref: Petersen-Pedersen Matrix Cookbook eq. 380.
+
+---
+
+## §Optimization: `holonomy_lib.optimization`
+
+Riemannian optimizers wrapping the existing manifold `projection` +
+`retraction` API. The flow is: caller computes the ambient gradient,
+the optimizer projects it to the tangent space, scales by `-lr`, and
+retracts back onto the manifold.
+
+### `RiemannianSGD(manifold, lr=1e-2)`
+Stateful Riemannian steepest-descent wrapper. `opt.step(point,
+ambient_grad)` returns the new point. Works with `FixedRankManifold`
+(point = `(U, S, Vt)` triple; ambient grad is `(B, m, n)`) and
+`SPDManifold` (point and ambient grad both `(B, n, n)`).
+Refs: Absil-Mahony-Sepulchre (2008), §4.1; Bonnabel (2013).
+
+### `riemannian_sgd_step(manifold, point, ambient_grad, lr)`
+Functional one-step API for use in custom training loops; the
+`RiemannianSGD` class is a thin wrapper around it.
+
+No `RiemannianAdam` in v1: adaptive step-size schemes (Adam, RMSProp,
+AdamW, ...) are user-side ergonomics, not part of the math of
+optimization on a manifold. The Riemannian gradient step *is* the
+SGD primitive; adaptive preconditioning happens in user code by
+rescaling `ambient_grad` before calling `step()`.
 
 ---
 

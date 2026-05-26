@@ -100,7 +100,11 @@ ALLOWED_LITERALS set:
 
 ### optimization
 
-(no entries yet)
+(All Riemannian-optimizer hyperparameters — `lr`, `betas`, `eps`,
+`weight_decay`, `momentum` — are treated as user choices, not
+architectural constants. Defaults match `torch.optim` conventions
+for ergonomic consistency. The audit's `DISPLAY_VAR_NAMES` covers
+these names.)
 
 ### probability
 

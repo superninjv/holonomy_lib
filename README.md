@@ -38,6 +38,7 @@ its inputs through a content-addressable provenance DAG.
 | `spectral` | `combinatorial`/`symmetric_normalized`/`random_walk`/`signed` Laplacians, `laplacian_eigenmaps`, `magnetic.*` (directed), `heat_kernel_chebyshev`, **`effective_resistance`**, **`commute_time`**, **`diffusion_map`** | Chung; von Luxburg; Kunegis (signed); Furutani 2020 (magnetic Hermitian); Hammond-Vandergheynst-Gribonval 2011 (Chebyshev heat kernel); Klein-Randić 1993 (resistance); Coifman-Lafon 2006 (diffusion maps) |
 | `discrete_geometry` | `ollivier_ricci_curvature`, `discrete_ricci_flow`, `ricci_flow_with_surgery`, `forman_ricci_simple`, `forman_ricci_augmented` | Sinkhorn-W₁ Ollivier on graphs (Ollivier 2009; Cuturi 2013; Sia/Ni-Lin-Luo-Gao 2019), the **Perelman-on-networks** flow + surgery primitive, and the cheap combinatorial Forman alternative (Sreejith et al. 2016; Samal et al. 2018) |
 | **`info_geometry`** | **`bregman_divergence`**, **`kl_divergence_categorical`**, **`kl_divergence_gaussian`** | Bregman divergence for any convex generator plus closed-form KL for the standard exponential families (Bregman 1967; Banerjee et al. 2005; Amari 2016) |
+| **`optimization`** | **`RiemannianSGD`** | Steepest descent on `FixedRankManifold` / `SPDManifold` via the existing projection + retraction API (Absil-Mahony-Sepulchre 2008, §4.1) |
 | `provenance` | `@with_provenance`, `record()`, `ProvenanceRegistry` | Content-addressable Merkle DAG of math primitives; substitution / replay / SAELens emission for mech interp |
 
 ---

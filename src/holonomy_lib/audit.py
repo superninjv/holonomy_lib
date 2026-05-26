@@ -77,6 +77,11 @@ DISPLAY_VAR_NAMES: set[str] = {
     "n_runs", "n_warmup", "n_epochs_default",
     # JSON / dump formatting (output-only, no architectural meaning)
     "indent",
+    # Optimizer hyperparameters: per-call user choices, not architectural
+    # constants. `lr` is standard ML naming; `betas`, `eps` are standard
+    # Adam-family names. Default values match upstream torch.optim
+    # conventions and don't need cataloging.
+    "lr", "betas", "eps", "weight_decay", "momentum",
 }
 
 # Variable names that are universally safe (not architectural constants)
