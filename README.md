@@ -392,16 +392,13 @@ Open frontiers, prioritized by research leverage:
    `lanczos_eigsh` is largest-algebraic only).
 3. **Fisher information metric** and natural-gradient optimizers
    building on `info_geometry`.
-4. **Riemannian Adam / trust-region** optimizers (SGD is in; adaptive
-   schemes belong in user code per design but a built-in variant
-   could ship as a convenience wrapper).
-5. **Sparse graph backend**: most spectral primitives are currently
+4. **Sparse graph backend**: most spectral primitives are currently
    dense `(B, n, n)`. A sparse path would unlock large-graph regimes.
-6. **GPU-native H₁/H₂ matrix reduction**: PH currently uses a
+5. **GPU-native H₁/H₂ matrix reduction**: PH currently uses a
    Python-set sparse reduction (sequential per complex; batches across
    point clouds). A GPU kernel for the reduction would unlock larger
    single complexes.
-7. **Class-method provenance** for `FixedRankManifold` /
+6. **Class-method provenance** for `FixedRankManifold` /
    `SPDManifold` methods (currently only top-level functions are
    decorated).
 

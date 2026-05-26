@@ -11,14 +11,14 @@ Currently implemented:
                                           graphs (Furutani 2020, Fanuel 2017)
   magnetic.symmetric_normalized(A, q) : normalized magnetic Laplacian,
                                           spectrum in [0, 2]
+  magnetic.sign_magnetic_combinatorial(A, q)
+                                      : signed-directed Hermitian
+                                          Laplacian; unifies Kunegis
+                                          signed and magnetic
+                                          (Fiorini 2023; He et al. 2023)
+  magnetic.sign_magnetic_symmetric_normalized(A, q)
+                                      : normalized signed-directed form
   laplacian_eigenmaps(A, k, ...)      : bottom-k spectral embedding
-
-Planned:
-  Hodge Laplacians on simplicial complexes (Ribando-Gros et al. 2024,
-    Schaub et al. 2020).
-  Lanczos solver for sparse top-K eigenvectors on GPU.
-  Heat-kernel computation via Chebyshev polynomials.
-  Effective resistance / commute-time distances.
 """
 
 from holonomy_lib.spectral import laplacian, magnetic
