@@ -94,6 +94,12 @@ ALLOWED_LITERALS set:
 
 (no entries yet)
 
+### sheaf
+
+| Name | Status | Value | Justification |
+|---|---|---|---|
+| `SHEAF_DENSE_BYTES_CAP` | 🔬 | `2 * 2**30` (= 2 GiB) | Pre-flight byte cap on the dense δ + staging tensors built inside `sheaf_coboundary`. The v1 sheaf path is dense; a graph with n_e=50k edges, n_v=10k nodes, d=16 stalks at float64 would allocate ~100 TB silently. **Scale of validity**: chosen as a generous threshold for a research-grade primitive on commodity hardware (24-32 GB host RAM); raise when running on big-memory machines, lower on memory-constrained ones. A sparse path is on the v0.2 roadmap. Used in `src/holonomy_lib/sheaf/laplacian.py`. |
+
 ### tensor_calculus
 
 (no entries yet)

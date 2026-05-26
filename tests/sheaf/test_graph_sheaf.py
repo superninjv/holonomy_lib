@@ -105,6 +105,65 @@ class TestValidation:
         with pytest.raises(ValueError, match="n_nodes"):
             sheaf_dirichlet_energy(sheaf, x_wrong)
 
+    def test_rejects_self_loops(self):
+        """A self-loop edge `(u, u)` makes the sheaf Laplacian disagree
+        silently with the standard graph Laplacian (which drops
+        self-loops by convention). Reject upfront."""
+        edges = torch.tensor([[0, 1], [1, 1], [2, 0]], dtype=torch.int64)
+        with pytest.raises(ValueError, match="self-loops"):
+            GraphSheaf.trivial(n_nodes=3, edges=edges)
+
+    def test_rejects_duplicate_edges(self):
+        """Duplicate `(u, v)` entries would double the off-diagonal
+        block of the sheaf Laplacian, breaking the trivial-sheaf
+        reduction. Reject upfront."""
+        edges = torch.tensor([[0, 1], [1, 2], [0, 1]], dtype=torch.int64)
+        with pytest.raises(ValueError, match="duplicate"):
+            GraphSheaf.trivial(n_nodes=3, edges=edges)
+
+    def test_dense_size_cap_raises(self):
+        """A sheaf large enough to overflow the dense-δ byte cap should
+        fail with a useful pre-flight message, not an OOM later."""
+        from holonomy_lib.sheaf import sheaf_coboundary
+        # Construct a sheaf that would need > 2 GiB of dense allocation
+        # without actually allocating it (the byte check runs before the
+        # zeros() call).
+        n_nodes = 10000
+        d_v = 32
+        # Build a non-trivial number of edges that crosses 2 GiB:
+        # bytes ≈ 2 · n_e · d_e · n_v · d_v · 8. For d_e = d_v = 32,
+        # n_v = 10000, 8-byte float, need n_e ≳ 130 for >2GiB.
+        n_e = 200
+        edges = torch.stack(
+            [torch.arange(n_e) % n_nodes,
+             (torch.arange(n_e) + 1) % n_nodes],
+            dim=-1,
+        )
+        eye = torch.eye(d_v, dtype=torch.float64)
+        F = eye.unsqueeze(0).expand(n_e, d_v, d_v).contiguous()
+        sheaf = GraphSheaf(
+            n_nodes=n_nodes, edges=edges,
+            node_stalk_dim=d_v, edge_stalk_dim=d_v,
+            F_left=F.clone(), F_right=F.clone(),
+        )
+        with pytest.raises(RuntimeError, match="dense path"):
+            sheaf_coboundary(sheaf)
+
+
+class TestTrivialHelperReturnsIndependentTensors:
+    """`F_left` and `F_right` returned by `GraphSheaf.trivial` must be
+    independent storage — mutating one must not affect the other.
+    Otherwise the frozen-dataclass contract leaks mutability
+    asymmetrically."""
+
+    def test_F_left_F_right_are_independent(self):
+        sheaf = GraphSheaf.trivial(n_nodes=4, edges=_cycle_edges(4), stalk_dim=2)
+        # Mutate F_left in place; F_right should be unaffected.
+        sheaf.F_left[0, 0, 0] = 99.0
+        assert sheaf.F_right[0, 0, 0].item() == 1.0, (
+            "F_right is aliasing F_left; trivial() must return clones"
+        )
+
 
 # --------------------------------------------------------------------
 # Trivial 1-D sheaf reduces to standard graph Laplacian

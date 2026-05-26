@@ -25,9 +25,12 @@ v1 restrictions:
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import torch
+
+from holonomy_lib.provenance.protocol import HEX_PREFIX_LEN
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,27 @@ class GraphSheaf:
             raise ValueError(
                 f"edges entries must be in [0, n_nodes={self.n_nodes})"
             )
+        # Self-loops (u == v) silently make the sheaf Laplacian
+        # differ from the standard combinatorial Laplacian, which the
+        # library-wide CONVENTIONS.md drops via `_graph_utils.
+        # drop_self_loops`. Sheaf v1 follows the same convention by
+        # rejecting them outright. Pre-process: `mask = u != v; edges
+        # = edges[mask]; F_left = F_left[mask]; F_right = F_right[mask]`.
+        if (self.edges[:, 0] == self.edges[:, 1]).any():
+            raise ValueError(
+                "self-loops (u == v in edges) are not supported in v1; "
+                "drop them before constructing the GraphSheaf"
+            )
+        # Duplicate (u, v) entries would silently double the
+        # off-diagonal mass of the sheaf Laplacian, breaking the
+        # "trivial sheaf → graph Laplacian" reduction. Reject them.
+        unique_edges = torch.unique(self.edges, dim=0)
+        if unique_edges.shape[0] != self.edges.shape[0]:
+            raise ValueError(
+                "duplicate edges are not supported in v1; "
+                "the resulting sheaf Laplacian would double-count "
+                "the duplicated pair's off-diagonal block"
+            )
 
     @property
     def n_edges(self) -> int:
@@ -118,14 +142,24 @@ class GraphSheaf:
         so they pass through `_resolve_tensor_hex` separately and
         carry their content into the input_hexes of any decorated
         sheaf op; we do NOT put them in the signature dict.
+
+        We summarize the edge list as a content hash (sha256 over the
+        contiguous int64 bytes) rather than as a Python tuple. The
+        provenance hot path canonicalizes this dict to JSON on every
+        decorated call; an O(n_edges) tuple would dominate runtime
+        for sheaves with tens of thousands of edges.
         """
-        edges_tuple = tuple(map(tuple, self.edges.cpu().tolist()))
+        edges_bytes = self.edges.cpu().contiguous().numpy().tobytes()
+        # Same prefix length as the library-wide content-hash convention
+        # (HEX_PREFIX_LEN cataloged in `magic_numbers.md`).
+        edges_hash = hashlib.sha256(edges_bytes).hexdigest()[:HEX_PREFIX_LEN]
         return {
             "class": "GraphSheaf",
             "n_nodes": self.n_nodes,
             "node_stalk_dim": self.node_stalk_dim,
             "edge_stalk_dim": self.edge_stalk_dim,
-            "edges": edges_tuple,
+            "n_edges": self.n_edges,
+            "edges_sha256_prefix": edges_hash,
             "device": str(self.device),
             "dtype": str(self.dtype),
         }
@@ -154,11 +188,14 @@ class GraphSheaf:
         eye = torch.eye(stalk_dim, dtype=dtype, device=device)
         F = eye.unsqueeze(dim=0).expand(n_e, stalk_dim, stalk_dim).contiguous()
         edges = edges.to(device=device, dtype=torch.int64)
+        # Independent clones for F_left and F_right: external mutation
+        # of one must not affect the other (the frozen-dataclass
+        # contract implies value semantics for callers).
         return GraphSheaf(
             n_nodes=n_nodes,
             edges=edges,
             node_stalk_dim=stalk_dim,
             edge_stalk_dim=stalk_dim,
-            F_left=F,
+            F_left=F.clone(),
             F_right=F.clone(),
         )

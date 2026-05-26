@@ -31,6 +31,15 @@ from holonomy_lib.provenance import with_provenance
 from holonomy_lib.sheaf.graph_sheaf import GraphSheaf
 
 
+# Dense-coboundary allocation guard: refuse to allocate beyond this
+# many bytes for the staging tensor + δ. 2 GiB picks a generous
+# threshold for a research-grade primitive on commodity hardware; a
+# sparse path is planned for larger graphs. **Scale of validity**:
+# byte budget for the v1 dense implementation. Cataloged as
+# `sheaf_dense_bytes_cap`.
+SHEAF_DENSE_BYTES_CAP: int = 2 * 2**30
+
+
 @with_provenance(
     "holonomy_lib.sheaf.sheaf_coboundary", op_version="0.1",
 )
@@ -56,6 +65,24 @@ def sheaf_coboundary(sheaf: GraphSheaf) -> torch.Tensor:
     d_e = sheaf.edge_stalk_dim
     d_v = sheaf.node_stalk_dim
     device, dtype = sheaf.device, sheaf.dtype
+
+    # Dense δ size guard: the staging tensor `block` is `(n_e, d_e,
+    # n_v · d_v)` and `delta` is `(n_e · d_e, n_v · d_v)`. For graphs
+    # with thousands of nodes × edges × non-trivial stalk dims, the
+    # raw dense allocation crosses many GB silently. Pre-flight check
+    # against a configurable byte cap and tell the user explicitly
+    # that they're past the dense regime.
+    bytes_per_elem = torch.empty((), dtype=dtype).element_size()
+    dense_bytes = 2 * n_e * d_e * n_v * d_v * bytes_per_elem
+    if dense_bytes > SHEAF_DENSE_BYTES_CAP:
+        raise RuntimeError(
+            f"sheaf_coboundary would allocate {dense_bytes:,} bytes "
+            f"for the dense δ tensor (n_e={n_e}, d_e={d_e}, n_v={n_v}, "
+            f"d_v={d_v}); the v1 dense path is capped at "
+            f"{SHEAF_DENSE_BYTES_CAP:,} bytes. A sparse path is on the "
+            f"v0.2 roadmap; for now, restrict to smaller sheaves or "
+            f"contribute a sparse implementation."
+        )
 
     delta = torch.zeros(n_e * d_e, n_v * d_v, device=device, dtype=dtype)
 
