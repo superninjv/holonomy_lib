@@ -123,3 +123,39 @@ bench.case("lanczos_eigsh", _setup_lanczos, _lanczos_sizes,
 bench.case("dense_eigh_reference", _setup_dense_eigh, _dense_eigh_sizes,
             notes="torch.linalg.eigh on the SAME symmetric inputs; "
                   "the cost Lanczos should beat at large n.")
+
+
+# ----------------- shift-and-invert Lanczos (SA mode, roadmap #2) -----------------
+
+
+def _setup_lanczos_sa(size, device, dtype):
+    """Symmetric Positive Definite A so σ=0 is a clean negative shift
+    below the smallest eigenvalue."""
+    g = torch.Generator(device="cpu"); g.manual_seed(0)
+    n = size["n"]
+    X = torch.randn(size["B"], n, n, generator=g, dtype=dtype)
+    A = torch.matmul(X, X.mT) + n * torch.eye(n, dtype=dtype)
+    A = A.to(device)
+    k = size["k"]
+    n_iter = size.get("n_iter", None)
+    sigma = size.get("sigma", 0.0)
+    gen = torch.Generator(device="cpu"); gen.manual_seed(1)
+    def fn():
+        return lanczos_eigsh(
+            A, k=k, n_iter=n_iter, which="SA", sigma=sigma, generator=gen,
+        )
+    return fn
+
+
+_lanczos_sa_sizes = [
+    {"B": 1, "n": 64,   "k": 1, "n_iter": 20, "sigma": 0.0},
+    {"B": 1, "n": 256,  "k": 8, "n_iter": 30, "sigma": 0.0},
+    {"B": 1, "n": 1024, "k": 16, "n_iter": 40, "sigma": 0.0},
+]
+
+bench.case(
+    "lanczos_eigsh_SA", _setup_lanczos_sa, _lanczos_sa_sizes,
+    notes="Shift-and-invert Lanczos for smallest eigenvalues. "
+          "LU-factor (A-σI) once, then per-iter lu_solve. "
+          "Compare cost vs `lanczos_eigsh` (LA) and dense `eigvalsh`.",
+)

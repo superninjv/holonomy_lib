@@ -230,3 +230,88 @@ _diffusion_sizes = [
 
 bench.case("diffusion_map", _setup_diffusion_map, _diffusion_sizes,
             notes="Coifman-Lafon embedding; dominated by the eigh in laplacian_eigenmaps.")
+
+
+# ----------------- sign-magnetic Laplacian (roadmap #1) -----------------
+
+def _make_signed_directed_adj(size, device, dtype):
+    """Signed-directed adjacency. Half the edges get sign-flipped to
+    break the gauge-equivalence with the plain magnetic Laplacian."""
+    g = torch.Generator(device="cpu"); g.manual_seed(0)
+    A = torch.rand(size["B"], size["n"], size["n"], generator=g, dtype=dtype)
+    signs = torch.where(
+        torch.rand_like(A) < 0.5, torch.ones_like(A), -torch.ones_like(A),
+    )
+    A = A * signs
+    A.diagonal(dim1=-2, dim2=-1).zero_()
+    return A.to(device)
+
+
+def _setup_sign_magnetic_combinatorial(size, device, dtype):
+    A = _make_signed_directed_adj(size, device, dtype)
+    q = size.get("q", 0.25)
+    def fn():
+        return magnetic.sign_magnetic_combinatorial(A, q=q)
+    return fn
+
+
+def _setup_sign_magnetic_sym_norm(size, device, dtype):
+    A = _make_signed_directed_adj(size, device, dtype)
+    q = size.get("q", 0.25)
+    def fn():
+        return magnetic.sign_magnetic_symmetric_normalized(A, q=q)
+    return fn
+
+
+bench.case("magnetic.sign_magnetic_combinatorial",
+            _setup_sign_magnetic_combinatorial, _magnetic_sizes,
+            notes="Signed-directed Hermitian Laplacian; one extra abs() vs plain magnetic.")
+bench.case("magnetic.sign_magnetic_symmetric_normalized",
+            _setup_sign_magnetic_sym_norm, _magnetic_sizes,
+            notes="Normalized signed-directed form.")
+
+
+# ----------------- sparse Laplacian backend (roadmap #5) -----------------
+
+def _make_sparse_adj(size, device, dtype):
+    """Sparse symmetric adjacency on `device` with target nnz ~ size['nnz']."""
+    n = size["n"]
+    g = torch.Generator(device="cpu"); g.manual_seed(0)
+    dense_full = torch.rand(n, n, generator=g, dtype=dtype)
+    dense_full = 0.5 * (dense_full + dense_full.mT)
+    # Threshold to control density.
+    density = size.get("density", 0.01)
+    dense_full = dense_full * (dense_full > 1.0 - density)
+    dense_full.diagonal().zero_()
+    return dense_full.to(device).to_sparse_coo()
+
+
+def _setup_sparse_combinatorial(size, device, dtype):
+    A_sparse = _make_sparse_adj(size, device, dtype)
+    def fn():
+        return _L.combinatorial(A_sparse)
+    return fn
+
+
+def _setup_sparse_sym_norm(size, device, dtype):
+    A_sparse = _make_sparse_adj(size, device, dtype)
+    def fn():
+        return _L.symmetric_normalized(A_sparse)
+    return fn
+
+
+# Same densities for a dense baseline at matching size — measures the
+# crossover. Sparse wins as n grows at fixed density.
+_sparse_sizes = [
+    {"n": 256,  "density": 0.05},
+    {"n": 1024, "density": 0.01},
+    {"n": 4096, "density": 0.003},
+]
+
+
+bench.case("laplacian.combinatorial_sparse",
+            _setup_sparse_combinatorial, _sparse_sizes,
+            notes="Sparse-COO combinatorial Laplacian; expected to win vs dense at n ≥ ~1000.")
+bench.case("laplacian.symmetric_normalized_sparse",
+            _setup_sparse_sym_norm, _sparse_sizes,
+            notes="Sparse-COO L_sym; same crossover pattern.")

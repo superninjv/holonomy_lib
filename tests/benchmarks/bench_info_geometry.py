@@ -96,3 +96,62 @@ bench.case("kl_divergence_categorical", _setup_kl_categorical,
             notes="Discrete KL with the torch.where guard for the q=0 case.")
 bench.case("kl_divergence_gaussian", _setup_kl_gaussian, _kl_gaussian_sizes,
             notes="Gaussian KL with Cholesky-based solves; dominated by O(B*d^3).")
+
+
+# ----------------- Fisher metric + natural gradient (roadmap #3) -----------------
+
+from holonomy_lib.info_geometry import (
+    fisher_information_categorical,
+    fisher_information_gaussian_mean,
+    natural_gradient,
+)
+
+
+def _setup_fisher_categorical(size, device, dtype):
+    p = torch.rand(size["B"], size["k"], generator=_seeded(0), dtype=dtype) + 0.1
+    p = p / p.sum(dim=-1, keepdim=True)
+    p = p.to(device)
+    def fn():
+        return fisher_information_categorical(p)
+    return fn
+
+
+def _setup_fisher_gaussian_mean(size, device, dtype):
+    Sigma = _make_spd(size["B"], size["d"], seed=6, dtype=dtype).to(device)
+    def fn():
+        return fisher_information_gaussian_mean(Sigma)
+    return fn
+
+
+def _setup_natural_gradient(size, device, dtype):
+    Sigma = _make_spd(size["B"], size["d"], seed=7, dtype=dtype).to(device)
+    F = fisher_information_gaussian_mean(Sigma)
+    grad = torch.randn(size["B"], size["d"], generator=_seeded(8),
+                        dtype=dtype).to(device)
+    def fn():
+        return natural_gradient(grad, F)
+    return fn
+
+
+_fisher_categorical_sizes = [
+    {"B": 1,    "k": 16},
+    {"B": 1,    "k": 256},
+    {"B": 1024, "k": 64},
+]
+_fisher_gaussian_sizes = [
+    {"B": 1,  "d": 16},
+    {"B": 1,  "d": 64},
+    {"B": 1,  "d": 256},
+    {"B": 16, "d": 64},
+]
+
+
+bench.case("fisher_information_categorical",
+            _setup_fisher_categorical, _fisher_categorical_sizes,
+            notes="Diagonal Fisher on the simplex; clamp + reciprocal + diag_embed.")
+bench.case("fisher_information_gaussian_mean",
+            _setup_fisher_gaussian_mean, _fisher_gaussian_sizes,
+            notes="Sigma^{-1} via Cholesky; same path as kl_divergence_gaussian.")
+bench.case("natural_gradient",
+            _setup_natural_gradient, _fisher_gaussian_sizes,
+            notes="F^{-1} grad via torch.linalg.solve (no explicit inverse).")

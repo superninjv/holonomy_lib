@@ -29,6 +29,7 @@ MODULES = [
     "bench_discrete_geometry",
     "bench_provenance",
     "bench_info_geometry",
+    "bench_topology",
 ]
 
 
