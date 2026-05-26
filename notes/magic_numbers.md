@@ -100,6 +100,15 @@ ALLOWED_LITERALS set:
 |---|---|---|---|
 | `SHEAF_DENSE_BYTES_CAP` | 🔬 | `2 * 2**30` (= 2 GiB) | Pre-flight byte cap on the dense δ + staging tensors built inside `sheaf_coboundary`. The v1 sheaf path is dense; a graph with n_e=50k edges, n_v=10k nodes, d=16 stalks at float64 would allocate ~100 TB silently. **Scale of validity**: chosen as a generous threshold for a research-grade primitive on commodity hardware (24-32 GB host RAM); raise when running on big-memory machines, lower on memory-constrained ones. A sparse path is on the v0.2 roadmap. Used in `src/holonomy_lib/sheaf/laplacian.py`. |
 
+### lie
+
+| Name | Status | Value | Justification |
+|---|---|---|---|
+| `SO3_DIM` | ✅ | `3` | Mathematical dimension of SO(3): the group lives in R^{3×3} and its Lie algebra is R^3. **Derived**: hard-coded by the definition of "3D rotation"; not tunable. Used everywhere in `src/holonomy_lib/lie/so3.py` for shape checks and explicit `(3, 3)`/`(3,)` constructors. |
+| `QUATERNION_DIM` | ✅ | `4` | Mathematical dimension of a quaternion. **Derived**: hard-coded by the definition; not tunable. Used in `src/holonomy_lib/lie/so3.py` for the Shoemake-1992 random-rotation construction. |
+| `SO3_LOG_NEAR_ZERO_RAD` | 🔬 | `1e-6` | Angle threshold (in radians) below which `matrix_to_axis_angle` switches to the "near-zero rotation" branch and returns a canonical axis `(1, 0, 0)`. The default `sin(θ) / sin(θ_clamped)` division becomes ill-conditioned within ~√eps ≈ 1.5e-8 of zero; `1e-6` is two orders of magnitude above that and well below any rotation that meaningfully transports information. **Scale of validity**: dimensionless angle in radians; does not depend on input size. Used in `src/holonomy_lib/lie/so3.py::matrix_to_axis_angle`. |
+| `SO3_LOG_NEAR_PI_RAD` | 🔬 | `1e-6` | Angle threshold (in radians, measured below π) above which `matrix_to_axis_angle` switches to the "near-π rotation" branch that recovers the axis from `(R + I)/2` rather than the antisymmetric `vee((R − R^T)/2)`. **Scale of validity**: dimensionless angle in radians; matches `SO3_LOG_NEAR_ZERO_RAD`'s scale for symmetry. Used in `src/holonomy_lib/lie/so3.py::matrix_to_axis_angle`. |
+
 ### tensor_calculus
 
 (no entries yet)

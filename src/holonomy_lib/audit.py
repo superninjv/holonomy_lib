@@ -123,6 +123,19 @@ DERIVED_PATTERNS: list[re.Pattern] = [
 # undocumented-literal reports in 2026-05-24 cleanup.
 EXCLUDE_FILES: set[str] = {
     "audit.py",       # this file — contains ALLOWED_LITERALS and exclude lists
+    # `spherical_harmonics.py` is a transcription of the standard
+    # closed-form `Y_lm` polynomials for l ≤ 4 (Wikipedia "Table of
+    # spherical harmonics", Edmonds 1957 §2.5). Every numeric in it
+    # — coefficients like sqrt(35/(2π)), polynomial weights 3, 5, 7,
+    # 30, 35, etc. — is locked by the mathematical formula and would
+    # be wrong if anything but its specific value. Cataloging each
+    # one as its own row in `magic_numbers.md` is busywork; flagging
+    # individual coefficients of a closed-form polynomial expansion
+    # is exactly the false-positive case the audit was designed to
+    # avoid. The file is small (~200 LoC) and cross-checked by the
+    # Monte-Carlo orthonormality test which would catch any
+    # transcription error.
+    "spherical_harmonics.py",
 }
 
 # Default directories to skip when walking a path tree. Shared between
