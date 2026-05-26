@@ -415,7 +415,7 @@ If this library helps your research, please cite it:
 
 ```bibtex
 @software{holonomy_lib,
-  author = {Jack},
+  author = {John Vaught},
   title = {holonomy\_lib: GPU-native research math for differential
            geometry, spectral graph theory, and mechanistic interpretability},
   year = {2026},
