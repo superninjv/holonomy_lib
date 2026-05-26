@@ -36,3 +36,7 @@ htmlcov/
 *.pt
 *.pth
 .claude/
+
+# Local agent / development docs (kept on disk, not in the public repo)
+CLAUDE.md
+HANDOFF.md

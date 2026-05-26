@@ -281,9 +281,7 @@ holonomy_lib/
 │   ├── scrutiny.md            # findings + fixes from review passes
 │   ├── benchmark_baseline.md  # before optimization
 │   └── benchmark_optimized.md # after
-├── AGENT.md                   # primitive inventory for LLM agents
-├── CLAUDE.md                  # operating constraints for development
-└── HANDOFF.md                 # original build plan (some scope outdated)
+└── AGENT.md                   # primitive inventory for LLM agents
 ```
 
 ---
@@ -333,8 +331,8 @@ function lists its references in its docstring).
 
 ## Contributing
 
-Contributions welcome. The project's hard constraints (binding for any
-code in this repo) live in `CLAUDE.md`. Highlights:
+Contributions welcome. Hard constraints (binding for any code in this
+repo):
 
 - **Citations are non-optional.** Every public function has a
   `References:` section pointing to the paper for its math.

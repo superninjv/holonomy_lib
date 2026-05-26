@@ -1,6 +1,6 @@
 # Magic numbers catalog — holonomy-lib
 
-Per the **no magic numbers** rule (`CLAUDE.md`, `README.md`), every numerical
+Per the **no magic numbers** rule (see `README.md` §"Audit discipline"), every numerical
 constant in this library must be:
 
 - **(a)** Derived from inputs (function of dims, structure, problem parameters)

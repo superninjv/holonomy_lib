@@ -230,20 +230,18 @@ truncated to 16 chars. Pluggable hash function (blake3 if installed, else sha256
 
 ## Files an agent should know about
 
-- `README.md` — vision, what this library is and why.
-- `HANDOFF.md` — original build plan from the seeding session. Some scope
-  framing is outdated (says "only build what substrate needs" — actually
-  general-purpose); flagged in memory.
-- `CLAUDE.md` — agent operating constraints for *developers* (citations
-  required, batched-first, audit-clean, tests-before-commit, etc.).
-- `AGENT.md` — this file (research-agent quick reference).
-- `notes/magic_numbers.md` — every posited numerical constant with
+- `README.md`: vision, what this library is and why.
+- `AGENT.md`: this file (research-agent quick reference).
+- `notes/magic_numbers.md`: every posited numerical constant with
   scale-of-validity. Update when you add a tunable constant.
-- `pyproject.toml` — Python ≥3.12, install with `uv pip install -e ".[dev]"`.
+- `notes/scrutiny.md`: running log of critical-review findings and fixes.
+- `notes/benchmark_baseline.md` / `notes/benchmark_optimized.md`:
+  before/after timings from the optimization pass.
+- `pyproject.toml`: Python ≥3.12, install with `uv pip install -e ".[dev]"`.
   Torch must be installed separately per-platform (ROCm wheels on AMD).
-- `src/holonomy_lib/audit.py` — `python -m holonomy_lib.audit src/ --strict`
+- `src/holonomy_lib/audit.py`: `python -m holonomy_lib.audit src/ --strict`
   scans source for undocumented numerical literals. CI gate.
-- `.github/workflows/ci.yml` — runs audit + tests on every push.
+- `.github/workflows/ci.yml`: runs audit + tests on every push.
 
 ## What's *not* here (yet)
 
