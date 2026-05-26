@@ -32,11 +32,15 @@ Shapes use `B` for batch, `n`/`m`/`r`/etc. for math.
 from holonomy_lib.manifolds import FixedRankManifold, SPDManifold
 from holonomy_lib.algebra import truncated_svd
 from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
-from holonomy_lib.spectral import laplacian, laplacian_eigenmaps
+from holonomy_lib.spectral import (
+    laplacian, magnetic, laplacian_eigenmaps, heat_kernel_chebyshev,
+)
 from holonomy_lib.discrete_geometry import (
     ollivier_ricci_curvature,
     discrete_ricci_flow,
     ricci_flow_with_surgery,
+    forman_ricci_simple,
+    forman_ricci_augmented,
 )
 from holonomy_lib import provenance
 ```
@@ -146,6 +150,25 @@ Bottom-k spectral embedding. `laplacian_type ∈ {"combinatorial", "symmetric_no
 "random_walk", "signed"}`. Does **not** auto-drop the trivial null eigenvector
 (caller decides). Refs: Belkin-Niyogi (2003), von Luxburg (2007).
 
+### `magnetic.combinatorial(A, q=0.25)`
+Hermitian magnetic Laplacian for directed graphs:
+`L^(q) = D_s − H ⊙ A_s` where `H_{ij} = exp(i·2π·q·(A_{ij} − A_{ji}))`.
+Returns a complex Hermitian `(B, n, n)`; real spectrum via `linalg.eigh`.
+At `q = 0` collapses to the real Laplacian of `A_s = (A + A^T)/2`.
+Refs: Lieb-Loss (1993), Fanuel et al. (2017), Furutani et al. (2020).
+
+### `magnetic.symmetric_normalized(A, q=0.25)`
+Symmetric-normalized magnetic Laplacian: `L_sym^(q) = I − D_s^{−1/2}(H⊙A_s)D_s^{−1/2}`.
+Spectrum ⊂ [0, 2] regardless of `q`. Use the bottom-k eigenvectors as
+directed-graph eigenmaps. Refs: Furutani et al. (2020), Prop. 1.
+
+### `heat_kernel_chebyshev(L, t, signal=None, K=30, lambda_max=2.0)`
+Heat kernel `exp(−t·L)` (or `exp(−t·L) @ signal`) via Chebyshev-polynomial
+expansion: `O(K · n³)` dense, or `O(K · n² · k)` for an `(n, k)` signal,
+beating the `O(n³)` eigendecomposition for medium `t`. Coefficients are
+modified Bessel functions `I_k(t·λ_max/2)`, computed via `scipy.special.ive`.
+Refs: Hammond-Vandergheynst-Gribonval (2011), §3.
+
 ---
 
 ## §Discrete geometry: `holonomy_lib.discrete_geometry`
@@ -170,6 +193,18 @@ Every `surgery_period` steps, edges whose weight ≥ `surgery_threshold` × init
 mean weight are removed. After enough iterations, the graph splits into communities.
 Inspiration: Perelman (2002, 2003 surgery, 2003 extinction). Discrete: Sia (2019),
 Ni-Lin-Luo-Gao (2019), Liu-Wang-Yau-Zeng (2017).
+
+### `forman_ricci_simple(A) → (B, n, n)`
+Combinatorial Forman-Ricci curvature on every edge: no optimal-transport
+solve needed, `O(B · n²)` cost. For unweighted simple graphs the formula
+collapses to `κ_F(u, v) = 4 − deg(u) − deg(v)`. Cheap qualitative substitute
+for Ollivier-Ricci on large graphs (Sreejith et al. 2016, eq. 1).
+
+### `forman_ricci_augmented(A) → (B, n, n)`
+Augmented form adding the 2-face (triangle) contribution:
+`κ_F^aug(u, v) = κ_F_simple(u, v) + 3 · #triangles(u, v)`. Tracks
+Ollivier-Ricci more closely on dense substructures while remaining
+fully combinatorial. Ref: Samal et al. (2018), §"Augmented Forman".
 
 ---
 
@@ -225,14 +260,16 @@ truncated to 16 chars. Pluggable hash function (blake3 if installed, else sha256
 ## Planned primitives
 
 Open frontiers the library does not yet cover:
-- Sign-magnetic / magnetic Laplacian (planned; see `spectral/__init__.py`).
+- Persistent homology on GPU (gudhi / ripser are CPU).
+- Lanczos sparse-eigensolver for large graphs (currently `linalg.eigh`
+  dense only).
 - Hodge Laplacians on simplicial complexes.
-- Lanczos sparse-eigensolver for large graphs (currently `linalg.eigh` dense only).
-- Heat kernel via Chebyshev polynomials.
-- Persistent homology.
-- Forman-Ricci curvature.
+- Sign-magnetic Laplacian for signed-directed graphs (Fiorini 2023; He
+  et al. 2023). The base magnetic Laplacian is in `spectral.magnetic`;
+  the signed extension is the next step.
 - Riemannian optimizers (SGD/Adam/trust-region on the manifold module).
 - Conjugate priors / Bregman divergences / information geometry.
-- Hardware-optimization sweep (benchmarks haven't been run).
-- Mech-interp class-method provenance (FixedRankManifold/SPDManifold method
-  calls aren't yet captured by `record()`; top-level functions only).
+- Effective resistance / commute-time distances.
+- Diffusion maps built on the Chebyshev heat kernel.
+- Mech-interp class-method provenance (FixedRankManifold/SPDManifold
+  method calls aren't yet captured by `record()`; top-level functions only).

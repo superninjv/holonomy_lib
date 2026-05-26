@@ -34,8 +34,8 @@ its inputs through a content-addressable provenance DAG.
 | `manifolds` | `FixedRankManifold`, `SPDManifold` | Riemannian geometry on low-rank matrices and SPD cones (Vandereycken 2013; Pennec et al. 2006) |
 | `algebra` | `truncated_svd` (exact + randomized) | Halko-Martinsson-Tropp randomized SVD; Eckart-Young exact |
 | `tensor_calculus` | `hosvd`, `mode_product`, `mode_unfolding` | Truncated HOSVD with Kolda-Bader n-mode product |
-| `spectral` | `combinatorial`/`symmetric_normalized`/`random_walk`/`signed` Laplacians, `laplacian_eigenmaps` | Chung; von Luxburg; Kunegis (signed); pseudoinverse handling of isolated nodes |
-| `discrete_geometry` | `ollivier_ricci_curvature`, `discrete_ricci_flow`, `ricci_flow_with_surgery` | Sinkhorn-W₁ curvature on graphs (Ollivier 2009; Cuturi 2013; Sia/Ni-Lin-Luo-Gao 2019), including the **Perelman-on-networks** flow + surgery primitive |
+| `spectral` | `combinatorial`/`symmetric_normalized`/`random_walk`/`signed` Laplacians, `laplacian_eigenmaps`, **`magnetic.*`** (directed graphs), **`heat_kernel_chebyshev`** | Chung; von Luxburg; Kunegis (signed); Furutani 2020 (magnetic Hermitian Laplacian); Hammond-Vandergheynst-Gribonval 2011 (Chebyshev heat kernel) |
+| `discrete_geometry` | `ollivier_ricci_curvature`, `discrete_ricci_flow`, `ricci_flow_with_surgery`, **`forman_ricci_simple`**, **`forman_ricci_augmented`** | Sinkhorn-W₁ Ollivier on graphs (Ollivier 2009; Cuturi 2013; Sia/Ni-Lin-Luo-Gao 2019), the **Perelman-on-networks** flow + surgery primitive, and the cheap combinatorial Forman alternative (Sreejith et al. 2016; Samal et al. 2018) |
 | `provenance` | `@with_provenance`, `record()`, `ProvenanceRegistry` | Content-addressable Merkle DAG of math primitives; substitution / replay / SAELens emission for mech interp |
 
 ---
@@ -290,20 +290,19 @@ holonomy_lib/
 
 Open frontiers, prioritized by research leverage:
 
-1. **Sign-magnetic / magnetic Laplacian** for directed and
-   signed-directed graphs (Fiorini 2023; He et al. 2023). No GPU-batched
-   PyTorch version exists.
-2. **Persistent homology on GPU**: the biggest standing gap across the
+1. **Persistent homology on GPU**: the biggest standing gap across the
    field; gudhi / ripser are CPU.
-3. **Lanczos sparse eigensolver** for top-k eigenpairs on large graphs.
-4. **Hodge Laplacians** on simplicial complexes (Ribando-Gros et al.
+2. **Lanczos sparse eigensolver** for top-k eigenpairs on large graphs.
+3. **Hodge Laplacians** on simplicial complexes (Ribando-Gros et al.
    2024).
-5. **Heat kernel via Chebyshev polynomials** for fast graph diffusion.
-6. **Forman-Ricci curvature**: combinatorial alternative to Ollivier,
-   much cheaper for large graphs.
-7. **Riemannian optimizers** (SGD, Adam, trust-region) on the manifolds
+4. **Riemannian optimizers** (SGD, Adam, trust-region) on the manifolds
    module.
-8. **Information geometry**: conjugate priors, Bregman divergences.
+5. **Information geometry**: conjugate priors, Bregman divergences.
+6. **Sign-magnetic Laplacian** for signed-directed graphs (Fiorini
+   2023; He et al. 2023). The plain magnetic Laplacian is in; the
+   signed extension treats negative edges with a separate phase.
+7. **Effective resistance / commute-time distances** on graphs.
+8. **Diffusion maps** built on the Chebyshev heat kernel.
 
 Contributions welcome via PR; see [Contributing](#contributing).
 

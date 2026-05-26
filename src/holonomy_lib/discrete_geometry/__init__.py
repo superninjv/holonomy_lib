@@ -34,6 +34,10 @@ References (program-level):
     Perelman's surgery in 3-D, on simplicial complexes.
 """
 
+from holonomy_lib.discrete_geometry.forman import (
+    forman_ricci_augmented,
+    forman_ricci_simple,
+)
 from holonomy_lib.discrete_geometry.ricci import (
     discrete_ricci_flow,
     ollivier_ricci_curvature,
@@ -42,6 +46,8 @@ from holonomy_lib.discrete_geometry.ricci import (
 
 __all__ = [
     "discrete_ricci_flow",
+    "forman_ricci_augmented",
+    "forman_ricci_simple",
     "ollivier_ricci_curvature",
     "ricci_flow_with_surgery",
 ]
