@@ -1,9 +1,9 @@
-# holonomy-lib — agent reference
+# holonomy_lib contents
 
 A research-grade PyTorch math library: GPU-native, batched-first, audit-clean,
-cited. This file is a **flat inventory** for an LLM agent doing research with
-holonomy-lib — every primitive, its signature, what it does in one line, and
-the paper to cite. Read this *before* grepping or reading source.
+cited. This file is a **flat inventory** of what the library provides: every
+primitive, its signature, what it does in one line, and the paper to cite.
+Read this *before* grepping or reading source.
 
 If something you want isn't here, it isn't implemented. Don't reinvent;
 either ask the user or pick the closest existing primitive.
@@ -49,7 +49,7 @@ from holonomy_lib import provenance
 
 ---
 
-## §Manifolds — `holonomy_lib.manifolds`
+## §Manifolds: `holonomy_lib.manifolds`
 
 Riemannian manifolds with batched-first, GPU-native operations.
 
@@ -90,7 +90,7 @@ Refs: Pennec-Fillard-Ayache (2006), Bhatia (2007), Sra-Hosseini (2015).
 
 ---
 
-## §Algebra — `holonomy_lib.algebra`
+## §Algebra: `holonomy_lib.algebra`
 
 Linear-algebra primitives.
 
@@ -104,7 +104,7 @@ Refs: Eckart-Young (1936), Halko-Martinsson-Tropp (2011).
 
 ---
 
-## §Tensor calculus — `holonomy_lib.tensor_calculus`
+## §Tensor calculus: `holonomy_lib.tensor_calculus`
 
 Multilinear algebra on tensors with leading batch dim.
 
@@ -125,7 +125,7 @@ Refs: De Lathauwer-De Moor-Vandewalle (2000), Vannieuwenhoven et al. (2012).
 
 ---
 
-## §Spectral — `holonomy_lib.spectral`
+## §Spectral: `holonomy_lib.spectral`
 
 Graph Laplacians + spectral embedding. All take symmetric adjacency `A: (B, n, n)`.
 Isolated nodes handled via Moore-Penrose convention (Cheng-Wu 2024).
@@ -154,7 +154,7 @@ Bottom-k spectral embedding. `laplacian_type ∈ {"combinatorial", "symmetric_no
 
 ---
 
-## §Discrete geometry — `holonomy_lib.discrete_geometry`
+## §Discrete geometry: `holonomy_lib.discrete_geometry`
 
 Combinatorial / Ricci-style curvature on graphs. The Perelman-on-networks
 thread (Ollivier curvature → flow → surgery for community detection).
@@ -171,7 +171,7 @@ elongate (forming necks); positive-curvature edges shrink. Optional Frobenius-no
 normalization. Refs: Sia-Jonckheere-Bogdan (2019), Ni-Lin-Luo-Gao (2019).
 
 ### `ricci_flow_with_surgery(A, n_steps, surgery_period=10, surgery_threshold=3.0, ...) → (B, n, n)`
-Discrete Ricci flow with periodic edge removal — the Perelman-spirit primitive.
+Discrete Ricci flow with periodic edge removal: the Perelman-spirit primitive.
 Every `surgery_period` steps, edges whose weight ≥ `surgery_threshold` × initial
 mean weight are removed. After enough iterations, the graph splits into communities.
 Inspiration: Perelman (2002, 2003 surgery, 2003 extinction). Discrete: Sia (2019),
@@ -179,7 +179,7 @@ Ni-Lin-Luo-Gao (2019), Liu-Wang-Yau-Zeng (2017).
 
 ---
 
-## §Provenance — `holonomy_lib.provenance`
+## §Provenance: `holonomy_lib.provenance`
 
 Content-addressable hex provenance for **mechanistic interpretability**. Every
 decorated primitive emits a Merkle-DAG node when called inside `record()`.
@@ -194,7 +194,7 @@ with provenance.record(cache_tensors=False, hash_algorithm=...) as reg:
     # reg is a ProvenanceRegistry
 ```
 
-### `ProvenanceRegistry` — what you get inside `record()`
+### `ProvenanceRegistry`: what you get inside `record()`
 
 | Method | What it does |
 |---|---|
@@ -231,7 +231,7 @@ truncated to 16 chars. Pluggable hash function (blake3 if installed, else sha256
 ## Files an agent should know about
 
 - `README.md`: vision, what this library is and why.
-- `AGENT.md`: this file (research-agent quick reference).
+- `CONTENTS.md`: this file (primitive inventory and quick reference).
 - `notes/magic_numbers.md`: every posited numerical constant with
   scale-of-validity. Update when you add a tunable constant.
 - `notes/scrutiny.md`: running log of critical-review findings and fixes.
@@ -256,4 +256,4 @@ Open frontiers an agent might assume exist but don't:
 - Conjugate priors / Bregman divergences / information geometry.
 - Hardware-optimization sweep (benchmarks haven't been run).
 - Mech-interp class-method provenance (FixedRankManifold/SPDManifold method
-  calls aren't yet captured by `record()` — top-level functions only).
+  calls aren't yet captured by `record()`; top-level functions only).

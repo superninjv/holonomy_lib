@@ -138,7 +138,7 @@ for node in reg:
     print(f"{node.hex}  {node.op_id}")
 ```
 
-See `AGENT.md` for the complete inventory of primitives, signatures,
+See `CONTENTS.md` for the complete inventory of primitives, signatures,
 and citations.
 
 ---
@@ -281,7 +281,7 @@ holonomy_lib/
 │   ├── scrutiny.md            # findings + fixes from review passes
 │   ├── benchmark_baseline.md  # before optimization
 │   └── benchmark_optimized.md # after
-└── AGENT.md                   # primitive inventory for LLM agents
+└── CONTENTS.md                # primitive inventory and quick reference
 ```
 
 ---
