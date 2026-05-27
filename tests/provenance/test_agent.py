@@ -14,16 +14,25 @@ from holonomy_lib.provenance import ProvenanceRegistry
 from holonomy_lib.provenance import agent
 
 
-def _wipe_registry():
-    """Clear _AGENT_TOOLS so tests can register fresh tools without
-    cross-contamination from the production tools imported elsewhere.
+@pytest.fixture
+def isolated_registry():
+    """Save / restore the global _AGENT_TOOLS so tests can register
+    fresh tools without leaking into the production registry that
+    test_mcp.py / production code depends on.
     """
+    saved = dict(agent._AGENT_TOOLS)
     agent._AGENT_TOOLS.clear()
+    try:
+        yield
+    finally:
+        agent._AGENT_TOOLS.clear()
+        agent._AGENT_TOOLS.update(saved)
 
 
 class TestAgentToolDecorator:
-    def setup_method(self) -> None:
-        _wipe_registry()
+    @pytest.fixture(autouse=True)
+    def _isolate(self, isolated_registry):
+        return
 
     def test_decoration_registers_tool(self) -> None:
         @agent.agent_tool(description="Echo the input.")
@@ -58,8 +67,9 @@ class TestAgentToolDecorator:
 
 
 class TestSchemaGeneration:
-    def setup_method(self) -> None:
-        _wipe_registry()
+    @pytest.fixture(autouse=True)
+    def _isolate(self, isolated_registry):
+        return
 
     def test_anthropic_schema_shape(self) -> None:
         @agent.agent_tool(description="Slice a cached tensor.")
