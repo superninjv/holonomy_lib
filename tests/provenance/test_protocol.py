@@ -1375,3 +1375,61 @@ class TestAncestorsWithTensors:
         for _hex, (node, tensor) in ancestors.items():
             assert node is reg._nodes[_hex]
             assert tensor is None
+
+
+# --------------------------------------------------------------------
+# LLM-context summary (phase 4a)
+# --------------------------------------------------------------------
+
+
+class TestLLMContext:
+    def _build(self, seed: int):
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(seed))
+        return (A + A.mT).abs() + torch.eye(5, dtype=torch.float64).unsqueeze(dim=0)
+
+    def test_header_lists_counts_and_hash_mode(self):
+        with provenance.record(cache_tensors=True) as reg:
+            laplacian.combinatorial(self._build(130))
+        out = reg.to_llm_context()
+        assert "Provenance registry: 1 ops" in out
+        assert "hash_mode=full" in out
+
+    def test_lists_ops_by_op_id_with_counts(self):
+        """3 laplacian calls + 1 SVD call → grouped counts in output."""
+        with provenance.record() as reg:
+            for s in (130, 131, 132):
+                L = laplacian.combinatorial(self._build(s))
+            truncated_svd(L, r=2, mode="exact")
+        out = reg.to_llm_context()
+        assert "Ops by op_id:" in out
+        assert "holonomy_lib.spectral.laplacian.combinatorial x 3" in out
+        assert "holonomy_lib.algebra.linear.truncated_svd x 1" in out
+
+    def test_lists_roots_and_leaves(self):
+        """In a 2-op chain, laplacian is the root and truncated_svd is
+        a leaf (truncated_svd's single output isn't consumed)."""
+        with provenance.record() as reg:
+            L = laplacian.combinatorial(self._build(133))
+            truncated_svd(L, r=2, mode="exact")
+        lap = reg.where(op_id="holonomy_lib.spectral.laplacian.combinatorial")[0]
+        svd = reg.where(op_id="holonomy_lib.algebra.linear.truncated_svd")[0]
+        out = reg.to_llm_context()
+        assert "Roots:" in out
+        assert lap.hex in out
+        assert "Leaves:" in out
+        assert svd.hex in out
+
+    def test_max_ops_caps_output(self):
+        """With max_ops=1 the ops list shouldn't list both ops."""
+        with provenance.record() as reg:
+            for s in (140, 141, 142):
+                L = laplacian.combinatorial(self._build(s))
+            truncated_svd(L, r=2, mode="exact")
+        out = reg.to_llm_context(max_ops=1)
+        assert "...and 1 more op_id(s)" in out
+
+    def test_empty_registry_returns_header_only(self):
+        with provenance.record() as reg:
+            pass
+        out = reg.to_llm_context()
+        assert out == "Provenance registry: 0 ops, 0 cached tensors, hash_mode=full"

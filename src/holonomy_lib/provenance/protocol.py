@@ -578,6 +578,107 @@ class ProvenanceRegistry:
             "nodes": [n.to_dict() for n in self],
         }
 
+    def to_llm_context(
+        self,
+        max_ops: int = 20,
+        show_shapes: bool = True,
+        show_params: bool = False,
+    ) -> str:
+        """Compact text summary suitable for an LLM agent prompt.
+
+        Format:
+          Provenance registry: N ops, M cached tensors, hash_mode=...
+          Ops by op_id:
+            <op_id> x <count>
+            ...
+          Notable shapes:
+            <short_op> @ <hex>: <shape> <dtype>
+            ...
+          Roots:  <hex>, <hex>, ...
+          Leaves: <hex>, <hex>, ...
+
+        Args:
+          max_ops: cap on the number of per-op-id rows and per-shape
+            rows. Keeps the output bounded for large registries.
+          show_shapes: include a "Notable shapes" block listing each
+            distinct output shape that appears in the registry.
+          show_params: include each node's params dict in the
+            ops-by-op_id block (verbose; off by default).
+        """
+        n_cached = len(self._tensor_cache) + len(self._user_input_cache)
+        lines = [
+            f"Provenance registry: {len(self._nodes)} ops, "
+            f"{n_cached} cached tensors, hash_mode={self.hash_mode}"
+        ]
+
+        # Count nodes by op_id.
+        by_op_id: dict[str, list[ProvenanceNode]] = {}
+        for n in self:
+            by_op_id.setdefault(n.op_id, []).append(n)
+        if by_op_id:
+            lines.append("Ops by op_id:")
+            sorted_ops = sorted(by_op_id.items(), key=lambda kv: -len(kv[1]))
+            for op_id, nodes in sorted_ops[:max_ops]:
+                lines.append(f"  {op_id} x {len(nodes)}")
+                if show_params:
+                    # Show the first node's params; subsequent calls
+                    # often share them.
+                    lines.append(f"    params: {nodes[0].params}")
+            if len(sorted_ops) > max_ops:
+                lines.append(
+                    f"  ...and {len(sorted_ops) - max_ops} more op_id(s)"
+                )
+
+        # Notable shapes: unique (op_id_basename, hex_prefix, shape, dtype) rows.
+        if show_shapes and self._nodes:
+            lines.append("Notable shapes:")
+            shown = 0
+            for n in self:
+                if shown >= max_ops:
+                    break
+                short_op = n.op_id.rsplit(".", 1)[-1]
+                shape_str = " ".join(str(s) for s in n.output_shape)
+                dtype_str = " ".join(n.output_dtype)
+                lines.append(
+                    f"  {short_op} @ {n.hex}: {shape_str} {dtype_str}"
+                )
+                shown += 1
+            if len(self._nodes) > shown:
+                lines.append(f"  ...and {len(self._nodes) - shown} more")
+
+        # Roots: nodes with no provenance-internal parents (inputs are
+        # either empty or all reference hexes not in _nodes — i.e.,
+        # user input tensors).
+        # Leaves: nodes that no other node consumes.
+        consumed: set[str] = set()
+        for n in self:
+            for input_hex in n.input_hexes:
+                _, _, hex_part = input_hex.partition("=")
+                base = hex_part.split(":")[0]
+                if base in self._nodes:
+                    consumed.add(base)
+        roots: list[str] = []
+        leaves: list[str] = []
+        for n in self:
+            has_op_parent = any(
+                hp.partition("=")[2].split(":")[0] in self._nodes
+                for hp in n.input_hexes
+            )
+            if not has_op_parent:
+                roots.append(n.hex)
+            if n.hex not in consumed:
+                leaves.append(n.hex)
+        if roots:
+            shown_roots = roots[:5]
+            extra = "" if len(roots) <= 5 else f", ...({len(roots) - 5} more)"
+            lines.append(f"Roots:  {', '.join(shown_roots)}{extra}")
+        if leaves:
+            shown_leaves = leaves[:5]
+            extra = "" if len(leaves) <= 5 else f", ...({len(leaves) - 5} more)"
+            lines.append(f"Leaves: {', '.join(shown_leaves)}{extra}")
+
+        return "\n".join(lines)
+
     def to_mermaid(self) -> str:
         """Render the DAG as a Mermaid flowchart string.
 
