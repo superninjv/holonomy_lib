@@ -200,8 +200,19 @@ SGD can push κ through 0 without breakdown.
 **Paper section**: §4 "Precision/speed optimization" — sub-section
 on learnable-geometry training
 
-**Status**: 🔴 works; needs stress test + GPU benchmark + alternative
-comparison
+**Status**: 🟢 **paper-ready** — see
+`notes/strengthening/C4_kappa_crossing_strengthened.md`. Sympy
+verifies analytic continuation across κ = 0 (Taylor series match
+term-by-term on both sides, limits/derivatives agree, integral
+representation bridges the sign-conditional;
+`notes/verification/kappa_crossing_sympy.py`). Numerical stress
+test (`notes/strengthening/C4_kappa_crossing_stress.py` +
+`_results.md`) demonstrates: 100-step SGD trajectory with 4
+κ-sign crossings stays finite; static-branch lock has 1.38%
+relative-error failure mode after a flip; Taylor-truncation
+alternative is dominated by the dispatch across the entire
+manifold domain; CPU latency overhead ~1.2–1.4× vs the
+float-locked fast path. GPU benchmark deferred pending hardware.
 
 ---
 
