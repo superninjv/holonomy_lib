@@ -320,6 +320,125 @@ class LorentzianManifold:
         )
 
     # ----------------------------------------------------------------
+    # Curvature-tensor primitives
+    # ----------------------------------------------------------------
+    #
+    # Flat Minkowski spacetime is identically Ricci-flat: the metric is
+    # constant, all Christoffel symbols vanish, and the full Riemann
+    # tensor is zero. These methods exist for API parity with curved
+    # Lorentzian backgrounds (Schwarzschild, FLRW, etc.) that may be
+    # added later as subclasses or sibling manifolds.
+    #
+    # Shape convention follows physics literature:
+    #   g_μν          (n, n)    metric tensor with one upper one lower
+    #                            index irrelevant; we store as (n, n)
+    #   Γ^σ_μν        (n, n, n) Christoffel symbol of the 2nd kind,
+    #                            with the upper index σ first
+    #   R^σ_ρμν       (n, n, n, n) Riemann curvature tensor
+    #   R_μν          (n, n)    Ricci tensor
+    #   R             ( )       Ricci scalar (scalar curvature)
+
+    def metric_tensor(self, x: torch.Tensor) -> torch.Tensor:
+        """Minkowski metric `g_μν = diag(-1, +1, +1, …, +1)`.
+
+        Constant on flat spacetime; the `x` argument is unused but
+        included for API parity with curved Lorentzian backgrounds.
+
+        Args:
+          x: `(..., n)` base point (unused).
+        Returns:
+          `(..., n, n)` metric tensor.
+        """
+        eta = torch.ones(self.n, device=x.device, dtype=x.dtype)
+        eta[0] = -1.0
+        # Broadcast diagonal to (..., n, n)
+        out_shape = x.shape[:-1] + (self.n, self.n)
+        return torch.diag_embed(eta).expand(out_shape).contiguous()
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.christoffel_symbols",
+        op_version="0.1",
+    )
+    def christoffel_symbols(self, x: torch.Tensor) -> torch.Tensor:
+        """Christoffel symbols `Γ^σ_μν` of the Levi-Civita connection.
+
+        Identically zero on flat Minkowski spacetime (the metric has
+        zero derivatives). Returned as a `(..., n, n, n)` tensor with
+        the upper index first.
+
+        Subclasses representing curved Lorentzian backgrounds should
+        override this with the appropriate non-zero expression.
+
+        References:
+          MTW (1973) §8.5 (Christoffel symbols in flat spacetime);
+          O'Neill (1983) §3.5 (Levi-Civita connection on
+          semi-Riemannian manifolds).
+        """
+        return torch.zeros(
+            *x.shape[:-1], self.n, self.n, self.n,
+            device=x.device, dtype=x.dtype,
+        )
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.riemann_tensor",
+        op_version="0.1",
+    )
+    def riemann_tensor(self, x: torch.Tensor) -> torch.Tensor:
+        """Riemann curvature tensor `R^σ_ρμν`.
+
+        Identically zero on flat Minkowski (the spacetime is flat:
+        parallel transport around any closed loop returns the original
+        vector). Shape `(..., n, n, n, n)`.
+
+        References:
+          MTW (1973) §11.3 (Riemann tensor in flat spacetime);
+          O'Neill (1983) §3.5 (curvature tensor formulas).
+        """
+        return torch.zeros(
+            *x.shape[:-1], self.n, self.n, self.n, self.n,
+            device=x.device, dtype=x.dtype,
+        )
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.ricci_tensor",
+        op_version="0.1",
+    )
+    def ricci_tensor(self, x: torch.Tensor) -> torch.Tensor:
+        """Ricci tensor `R_μν = R^σ_μσν`.
+
+        Identically zero on flat Minkowski. Shape `(..., n, n)`.
+
+        Physics relevance: Einstein's equations equate `R_μν − (1/2) R
+        g_μν + Λ g_μν` to the stress-energy tensor (up to constants);
+        in vacuum without cosmological constant, `R_μν = 0` — flat
+        Minkowski is the simplest such solution.
+
+        References:
+          MTW (1973) §17.2.
+        """
+        return torch.zeros(
+            *x.shape[:-1], self.n, self.n,
+            device=x.device, dtype=x.dtype,
+        )
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.scalar_curvature",
+        op_version="0.1",
+    )
+    def scalar_curvature(self, x: torch.Tensor) -> torch.Tensor:
+        """Ricci scalar `R = g^μν R_μν`.
+
+        Identically zero on flat Minkowski. Shape `(...,)` (a scalar
+        per batch element).
+
+        References:
+          MTW (1973) §17.4 (scalar curvature).
+        """
+        return torch.zeros(
+            *x.shape[:-1], device=x.device, dtype=x.dtype,
+        )
+
+    # ----------------------------------------------------------------
     # Construction
     # ----------------------------------------------------------------
 

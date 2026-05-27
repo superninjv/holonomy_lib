@@ -49,9 +49,23 @@ class TestConstruction:
         with pytest.raises(ValueError, match="n"):
             KappaStereographicManifold(n=-2)
 
-    def test_rejects_non_float_kappa(self):
-        with pytest.raises(TypeError, match="kappa"):
-            KappaStereographicManifold(n=3, kappa=torch.tensor(0.5))
+    def test_rejects_non_scalar_kappa(self):
+        """Multi-element Tensor kappa rejected (must be 0-dim scalar)."""
+        with pytest.raises(TypeError, match="0-dim"):
+            KappaStereographicManifold(
+                n=3, kappa=torch.tensor([0.5, 1.0]),
+            )
+
+    def test_accepts_scalar_tensor_kappa(self):
+        """0-dim Tensor kappa is accepted for learnable-κ workflows."""
+        mfd = KappaStereographicManifold(
+            n=3, kappa=torch.tensor(-1.0, dtype=torch.float64),
+        )
+        # Basic ops should still work
+        x = mfd.random_point(batch_size=2, generator=_seed(80))
+        y = mfd.random_point(batch_size=2, generator=_seed(81))
+        d = mfd.distance(x, y)
+        assert torch.isfinite(d).all()
 
     @pytest.mark.parametrize("k", KAPPA_VALUES)
     def test_branch_dispatch(self, k):
@@ -426,3 +440,62 @@ class TestAutogradStress:
         loss = (out - y).pow(2).sum()
         loss.backward()
         assert torch.isfinite(v.grad).all()
+
+
+# --------------------------------------------------------------------
+# Learnable κ — gradient flows back to a κ Parameter via distance
+# --------------------------------------------------------------------
+
+
+class TestLearnableKappa:
+    """Allow κ to be a 0-dim torch.Tensor (e.g. `nn.Parameter`); the
+    gradient of distance-based losses should flow back to κ so SGD
+    can learn the curvature magnitude from data."""
+
+    def test_kappa_tensor_gradient_through_distance(self):
+        """With κ as a Parameter, `distance(x, y).sum().backward()`
+        should give a non-trivial gradient on κ."""
+        kappa = torch.nn.Parameter(torch.tensor(-1.0, dtype=torch.float64))
+        mfd = KappaStereographicManifold(n=3, kappa=kappa,
+                                          dtype=torch.float64)
+        x = mfd.random_point(batch_size=4, generator=_seed(100))
+        y = mfd.random_point(batch_size=4, generator=_seed(101))
+        d = mfd.distance(x, y)
+        d.sum().backward()
+        assert kappa.grad is not None
+        assert torch.isfinite(kappa.grad).all()
+        # The gradient should be non-zero (distance genuinely depends
+        # on κ for hyperbolic Poincaré ball).
+        assert kappa.grad.abs().item() > 0
+
+    def test_kappa_sgd_step_reduces_loss(self):
+        """End-to-end: an SGD step on κ should reduce a distance-based
+        loss (specifically: pull κ toward a curvature that minimizes
+        the loss). Smoke test for the learnability of κ."""
+        # Initialize at κ=-0.5, target distance behavior at κ=-1.0
+        kappa = torch.nn.Parameter(torch.tensor(-0.5, dtype=torch.float64))
+        mfd_ref = KappaStereographicManifold(
+            n=3, kappa=-1.0, dtype=torch.float64,
+        )
+        # Generate a target set of distances at κ=-1
+        x = mfd_ref.random_point(batch_size=10, generator=_seed(110))
+        y = mfd_ref.random_point(batch_size=10, generator=_seed(111))
+        target_d = mfd_ref.distance(x, y).detach()
+        # Same x, y interpreted at the *learnable* κ
+        mfd_learn = KappaStereographicManifold(
+            n=3, kappa=kappa, dtype=torch.float64,
+        )
+        optimizer = torch.optim.SGD([kappa], lr=0.1)
+        loss_history = []
+        for _ in range(30):
+            optimizer.zero_grad()
+            d = mfd_learn.distance(x, y)
+            loss = ((d - target_d) ** 2).mean()
+            loss.backward()
+            optimizer.step()
+            loss_history.append(loss.item())
+        # Loss should decrease over training.
+        assert loss_history[-1] < loss_history[0] * 0.9, (
+            f"Loss did not decrease: start={loss_history[0]:.4e}, "
+            f"end={loss_history[-1]:.4e}"
+        )

@@ -349,3 +349,97 @@ class TestProvenance:
         assert (
             "holonomy_lib.manifolds.LorentzianManifold.causal_type" in ops
         )
+
+
+# --------------------------------------------------------------------
+# Curvature-tensor primitives (all zero in flat space)
+# --------------------------------------------------------------------
+
+
+class TestCurvatureTensors:
+    """Flat Minkowski is Ricci-flat: metric is constant, Christoffel /
+    Riemann / Ricci all identically zero. These tests pin the API +
+    the flatness of our LorentzianManifold; subclasses for curved
+    backgrounds (Schwarzschild, FLRW, etc.) would override and test
+    against their known curvature expressions.
+    """
+
+    def test_metric_tensor_minkowski_signature(self):
+        """g_μν = diag(-1, +1, +1, …, +1)."""
+        mfd = _make_manifold(n=4)
+        x = mfd.random_point(batch_size=3, generator=_seed(50))
+        g = mfd.metric_tensor(x)
+        assert g.shape == (3, 4, 4)
+        # Diagonal entries: -1 at position (0,0), +1 elsewhere
+        expected_diag = torch.tensor([-1.0, 1.0, 1.0, 1.0],
+                                       dtype=torch.float64)
+        for b in range(3):
+            torch.testing.assert_close(
+                torch.diagonal(g[b]), expected_diag,
+                atol=1e-12, rtol=0,
+            )
+            # Off-diagonal: zero
+            off = g[b] - torch.diag(torch.diagonal(g[b]))
+            torch.testing.assert_close(
+                off, torch.zeros_like(off), atol=1e-12, rtol=0,
+            )
+
+    def test_christoffel_zero(self):
+        mfd = _make_manifold(n=4)
+        x = mfd.random_point(batch_size=3, generator=_seed(51))
+        gamma = mfd.christoffel_symbols(x)
+        assert gamma.shape == (3, 4, 4, 4)
+        torch.testing.assert_close(
+            gamma, torch.zeros_like(gamma), atol=0, rtol=0,
+        )
+
+    def test_riemann_zero(self):
+        mfd = _make_manifold(n=4)
+        x = mfd.random_point(batch_size=2, generator=_seed(52))
+        R = mfd.riemann_tensor(x)
+        assert R.shape == (2, 4, 4, 4, 4)
+        torch.testing.assert_close(
+            R, torch.zeros_like(R), atol=0, rtol=0,
+        )
+
+    def test_ricci_zero(self):
+        mfd = _make_manifold(n=4)
+        x = mfd.random_point(batch_size=2, generator=_seed(53))
+        ricci = mfd.ricci_tensor(x)
+        assert ricci.shape == (2, 4, 4)
+        torch.testing.assert_close(
+            ricci, torch.zeros_like(ricci), atol=0, rtol=0,
+        )
+
+    def test_scalar_curvature_zero(self):
+        mfd = _make_manifold(n=4)
+        x = mfd.random_point(batch_size=2, generator=_seed(54))
+        scal = mfd.scalar_curvature(x)
+        assert scal.shape == (2,)
+        torch.testing.assert_close(
+            scal, torch.zeros_like(scal), atol=0, rtol=0,
+        )
+
+    def test_metric_independent_of_point(self):
+        """Constant metric: g(x) = g(y) for any x, y in flat Minkowski."""
+        mfd = _make_manifold(n=4)
+        x = mfd.random_point(batch_size=1, generator=_seed(55))
+        y = mfd.random_point(batch_size=1, generator=_seed(56))
+        g_x = mfd.metric_tensor(x)
+        g_y = mfd.metric_tensor(y)
+        torch.testing.assert_close(g_x, g_y, atol=0, rtol=0)
+
+    def test_minkowski_inner_matches_metric_contraction(self):
+        """⟨u, v⟩_M = g_μν u^μ v^ν."""
+        mfd = _make_manifold(n=4)
+        x = mfd.random_point(batch_size=1, generator=_seed(57))
+        u = torch.randn(1, 4, dtype=mfd.dtype, generator=_seed(58))
+        v = torch.randn(1, 4, dtype=mfd.dtype, generator=_seed(59))
+        # Via minkowski_inner
+        ip_direct = mfd.minkowski_inner(u, v)
+        # Via metric contraction
+        g = mfd.metric_tensor(x)
+        # g_μν u^μ v^ν = einsum
+        ip_metric = torch.einsum("bij,bi,bj->b", g, u, v)
+        torch.testing.assert_close(ip_direct, ip_metric,
+                                    atol=1e-12, rtol=0)

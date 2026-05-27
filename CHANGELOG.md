@@ -6,6 +6,35 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Added (Stage 4 follow-ups)
+
+- **`LorentzianManifold` curvature-tensor primitives.** Added
+  `metric_tensor`, `christoffel_symbols`, `riemann_tensor`,
+  `ricci_tensor`, `scalar_curvature`. All identically zero on flat
+  Minkowski (the manifold IS the canonical Ricci-flat solution to
+  Einstein's vacuum equations); the API is the gateway to subclasses
+  for curved Lorentzian backgrounds (Schwarzschild, FLRW). 7 new
+  tests verify shape + Minkowski signature.
+
+- **Learnable κ on `KappaStereographicManifold`.** Accept κ as a
+  0-dim `torch.Tensor` (e.g. `nn.Parameter`); the gradient of
+  distance-based losses flows back to κ so SGD can learn the
+  curvature magnitude from data. Constraint: the κ-branch
+  (spherical / hyperbolic / Euclidean) is fixed at construction
+  from the sign of κ's initial value; pushing κ across 0 during
+  training produces undefined behavior (caller's responsibility).
+  Two new tests verify gradient flow + an end-to-end SGD-on-κ loss
+  reduction.
+
+- **End-to-end cross-manifold validation pass.** New script at
+  `notes/validation/cross_manifold_validation.py` runs a
+  substrate-style training loop (tangent-at-origin → NLL on all-pairs
+  distance → SGD) on each of the four Riemannian manifolds and
+  separately verifies the Lorentzian causal/curvature primitives.
+  All paths green (`notes/validation/cross_manifold_results.md`).
+
+  Test count now 1082 (was 1072).
+
 ### Fixed (validation pass — major math bug)
 
 - **`hyperbolic_heat_kernel` produced WRONG values for n ≥ 5.** Caught

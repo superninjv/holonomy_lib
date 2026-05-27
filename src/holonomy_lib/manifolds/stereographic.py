@@ -150,33 +150,77 @@ class KappaStereographicManifold:
       (torch.Size([4, 3]), True)
     """
 
-    def __init__(self, n: int, kappa: float = -1.0,
+    def __init__(self, n: int, kappa: "float | torch.Tensor" = -1.0,
                  device: str | torch.device = "cpu",
                  dtype: torch.dtype = torch.float64):
         if n <= 0:
             raise ValueError(f"n must be > 0, got n={n}")
-        if not isinstance(kappa, (int, float)):
+        # Accept Python float OR 0-d torch.Tensor (for learnable κ via
+        # SGD). The branch ("spherical" / "hyperbolic" / "euclidean")
+        # is fixed at construction from the sign of κ's *initial* value;
+        # subsequent updates that push κ across 0 produce undefined
+        # behavior (the branch dispatch stays fixed, so a positive κ
+        # value running through the "hyperbolic" branch's `tanh` will
+        # not give meaningful spherical geometry). Keep κ in one
+        # sign-half during learning.
+        if isinstance(kappa, torch.Tensor):
+            if kappa.ndim != 0:
+                raise TypeError(
+                    "kappa as Tensor must be 0-dim (scalar); "
+                    f"got shape {tuple(kappa.shape)}"
+                )
+            self._kappa_init = float(kappa.item())
+            self.kappa: "float | torch.Tensor" = kappa
+            self._kappa_is_tensor = True
+        elif isinstance(kappa, (int, float)):
+            self._kappa_init = float(kappa)
+            self.kappa = float(kappa)
+            self._kappa_is_tensor = False
+        else:
             raise TypeError(
-                "v1 KappaStereographicManifold takes a Python float `kappa`; "
-                "learnable κ is a planned extension"
+                "kappa must be float or 0-dim torch.Tensor, got "
+                f"{type(kappa).__name__}"
             )
         self.n = n
-        self.kappa = float(kappa)
         self.device = torch.device(device)
         self.dtype = dtype
 
-        # Branch selection — set once at construction. Operations
-        # use closed forms specific to the sign of κ.
-        if self.kappa > 0:
+        # Branch selection: sign of κ at construction time. Once fixed,
+        # operations use closed forms for that branch — pushing the
+        # learnable κ across 0 won't switch branches at runtime.
+        if self._kappa_init > 0:
             self._branch: Branch = "spherical"
-            self._abs_kappa = self.kappa
-        elif self.kappa < 0:
+        elif self._kappa_init < 0:
             self._branch = "hyperbolic"
-            self._abs_kappa = -self.kappa
         else:
             self._branch = "euclidean"
-            self._abs_kappa = 0.0
-        self._sqrt_abs_kappa = math.sqrt(self._abs_kappa) if self._abs_kappa > 0 else 0.0
+
+        # Cached scalar magnitudes for the static-float fast path.
+        # For Tensor κ we use the live `|kappa|` instead (computed
+        # on demand to keep autograd graph attached).
+        if not self._kappa_is_tensor:
+            self._abs_kappa = abs(self.kappa)
+            self._sqrt_abs_kappa = (
+                math.sqrt(self._abs_kappa)
+                if self._abs_kappa > 0 else 0.0
+            )
+        else:
+            # Will be computed from `self.kappa` on each call via
+            # `_get_sqrt_abs_kappa()` to preserve autograd.
+            self._abs_kappa = abs(self._kappa_init)
+            self._sqrt_abs_kappa = math.sqrt(self._abs_kappa)
+
+    def _get_sqrt_abs_kappa(self):
+        """Return `sqrt(|κ|)` — as a tensor if κ is a tensor (for
+        autograd), as a float otherwise.
+        """
+        if self._kappa_is_tensor:
+            return torch.sqrt(torch.abs(self.kappa))
+        return self._sqrt_abs_kappa
+
+    def _get_kappa(self):
+        """Return κ — as a tensor if κ is a tensor, as a float otherwise."""
+        return self.kappa
 
     @property
     def dim(self) -> int:
@@ -356,7 +400,7 @@ class KappaStereographicManifold:
         xy = (x * y).sum(dim=-1, keepdim=True)        # (..., 1)
         xx = (x * x).sum(dim=-1, keepdim=True)
         yy = (y * y).sum(dim=-1, keepdim=True)
-        k = self.kappa
+        k = self._get_kappa()
         num = (1.0 - 2.0 * k * xy - k * yy) * x + (1.0 + k * xx) * y
         # The denominator is strictly positive for x, y in the domain
         # (1 - 2k⟨x,y⟩ + k²‖x‖²‖y‖² = (1 + k‖x‖²)(1 + k‖y‖²)/(...)
@@ -514,14 +558,16 @@ class KappaStereographicManifold:
         diff_norm = _safe_sqrt(diff_sq)
         if self._branch == "euclidean":
             return 2.0 * diff_norm
-        # 2/√|κ| · tan_κ⁻¹(√|κ| · ‖diff‖). Factor (2/√|κ|) outside,
-        # (tan_κ⁻¹(α)/α · α) inside; we use _atan_kappa_c · α to keep
-        # autograd safe at α=0.
-        scaled = self._sqrt_abs_kappa * diff_norm
+        # 2/√|κ| · tan_κ⁻¹(√|κ| · ‖diff‖). Use _get_sqrt_abs_kappa()
+        # so the autograd graph reaches κ when κ is a learnable
+        # Tensor parameter (otherwise the float self._sqrt_abs_kappa
+        # is a frozen scalar and grad to κ is zero).
+        sqrt_abs_k = self._get_sqrt_abs_kappa()
+        scaled = sqrt_abs_k * diff_norm
         if self._branch == "spherical":
-            return (2.0 / self._sqrt_abs_kappa) * torch.atan(scaled)
+            return (2.0 / sqrt_abs_k) * torch.atan(scaled)
         # hyperbolic
-        return (2.0 / self._sqrt_abs_kappa) * torch.atanh(scaled)
+        return (2.0 / sqrt_abs_k) * torch.atanh(scaled)
 
     @with_provenance(
         "holonomy_lib.manifolds.KappaStereographicManifold.exp",
