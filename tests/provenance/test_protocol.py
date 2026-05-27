@@ -1330,3 +1330,48 @@ class TestDiffSummary:
         out = r1.diff_summary(r2)
         assert "Only in self" in out
         assert "holonomy_lib.algebra.linear.truncated_svd" in out
+
+
+# --------------------------------------------------------------------
+# ancestors_with_tensors convenience (phase 3b)
+# --------------------------------------------------------------------
+
+
+class TestAncestorsWithTensors:
+    def test_returns_node_and_tensor_pairs(self):
+        """For a 2-op chain, ancestors_with_tensors of the leaf returns
+        the upstream node + its cached tensor."""
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(120))
+        A = (A + A.mT).abs() + torch.eye(5, dtype=torch.float64).unsqueeze(dim=0)
+        with provenance.record(cache_tensors=True) as reg:
+            L = laplacian.combinatorial(A)
+            U, S, Vt = truncated_svd(L, r=2, mode="exact")
+        lap_node = reg.where(
+            op_id="holonomy_lib.spectral.laplacian.combinatorial",
+        )[0]
+        svd_node = reg.where(
+            op_id="holonomy_lib.algebra.linear.truncated_svd",
+        )[0]
+        ancestors = reg.ancestors_with_tensors(svd_node.hex)
+        assert lap_node.hex in ancestors
+        anc_node, anc_tensor = ancestors[lap_node.hex]
+        assert anc_node is lap_node
+        assert anc_tensor is not None
+        torch.testing.assert_close(anc_tensor, L)
+
+    def test_tensor_is_none_when_not_cached(self):
+        """Without cache_tensors=True the tensor slot is None but the
+        node info is still returned.
+        """
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(121))
+        A = (A + A.mT).abs() + torch.eye(4, dtype=torch.float64).unsqueeze(dim=0)
+        with provenance.record() as reg:  # no caching
+            L = laplacian.combinatorial(A)
+            truncated_svd(L, r=2, mode="exact")
+        svd_hex = reg.where(
+            op_id="holonomy_lib.algebra.linear.truncated_svd",
+        )[0].hex
+        ancestors = reg.ancestors_with_tensors(svd_hex)
+        for _hex, (node, tensor) in ancestors.items():
+            assert node is reg._nodes[_hex]
+            assert tensor is None

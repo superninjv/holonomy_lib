@@ -459,6 +459,27 @@ class ProvenanceRegistry:
                 stack.append(hex_part)
         return seen
 
+    def ancestors_with_tensors(
+        self, hex_id: str,
+    ) -> dict[str, tuple[ProvenanceNode, Optional[torch.Tensor]]]:
+        """Ancestor subgraph paired with cached output tensors.
+
+        One call instead of `ancestors()` plus N `get_tensor()` calls —
+        useful in interactive sessions where you want to inspect the
+        full upstream chain after recording.
+
+        Returns:
+          A dict mapping each ancestor hex to `(node, tensor_or_None)`.
+          The tensor is None for ancestors that weren't cached (e.g.
+          the recording ran without `cache_tensors=True`, or the
+          tensor was evicted under `max_cache_size`).
+        """
+        result: dict[str, tuple[ProvenanceNode, Optional[torch.Tensor]]] = {}
+        for h in self.ancestors(hex_id):
+            node = self._nodes[h]
+            result[h] = (node, self.get_tensor(h))
+        return result
+
     # ----- hooks / callbacks (observation without mutation) -----
 
     def on_op(
