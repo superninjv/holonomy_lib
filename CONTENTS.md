@@ -57,6 +57,10 @@ from holonomy_lib.simplicial import (
 from holonomy_lib.topology import (
     betti_numbers, hodge_laplacian, persistence_diagrams,
 )
+from holonomy_lib.sheaf import (
+    GraphSheaf, sheaf_coboundary, sheaf_laplacian, sheaf_dirichlet_energy,
+)
+from holonomy_lib.lie import so3, real_spherical_harmonics
 from holonomy_lib import provenance
 ```
 
@@ -412,19 +416,103 @@ rescaling `ambient_grad` before calling `step()`.
 
 ---
 
+## §Sheaf: `holonomy_lib.sheaf`
+
+Cellular sheaves on graphs and their Laplacians. A cellular sheaf
+attaches a finite-dim vector space (a "stalk") to each simplex of a
+graph and a linear restriction map for each face relation; the sheaf
+Laplacian generalizes the graph Laplacian to track disagreement of
+node-stalk values pushed up to each incident edge stalk. v1 is
+dense-only with a `SHEAF_DENSE_BYTES_CAP = 2 GiB` pre-flight guard;
+restricted to node-edge sheaves (no 2-cells yet).
+
+### `GraphSheaf(edges, stalk_dim, restrictions_u, restrictions_v, n_nodes, ...)`
+Dataclass holding edge list `(n_e, 2)`, per-edge restriction maps
+`(n_e, d_e, d_v)` for each endpoint, and stalk dimensions. Rejects
+self-loops + duplicate edges at construction (call sites must
+pre-process). Trivial-sheaf factory `GraphSheaf.trivial(edges,
+n_nodes)` builds the sheaf whose Laplacian equals the standard
+combinatorial graph Laplacian.
+
+### `sheaf_coboundary(sheaf) → Tensor`
+Coboundary operator `δ: C⁰ → C¹` as a `(n_e · d_e, n_v · d_v)` dense
+matrix. Action on a node-cochain `x ∈ R^{n_v·d_v}` is the per-edge
+disagreement `F_{u≤e}(x_u) − F_{v≤e}(x_v)`.
+
+### `sheaf_laplacian(sheaf) → Tensor`
+The sheaf Laplacian `L_F = δ^T δ` as a `(n_v·d_v, n_v·d_v)` dense
+PSD matrix. Reduces to the standard graph Laplacian for the trivial
+sheaf; orientation-flip on a 3-cycle drops kernel dim from 1 to 0
+(the monodromy test).
+
+### `sheaf_dirichlet_energy(sheaf, x) → (B,)`
+Quadratic form `x^T L_F x`, batched-first over `x: (B, n_v·d_v)`.
+
+Refs: Hansen-Ghrist (2019) *Toward a spectral theory of cellular
+sheaves* (J. Appl. Comput. Topol. 3); Bodnar et al. (2022) *Neural
+sheaf diffusion* (NeurIPS); Curry (2014) PhD thesis.
+
+---
+
+## §Lie: `holonomy_lib.lie`
+
+Lie group primitives. v1 covers SO(3) (the rotation group of R³) +
+real spherical harmonics; SE(3) / SU(2) / SL(n) are planned. Single
+flat namespace `so3` for the SO(3) primitives; spherical harmonics
+exposed at the top level.
+
+### `so3.axis_angle_to_matrix(axis, angle) → (B, 3, 3)`
+Rodrigues formula `R = I + sin(θ) K + (1 − cos θ) K²` with
+`K = axis^∧`. Batched-first, `axis: (B, 3)`, `angle: (B,)`.
+
+### `so3.matrix_to_axis_angle(R) → (axis (B, 3), angle (B,))`
+Inverse log map. Dual-branch: trace-based formula away from π,
+quaternion-based formula in the near-π regime (gap from π below
+`SO3_LOG_NEAR_PI_RAD = 1e-7`, empirically calibrated for float64;
+see `so3.py` docstring at the constant; don't "fix" to e3nn's `1e-2`
+without re-running the empirical comparison).
+
+### `so3.so3_exp(omega) → (B, 3, 3)`, `so3.so3_log(R) → (B, 3, 3)`
+Matrix exp / log on so(3) (3×3 skew-symmetric matrices), built on
+the axis-angle pair above.
+
+### `so3.random_so3(batch_size, generator=None, device=…, dtype=…) → (B, 3, 3)`
+Haar-uniform sampling on SO(3) via quaternion construction from 3
+uniforms on [0, 1) (Shoemake 1992). Chi-squared sanity test in the
+suite (p < 1e-6 bound).
+
+### `so3.compose(R1, R2) → (B, 3, 3)`
+Group product `R1 @ R2`. Trivial; included for API symmetry.
+
+### `real_spherical_harmonics(directions, l_max) → list[(B, 2l+1)]`
+Closed-form real Y_lm for `l_max ≤ 4`, evaluated at unit direction
+vectors `directions: (B, 3)`. One tensor per `l` from `0` to `l_max`,
+each of width `2l + 1`. Per-l block norm preserved under SO(3)
+rotation (full mixing via Wigner-D matrices is a v0.3 follow-up). Audit
+exempt: file is a transcription of Wikipedia's "Table of spherical
+harmonics" + Monte-Carlo orthonormality test in the suite.
+
+Refs: Hall (2015) §3.1; Shoemake (1992) *Uniform random rotations*;
+Edmonds (1957) *Angular Momentum in Quantum Mechanics*; Cohen et al.
+(2018) *Spherical CNNs*.
+
+---
+
 ## Planned primitives
 
 Open frontiers the library does not yet cover:
-- Persistent homology on GPU (gudhi / ripser are CPU).
-- Lanczos sparse-eigensolver for large graphs (currently `linalg.eigh`
-  dense only).
-- Hodge Laplacians on simplicial complexes.
-- Sign-magnetic Laplacian for signed-directed graphs (Fiorini 2023; He
-  et al. 2023). The base magnetic Laplacian is in `spectral.magnetic`;
-  the signed extension is the next step.
-- Riemannian optimizers (SGD/Adam/trust-region on the manifold module).
-- Conjugate priors / Bregman divergences / information geometry.
-- Effective resistance / commute-time distances.
-- Diffusion maps built on the Chebyshev heat kernel.
-- Mech-interp class-method provenance (FixedRankManifold/SPDManifold
-  method calls aren't yet captured by `record()`; top-level functions only).
+- Wigner-D matrices (real basis) for higher-l rotation actions on
+  spherical-harmonic features. Today `real_spherical_harmonics` only
+  preserves per-l block norms under rotation; the full mixing matrix
+  is the natural next step.
+- Optimal transport extensions: Gromov-Wasserstein (Mémoli 2011) for
+  metric-measure-space comparison, Sinkhorn divergences (de-biased OT).
+- GPU-resident custom CUDA kernel for the Z/2 PH boundary-matrix
+  reduction (current torch path is a same-algorithm port that's
+  ~21× slower than CPython sets at n=80; the win is a future kernel).
+- Sparse-input shift-and-invert via iterative solver (CG/MINRES) for
+  sparse SA Lanczos.
+- Further manifolds: sphere, Stiefel, Grassmann, hyperbolic.
+- Higher-dimensional cellular sheaves on simplicial complexes (with
+  2-cells / faces and the corresponding chain identity ∂_1 ∘ ∂_2 = 0).
+- SE(3) / SU(2) / SL(n) Lie group primitives.

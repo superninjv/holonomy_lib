@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 543 passing](https://img.shields.io/badge/tests-543%20passing-brightgreen.svg)](#testing)
+[![tests: 613 passing](https://img.shields.io/badge/tests-613%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Nine modules, 543
+modern ML keeps reinventing project by project. Twelve modules, 613
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -42,6 +42,8 @@ its inputs through a content-addressable provenance DAG.
 | **`optimization`** | **`RiemannianSGD`** | Steepest descent on `FixedRankManifold` / `SPDManifold` via the existing projection + retraction API (Absil-Mahony-Sepulchre 2008, §4.1) |
 | **`simplicial`** | **`DenseSimplicialComplex`**, **`SparseSimplicialComplex`**, **`vietoris_rips_*`** | Simplicial complex data structures + boundary operators + Vietoris-Rips construction; foundation for Hodge + persistent homology (Munkres 1984; Hausmann 1995; Bauer 2021) |
 | **`topology`** | **`hodge_laplacian`**, **`betti_numbers`**, **`persistence_diagrams`** | Hodge Laplacians + Betti numbers on simplicial complexes (Eckmann 1944; Lim 2020), plus batched persistent homology H₀+H₁+H₂ of Vietoris-Rips filtrations via union-find + Z/2 matrix reduction (Edelsbrunner-Letscher-Zomorodian 2002; Cohen-Steiner-Edelsbrunner-Harer 2007 stability) |
+| **`sheaf`** | **`GraphSheaf`**, **`sheaf_coboundary`**, **`sheaf_laplacian`**, **`sheaf_dirichlet_energy`** | Cellular sheaves on graphs and their Laplacians (Hansen-Ghrist 2019); reduces to the standard graph Laplacian under trivial stalks; the spectral foundation behind Neural Sheaf Diffusion (Bodnar et al. 2022) |
+| **`lie`** | **`so3.{exp,log,axis_angle,random_so3,compose}`**, **`real_spherical_harmonics`** | SO(3) primitives: Rodrigues / matrix log with empirically-calibrated near-π branch, Haar-uniform sampling (Shoemake 1992), composition; real spherical harmonics Y_lm for l ≤ 4 (Edmonds 1957), the natural basis for SO(3)-equivariant functions on the sphere |
 | `provenance` | `@with_provenance`, `record()`, `ProvenanceRegistry` | Content-addressable Merkle DAG of math primitives; substitution / replay / SAELens emission for mech interp |
 
 ---
@@ -408,19 +410,26 @@ silently if a comparison library isn't installed.
 holonomy_lib/
 ├── src/holonomy_lib/          # the library
 │   ├── manifolds/             # FixedRankManifold, SPDManifold
-│   ├── algebra/               # truncated_svd
+│   ├── algebra/               # truncated_svd, lanczos_eigsh (LA + shift-invert SA)
 │   ├── tensor_calculus/       # hosvd, mode_product, mode_unfolding
-│   ├── spectral/              # Laplacians, eigenmaps
-│   ├── discrete_geometry/     # Ollivier-Ricci, flow, surgery
+│   ├── spectral/              # 4 Laplacians (incl. magnetic + sign-magnetic), eigenmaps, heat kernel, resistance, diffusion maps
+│   ├── discrete_geometry/     # Ollivier-Ricci, discrete Ricci flow, surgery, Forman-Ricci
+│   ├── info_geometry/         # Bregman + KL divergences, Fisher metric, natural gradient
+│   ├── optimization/          # RiemannianSGD on FixedRank / SPD
+│   ├── simplicial/            # Dense + Sparse complexes, Vietoris-Rips
+│   ├── topology/              # Hodge Laplacians, Betti, persistence diagrams (H₀+H₁+H₂)
+│   ├── sheaf/                 # cellular sheaves on graphs, sheaf Laplacians
+│   ├── lie/                   # SO(3) primitives, real spherical harmonics (l ≤ 4)
 │   ├── provenance/            # content-addressable hex protocol
 │   └── audit.py               # audit gate: no magic numbers
-├── tests/                     # 269 tests across all modules
+├── tests/                     # 613 tests across all modules
 │   └── benchmarks/            # device-agnostic timing harness
 ├── notes/
 │   ├── magic_numbers.md       # cataloged constants with scale-of-validity
 │   ├── scrutiny.md            # findings + fixes from review passes
 │   ├── benchmark_baseline.md  # before optimization
 │   └── benchmark_optimized.md # after
+├── CHANGELOG.md               # release history
 └── CONTENTS.md                # primitive inventory and quick reference
 ```
 
@@ -428,24 +437,42 @@ holonomy_lib/
 
 ## Roadmap
 
-All v0.1 roadmap items shipped:
+See [`CHANGELOG.md`](CHANGELOG.md) for the full release history.
 
-- Sign-magnetic Laplacian for signed-directed graphs (Fiorini 2023;
-  He et al. 2023).
-- Shift-and-invert Lanczos for smallest-eigenvalue mode.
-- Fisher information metric and natural gradient.
-- Sparse-COO/CSR/CSC paths for all four Laplacian variants
-  (combinatorial, symmetric-normalized, random-walk, Kunegis signed);
-  end-to-end with sparse `lanczos_eigsh`.
-- Device-agnostic torch reduction backend for persistent homology
+**v0.2.0** (current): six new modules and several extensions since
+the v0.1.0 seed.
+
+- New modules: `optimization` (RiemannianSGD), `simplicial`
+  (Dense / Sparse complexes + Vietoris-Rips), `topology` (Hodge
+  Laplacians + Betti + batched persistent homology H₀+H₁+H₂),
+  `info_geometry` (Bregman + KL + Fisher metric + natural gradient),
+  `sheaf` (cellular sheaves on graphs + sheaf Laplacians), `lie`
+  (SO(3) primitives + real spherical harmonics for l ≤ 4).
+- Spectral additions: Forman-Ricci curvature, magnetic Laplacian,
+  sign-magnetic Laplacian, Chebyshev heat kernel, effective
+  resistance, commute time, diffusion maps, and sparse-COO/CSR/CSC
+  paths for all four Laplacian variants.
+- Algebra additions: `lanczos_eigsh` with LA (largest algebraic) and
+  shift-and-invert SA (smallest algebraic) modes.
+- Class-method provenance for `FixedRankManifold` / `SPDManifold`;
+  device-agnostic torch reduction backend for persistent homology
   (foundation for a future custom CUDA kernel).
-- Class-method provenance for `FixedRankManifold` / `SPDManifold`.
 
-Open frontiers for v0.2 onward: GPU-resident custom CUDA kernel for
+**v0.1.0**: initial public release. `manifolds`, `algebra`,
+`tensor_calculus`, `spectral` (4 Laplacians + eigenmaps),
+`discrete_geometry` (Ollivier-Ricci + flow + surgery), `provenance`.
+
+**Frontiers** (v0.3+): Wigner-D matrices (real basis) to complete the
+SO(3) equivariance story so spherical-harmonic features mix
+correctly under rotation; optimal transport extensions
+(Gromov-Wasserstein for metric-measure-space comparison, Sinkhorn
+divergences for de-biased OT); GPU-resident custom CUDA kernel for
 the Z/2 PH reduction (current torch path is sequential with a
 per-column CPU sync); sparse-input shift-and-invert via iterative
-solver (CG/MINRES) for sparse SA mode; further manifolds (sphere,
-Stiefel, Grassmann, hyperbolic). Contributions welcome via PR.
+solver (CG/MINRES); higher-dim cellular sheaves on simplicial
+complexes; further manifolds (sphere, Stiefel, Grassmann,
+hyperbolic); SE(3) / SU(2) / SL(n) Lie group primitives.
+Contributions welcome via PR.
 
 ---
 

@@ -1,6 +1,6 @@
 [project]
 name = "holonomy-lib"
-version = "0.1.0"
+version = "0.2.0"
 description = "Research-grade PyTorch math: differential geometry, spectral graph theory, discrete Ricci flow, tensor decompositions, simplicial topology, persistent homology, content-addressable provenance. GPU-native, batched-first, audit-clean, cited."
 readme = "README.md"
 license = { file = "LICENSE" }
