@@ -98,3 +98,18 @@ The cost premium is below the often-cited "2× both branches evaluated" worst ca
 2. **Static-branch lock is genuinely broken** when κ flips — the cached `_branch` produces the wrong formula. Relative error ~1.38% at the demonstrated κ (arctanh-formula evaluated on a positive κ that should use arctan). The user can rebuild the manifold and reset the optimizer at each flip, but that's a coordination burden the dispatch removes.
 3. **Truncated Taylor unified κ-trig** is not a viable alternative — within the manifold domain (|κ|·α² < 1) the series technically converges but arbitrarily slowly near the boundary; well inside it (|κ|·α² ≲ 0.25) you still need ~6 terms to match dispatch accuracy. Dispatch wins by orders of magnitude near the boundary, where curvature-sensitive training spends most of its time.
 4. **Dispatch overhead is modest** — ×1.44 per forward+backward vs the float-locked fast path on CPU, which is acceptable for the expressivity gain (κ as a learnable scalar).
+
+## (5) GPU latency on AMD ROCm
+
+Re-run of the §(4) latency comparison on the workstation's `AMD Radeon Graphics` (`hip=6.4.43484-123eb5128`, `torch=2.9.1+rocm6.4`). Run via the synoros-substrate venv (which has the ROCm-built torch); see `C4_kappa_crossing_gpu_bench.py` docstring for the exact invocation.
+
+- Setup: batch = 65536, n = 8, 50 runs.
+
+| dtype | path | ms / iter (fwd + bwd) | overhead |
+|---|---|---:|---:|
+| float64 | static float κ      | 1.479 | baseline |
+| float64 | tensor κ dispatch   | 1.876 | ×1.27 |
+| float32 | static float κ      | 1.181 | baseline |
+| float32 | tensor κ dispatch   | 1.866 | ×1.58 |
+
+The GPU overhead ratio is consistent with the CPU measurement (~×1.2−1.5). On GPU the both-branches-evaluated cost is even cheaper in absolute terms because the elementwise transcendentals are throughput-bound and the dispatch adds two more single-kernel elementwise ops — easily fused / hidden in the existing pipeline. RDNA 4 (gfx1200) handles the float64 atanh/atan path at native-double rates.

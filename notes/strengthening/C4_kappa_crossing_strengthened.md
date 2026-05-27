@@ -165,17 +165,17 @@ Taylor alternative.
 
 ### (3d) Latency overhead
 
-`torch.where` evaluates both branches forward and backward. On CPU
-float64, batch = 16384, n = 8, the dispatch path costs ~1.2 − 1.4×
-the static-float fast path per forward+backward — substantially
-below the worst-case 2× because (a) each `_safe_*c` is one
-elementwise kernel, (b) the Möbius-addition machinery dominates and
-is branch-independent, (c) PyTorch fuses many of the small ops.
+`torch.where` evaluates both branches forward and backward. The
+dispatch path costs ~1.2 − 1.6× the static-float fast path per
+forward+backward — substantially below the worst-case 2× because
+(a) each `_safe_*c` is one elementwise kernel, (b) the
+Möbius-addition machinery dominates and is branch-independent,
+(c) PyTorch fuses many of the small ops.
 
-GPU latency is not characterized in this session (no CUDA hardware
-available locally for the C4 strengthening run). The dispatch
-structure is `torch.where` + two elementwise transcendentals,
-fully data-parallel; we expect GPU overhead to be comparable.
+CPU (batch = 16384, n = 8, float64): ~×1.2 − 1.4.
+GPU (AMD Radeon RX 9060 XT, gfx1200, ROCm 6.4; batch = 65536, n = 8):
+×1.27 float64, ×1.58 float32. See
+`notes/strengthening/C4_kappa_crossing_stress_results.md` §(5).
 
 ## (4) Related work — where this sits in the literature
 
@@ -215,4 +215,4 @@ walks across κ = 0 with no special handling.
 
 | Claim | Was | Now |
 |---|---|---|
-| C4 (κ-sign crossing dispatch) | 🔴 | 🟢 (sympy analyticity verified; multi-crossing SGD trajectory finite; static-branch failure mode quantified; Taylor alternative dominated; CPU latency characterized; GPU benchmark deferred pending hardware) |
+| C4 (κ-sign crossing dispatch) | 🔴 | 🟢 (sympy analyticity verified; multi-crossing SGD trajectory finite; static-branch failure mode quantified; Taylor alternative dominated; CPU + AMD/ROCm GPU latency characterized) |

@@ -212,7 +212,8 @@ test (`notes/strengthening/C4_kappa_crossing_stress.py` +
 relative-error failure mode after a flip; Taylor-truncation
 alternative is dominated by the dispatch across the entire
 manifold domain; CPU latency overhead ~1.2–1.4× vs the
-float-locked fast path. GPU benchmark deferred pending hardware.
+float-locked fast path; AMD ROCm GPU benchmark (Radeon RX 9060 XT)
+confirms ×1.27 (float64) / ×1.58 (float32) overhead.
 
 ---
 
