@@ -15,16 +15,28 @@ Schema for each entry:
 
 ---
 
-## C1. Heat-kernel spectral-shift recursion bug-find + correction
+## C1. Heat-kernel autograd implementation pitfall (spectral-shift factor)
 
-**Claim**: The simple recursion
-`k^{n+2}(t, r) = -(2π · sinh r)⁻¹ · ∂_r k^n(t, r)`
-that appears in some references **misses a spectral-shift factor**.
-The correct form is
-`k^{n+2}(t, r) = -exp(-n·t) / (2π · sinh r) · ∂_r k^n(t, r)`,
-derivable from the operator-chain expansion
-`f_m = (1/sinh r · ∂_r)^m exp(-r²/4t)` and the dimensional
-spectral-bottom shift `((n+1)/2)² - ((n-1)/2)² = n`.
+**Claim** (revised): The literature recursion
+`k^{n+2}(t, r) = -exp(-n·t) / (2π·sinh r) · ∂_r k^n(t, r)`
+(Grigor'yan-Noguchi 1998 *Heat Kernel on Hyperbolic Space*, Bull.
+LMS 30(6); reaffirmed Naganawa 2018 arXiv:1807.05708 *Heat kernel
+recurrence on space forms*) is **correct as stated**. The bug we
+caught was an **autograd implementation pitfall**: writing
+```python
+grad = torch.autograd.grad(k_n(t, r).sum(), r)[0]
+return -grad / (2*math.pi*torch.sinh(r))   # WRONG — drops exp(-n·t)
+```
+because PyTorch's `torch.autograd.grad` computes `∂_r k^n` only,
+and the `exp(-n·t)` spectral-shift factor — multiplicative in the
+mathematical recursion — has to be applied explicitly outside the
+autograd call. The factor is "invisible" to autograd because it's a
+constant in r.
+
+This is a generalizable lesson for porting nuanced analytical
+formulas to PyTorch autograd code: multiplicative constants in r
+that depend on n (or t) must be applied by hand; autograd only
+gives you the r-derivative.
 
 **Current evidence**:
 - `src/holonomy_lib/hyperbolic/heat_kernel.py` — implementation
