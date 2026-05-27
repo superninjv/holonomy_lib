@@ -229,3 +229,354 @@ def to_openai_schema() -> list[dict[str, Any]]:
             },
         })
     return out
+
+
+# ============================================================
+# Tool constants
+# ============================================================
+
+# Max element count for `tensor_slice` to return the raw values inline.
+# Above this, the tool returns only shape + summary stats and asks the
+# caller to take a smaller slice. 256 = a 16x16 matrix's worth — big
+# enough to inspect typical neighborhoods, small enough to fit a single
+# MCP / tool-use response without bloating the agent's context window.
+# Cataloged as 🔬 experimentally-set in notes/magic_numbers.md.
+TENSOR_SLICE_INLINE_LIMIT: int = 256
+
+# Default `k` for `tensor_eigenvalues` / `tensor_singular_values`.
+# Ten covers typical "spectral overview" questions; callers can raise
+# it explicitly when they want the full spectrum. Cataloged as 🔬.
+TENSOR_SPECTRAL_DEFAULT_K: int = 10
+
+# Python's slice() constructor takes (start, stop, step) — three
+# components. Pinned here so the audit doesn't flag the bare literal
+# in the slice-expression parser. Cataloged as ✅ derived since it's
+# fixed by the Python language, not a tuning parameter.
+PYTHON_SLICE_ARITY: int = 3
+
+
+# ============================================================
+# Slice expression parser
+# ============================================================
+
+
+def _parse_index_expr(expr: str) -> Union[int, slice, tuple]:
+    """Parse a numpy-style index expression into a Python index value.
+
+    Accepts:
+      - "0"           → 0
+      - "-1"          → -1
+      - "2:5"         → slice(2, 5, None)
+      - "::2"         → slice(None, None, 2)
+      - ":"           → slice(None, None, None)
+      - "0, 1"        → (0, 1)
+      - ":, 0"        → (slice(None), 0)
+      - "0, 1:3, ::2" → (0, slice(1, 3), slice(None, None, 2))
+
+    Rejects anything with characters outside `0-9-:, `. This is a tool
+    surface exposed to LLMs; safety > expressiveness. For richer
+    indexing, drop to direct Python.
+    """
+    if not isinstance(expr, str):
+        raise TypeError(f"index expression must be a string, got {type(expr).__name__}")
+    cleaned = expr.replace(" ", "")
+    allowed = set("0123456789-:,")
+    bad = set(cleaned) - allowed
+    if bad:
+        raise ValueError(
+            f"index expression {expr!r} contains disallowed characters "
+            f"{sorted(bad)!r}; only digits, '-', ':', ',', and spaces "
+            f"are accepted"
+        )
+    parts = cleaned.split(",")
+    result: list[Union[int, slice]] = []
+    for p in parts:
+        if not p:
+            raise ValueError(
+                f"index expression {expr!r} has an empty component"
+            )
+        if ":" in p:
+            slice_args: list[Optional[int]] = []
+            for s in p.split(":"):
+                slice_args.append(int(s) if s else None)
+            # Python slice() takes (start, stop, step); pad with None
+            # for omitted components, reject longer.
+            while len(slice_args) < PYTHON_SLICE_ARITY:
+                slice_args.append(None)
+            if len(slice_args) > PYTHON_SLICE_ARITY:
+                raise ValueError(
+                    f"index expression {expr!r} has a slice with too "
+                    f"many components"
+                )
+            result.append(slice(*slice_args))
+        else:
+            result.append(int(p))
+    return tuple(result) if len(result) > 1 else result[0]
+
+
+# ============================================================
+# Inspection tools
+# ============================================================
+
+
+@agent_tool(description=(
+    "Return a slice of a cached tensor. Index expression uses numpy "
+    "syntax (e.g. '0', ':, 0', '2:5', '0, 1:3'). Returns the raw "
+    "values inline if the slice has at most 256 elements; otherwise "
+    "returns shape + summary stats and asks for a smaller slice."
+))
+def tensor_slice(
+    registry: ProvenanceRegistry,
+    hex: str,
+    expr: str = ":",
+) -> dict[str, Any]:
+    """Slice a cached tensor by hex.
+
+    Args:
+      hex: the cached tensor's content hash.
+      expr: numpy-style index expression. Examples: "0" (scalar index),
+        ":, 0" (column 0 of a 2D matrix), "2:5" (slice), "0, 1:3"
+        (multi-dim), ":" (everything — equivalent to no slicing).
+
+    Returns a dict with keys `shape`, `dtype`, and either `values`
+    (inline list) or `truncated=True` + `stats` summary.
+    """
+    t = registry.get_tensor(hex)
+    if t is None:
+        return {"error": "tensor not cached", "hex": hex}
+    try:
+        idx = _parse_index_expr(expr)
+    except (ValueError, TypeError) as e:
+        return {"error": f"bad index expression: {e}"}
+    try:
+        sliced = t[idx] if idx != slice(None, None, None) else t
+    except (IndexError, TypeError) as e:
+        return {"error": f"slice failed: {e}", "expr": expr, "tensor_shape": list(t.shape)}
+    out: dict[str, Any] = {
+        "shape": list(sliced.shape) if sliced.ndim > 0 else [],
+        "dtype": str(sliced.dtype),
+    }
+    if sliced.numel() <= TENSOR_SLICE_INLINE_LIMIT:
+        out["values"] = (
+            sliced.tolist() if sliced.ndim > 0 else float(sliced.item())
+        )
+    else:
+        promoted = sliced.to(torch.float64)
+        out["truncated"] = True
+        out["stats"] = {
+            "mean": float(promoted.mean().item()),
+            "std": float(promoted.std().item()) if sliced.numel() > 1 else 0.0,
+            "min": float(promoted.min().item()),
+            "max": float(promoted.max().item()),
+        }
+    return out
+
+
+@agent_tool(description=(
+    "Per-batch mean/std/min/max for a cached tensor. Assumes dim 0 is "
+    "the batch dim; reduces over the rest. Use this instead of the "
+    "v0.3 get_tensor_summary for any (B, ...) tensor where you need "
+    "to see which batch element differs."
+))
+def tensor_per_batch_summary(
+    registry: ProvenanceRegistry,
+    hex: str,
+) -> dict[str, Any]:
+    """Return one summary row per batch element, instead of collapsing
+    to global stats. This is the tool that fixes the v0.3.0 "average
+    hides the anomaly" wall.
+    """
+    t = registry.get_tensor(hex)
+    if t is None:
+        return {"error": "tensor not cached", "hex": hex}
+    if t.ndim == 0:
+        return {"shape": [], "value": float(t.item())}
+    flat = t.reshape(t.shape[0], -1).to(torch.float64)
+    means = flat.mean(dim=1).tolist()
+    if flat.shape[1] > 1:
+        stds = flat.std(dim=1).tolist()
+    else:
+        stds = [0.0] * flat.shape[0]
+    mins = flat.min(dim=1).values.tolist()
+    maxs = flat.max(dim=1).values.tolist()
+    return {
+        "shape": list(t.shape),
+        "dtype": str(t.dtype),
+        "per_batch": [
+            {"index": i, "mean": means[i], "std": stds[i],
+             "min": mins[i], "max": maxs[i]}
+            for i in range(t.shape[0])
+        ],
+    }
+
+
+@agent_tool(description=(
+    "Top-k eigenvalues of a cached square matrix (or batched square "
+    "matrices). Symmetrizes the input before computing — pass a "
+    "symmetric matrix for the canonical answer. Returns per-batch "
+    "lists for batched inputs."
+))
+def tensor_eigenvalues(
+    registry: ProvenanceRegistry,
+    hex: str,
+    k: int = TENSOR_SPECTRAL_DEFAULT_K,
+) -> dict[str, Any]:
+    """Top-k eigenvalues via eigvalsh. The input is symmetrized as
+    `(A + A.T) / 2` for numerical stability, so non-symmetric inputs
+    receive their symmetric part's eigenvalues."""
+    t = registry.get_tensor(hex)
+    if t is None:
+        return {"error": "tensor not cached", "hex": hex}
+    if t.ndim < 2 or t.shape[-1] != t.shape[-2]:
+        return {
+            "error": "tensor is not square in last two dims",
+            "shape": list(t.shape),
+        }
+    t64 = t.to(torch.float64)
+    sym = (t64 + t64.transpose(-1, -2)) * 0.5
+    eigvals = torch.linalg.eigvalsh(sym)
+    # eigvalsh returns ascending; flip to descending and take top-k.
+    eigvals_desc = torch.flip(eigvals, dims=[-1])
+    actual_k = min(k, eigvals.shape[-1])
+    top = eigvals_desc[..., :actual_k]
+    return {
+        "shape": list(t.shape),
+        "k": actual_k,
+        "values": top.tolist(),
+    }
+
+
+@agent_tool(description=(
+    "Top-k singular values of a cached matrix (or batched matrices). "
+    "Returns per-batch lists for batched inputs. Use this for spectral "
+    "inspection of arbitrary-shaped matrices; use tensor_eigenvalues "
+    "for square symmetric ones."
+))
+def tensor_singular_values(
+    registry: ProvenanceRegistry,
+    hex: str,
+    k: int = TENSOR_SPECTRAL_DEFAULT_K,
+) -> dict[str, Any]:
+    """Top-k singular values via SVD (reduced form)."""
+    t = registry.get_tensor(hex)
+    if t is None:
+        return {"error": "tensor not cached", "hex": hex}
+    if t.ndim < 2:
+        return {
+            "error": "need at least 2 dims for SVD",
+            "shape": list(t.shape),
+        }
+    t64 = t.to(torch.float64)
+    _, s, _ = torch.linalg.svd(t64, full_matrices=False)
+    actual_k = min(k, s.shape[-1])
+    top = s[..., :actual_k]
+    return {
+        "shape": list(t.shape),
+        "k": actual_k,
+        "values": top.tolist(),
+    }
+
+
+@agent_tool(description=(
+    "Norm of a cached tensor. Order: 'frobenius' (default, sqrt of "
+    "sum of squares) or 'spectral' (largest singular value; matrices "
+    "only). Batched inputs return per-batch values."
+))
+def tensor_norm(
+    registry: ProvenanceRegistry,
+    hex: str,
+    order: str = "frobenius",
+) -> dict[str, Any]:
+    """Frobenius or spectral norm."""
+    t = registry.get_tensor(hex)
+    if t is None:
+        return {"error": "tensor not cached", "hex": hex}
+    t64 = t.to(torch.float64)
+    if order == "frobenius":
+        if t64.ndim <= 1:
+            value = float(torch.linalg.norm(t64).item())
+            return {"order": order, "shape": list(t.shape), "value": value}
+        # For batched/matrix tensors, reduce over all-but-first dim.
+        if t64.ndim == 2:
+            return {
+                "order": order, "shape": list(t.shape),
+                "value": float(torch.linalg.norm(t64).item()),
+            }
+        flat = t64.reshape(t64.shape[0], -1)
+        per_batch = torch.linalg.norm(flat, dim=1).tolist()
+        return {"order": order, "shape": list(t.shape), "per_batch": per_batch}
+    if order == "spectral":
+        if t64.ndim < 2:
+            return {"error": "spectral norm requires at least 2 dims"}
+        per = torch.linalg.matrix_norm(t64, ord=2)
+        if per.ndim == 0:
+            return {
+                "order": order, "shape": list(t.shape),
+                "value": float(per.item()),
+            }
+        return {
+            "order": order, "shape": list(t.shape),
+            "per_batch": per.tolist(),
+        }
+    return {"error": f"unknown order {order!r}; use 'frobenius' or 'spectral'"}
+
+
+@agent_tool(description=(
+    "Compare two cached tensors of matching shape. Metric: 'max_abs' "
+    "(largest |a - b|), 'frobenius' (Euclidean diff), or 'cosine' "
+    "(angle between flattened vectors, range -1 to 1)."
+))
+def tensor_compare(
+    registry: ProvenanceRegistry,
+    hex_a: str,
+    hex_b: str,
+    metric: str = "max_abs",
+) -> dict[str, Any]:
+    """Pairwise comparison of two cached tensors."""
+    a = registry.get_tensor(hex_a)
+    b = registry.get_tensor(hex_b)
+    if a is None:
+        return {"error": "tensor a not cached", "hex_a": hex_a}
+    if b is None:
+        return {"error": "tensor b not cached", "hex_b": hex_b}
+    if a.shape != b.shape:
+        return {
+            "error": "shape mismatch",
+            "a_shape": list(a.shape), "b_shape": list(b.shape),
+        }
+    a64 = a.to(torch.float64)
+    b64 = b.to(torch.float64)
+    if metric == "max_abs":
+        return {"metric": metric, "value": float((a64 - b64).abs().max().item())}
+    if metric == "frobenius":
+        return {
+            "metric": metric,
+            "value": float(torch.linalg.norm(a64 - b64).item()),
+        }
+    if metric == "cosine":
+        af = a64.flatten()
+        bf = b64.flatten()
+        denom = torch.linalg.norm(af) * torch.linalg.norm(bf)
+        # The standard numerical-floor convention (cataloged) avoids
+        # divide-by-zero when one of the inputs is exactly zero.
+        cos = torch.dot(af, bf) / (denom + 1e-9)
+        return {"metric": metric, "value": float(cos.item())}
+    return {"error": f"unknown metric {metric!r}; use 'max_abs', 'frobenius', or 'cosine'"}
+
+
+@agent_tool(description=(
+    "Return the docstring and signature of a registered op. Use this "
+    "for discovery — e.g., to understand what 'holonomy_lib.spectral."
+    "laplacian.symmetric_normalized' actually computes."
+))
+def op_docstring(op_id: str) -> dict[str, Any]:
+    """Lookup the registered op's signature + docstring."""
+    if op_id not in OP_REGISTRY:
+        return {"error": "op_id not registered", "op_id": op_id}
+    fn, version = OP_REGISTRY[op_id]
+    return {
+        "op_id": op_id,
+        "op_version": version,
+        "signature": str(inspect.signature(fn)),
+        "docstring": (fn.__doc__ or "").strip(),
+    }
