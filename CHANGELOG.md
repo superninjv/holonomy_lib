@@ -110,7 +110,27 @@ decorator + schema generators (Phase 1), every inspection tool
 v0.3 nav tools still register AND the new v0.4 inspection tools
 land.
 
-Tests: 659 -> 702 passing. Audit: 0 undocumented, 28 cataloged.
+Tests: 659 -> 707 passing. Audit: 0 undocumented, 28 cataloged.
+
+### Scrutiny-pass hardening
+
+A code-review pass on the v0.4 work surfaced four real issues plus
+one minor, all in `agent.py`:
+
+- `_parse_index_expr` tolerates a single trailing comma (`":, 0,"`).
+  NumPy and PyTorch both accept `t[0,]` and LLMs frequently emit it.
+- `tensor_compare` on cross-device tensors returns an `error:
+  "device mismatch"` dict instead of throwing an unhandled
+  RuntimeError from `torch.linalg`.
+- The `cosine` metric detects exact-zero input vectors and returns
+  `error: "cosine undefined..."` instead of silently returning `0.0`
+  (which an LLM could misread as "orthogonal").
+- `replay_with` pre-checks the substitute tensor's shape against the
+  recorded node's output shape for single-output ops and returns a
+  recipe-aware error instead of bubbling a confusing downstream
+  torch error.
+- `swap_batch` with `i == j` returns a clone early instead of doing
+  the redundant double-write.
 
 ## [0.3.0] - 2026-05-27
 

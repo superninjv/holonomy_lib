@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 702 passing](https://img.shields.io/badge/tests-702%20passing-brightgreen.svg)](#testing)
+[![tests: 707 passing](https://img.shields.io/badge/tests-707%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Twelve modules, 702
+modern ML keeps reinventing project by project. Twelve modules, 707
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -442,7 +442,7 @@ holonomy_lib/
 │   ├── lie/                   # SO(3) primitives, real spherical harmonics (l ≤ 4)
 │   ├── provenance/            # content-addressable hex protocol
 │   └── audit.py               # audit gate: no magic numbers
-├── tests/                     # 702 tests across all modules
+├── tests/                     # 707 tests across all modules
 │   └── benchmarks/            # device-agnostic timing harness
 ├── notes/
 │   ├── magic_numbers.md       # cataloged constants with scale-of-validity
