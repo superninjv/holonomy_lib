@@ -152,4 +152,35 @@ def frechet_mean(
         if update_norm.max().item() < tol:
             break
 
+    # Fail-loud: detect convergence to a point outside the manifold.
+    # On positively-curved branches (spherical κ > 0) the Karcher
+    # iteration can escape the domain mid-iteration and converge to a
+    # stationary point of the *ambient* objective rather than the
+    # intrinsic Fréchet mean — caught by
+    # `notes/validation/frechet_spherical_results.md`. Without this
+    # check, the function silently returns a point with kappa‖μ‖² ≥ 1.
+    # Manifolds that always pass `is_on_manifold` (Lorentz, Euclidean)
+    # are unaffected.
+    if hasattr(manifold, "is_on_manifold") and not torch.isfinite(mu).all():
+        raise RuntimeError(
+            "frechet_mean produced non-finite output. Likely cause: "
+            "the Karcher iteration overshot the domain (common on "
+            "positively-curved manifolds with input spread approaching "
+            "the injectivity radius). Try reducing the input spread or "
+            "warm-starting from a closer initial point."
+        )
+    if hasattr(manifold, "is_on_manifold"):
+        on_mfd = manifold.is_on_manifold(mu)
+        if not on_mfd.all():
+            raise RuntimeError(
+                f"frechet_mean converged to a point outside the manifold "
+                f"({(~on_mfd).sum().item()} of {on_mfd.numel()} batch "
+                f"elements). This happens on positively-curved branches "
+                f"(`KappaStereographicManifold(kappa > 0)`) when the "
+                f"input spread approaches the injectivity radius "
+                f"`pi/sqrt(kappa)`. Caller is responsible for keeping "
+                f"inputs well within the injectivity radius — see "
+                f"`notes/validation/frechet_spherical_results.md`."
+            )
+
     return mu
