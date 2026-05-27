@@ -161,6 +161,15 @@ class LorentzManifold:
         """
         return self.n
 
+    @property
+    def ambient_dim(self) -> int:
+        """Ambient dimension `n + 1`. The Lorentz model embeds H^n_k in
+        Minkowski R^{n+1}. Used by manifold-generic primitives in
+        `holonomy_lib.hyperbolic`; `KappaStereographicManifold`
+        overrides this to `n` (no extra dimension).
+        """
+        return self.n + 1
+
     def _provenance_signature(self) -> dict:
         """Deterministic canonical form used by `@with_provenance` to
         hash the bound `self` of decorated methods. See SPDManifold for

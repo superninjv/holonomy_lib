@@ -101,3 +101,26 @@ def test_manifold_aware_inner_backward_self():
     out = manifold_aware_inner(x, x, mfd)
     out.sum().backward()
     assert torch.isfinite(v.grad).all()
+
+
+# --------------------------------------------------------------------
+# Cross-manifold: manifold_aware_inner on KappaStereographicManifold
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("k", [-1.0, -0.5, 0.0, 0.5, 1.0])
+def test_works_on_kappa_stereographic(k):
+    """manifold_aware_inner only depends on the manifold's `log_0`,
+    so it works directly on KappaStereographicManifold without
+    modification."""
+    from holonomy_lib.manifolds import KappaStereographicManifold
+
+    mfd = KappaStereographicManifold(n=3, kappa=k)
+    x = mfd.random_point(batch_size=4, generator=_seed(80 + int(k * 10)))
+    y = mfd.random_point(batch_size=4, generator=_seed(81 + int(k * 10)))
+    out = manifold_aware_inner(x, y, mfd)
+    assert out.shape == (4,)
+    # Self-inner equals d(o, x)² on all branches
+    self_ip = manifold_aware_inner(x, x, mfd)
+    d = mfd.distance(mfd.origin(batch_size=4), x)
+    torch.testing.assert_close(self_ip, d * d, atol=1e-9, rtol=1e-9)

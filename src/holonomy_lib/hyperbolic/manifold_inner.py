@@ -9,14 +9,18 @@ any user-supplied base point) and pulls each point back via `log`:
     ⟨x, y⟩_M  :=  ⟨log_o(x), log_o(y)⟩_o,
 
 where `log_o(·)` is the inverse exponential at the origin and the
-right-hand inner product is the Riemannian metric on `T_o M`. The
-quantity is symmetric, bilinear in its tangent representatives, and
-reduces to the standard Euclidean inner when M = R^n.
+right-hand inner product is the Riemannian metric `g_o` on `T_o M`.
+The quantity is symmetric, bilinear in its tangent representatives,
+and reduces to the standard Euclidean inner when M is Euclidean.
 
-For `LorentzManifold`, `log_0` returns the spatial part of the
-tangent at the origin (`(B, n)` Euclidean coords), so the Riemannian
-inner product collapses to the Euclidean dot product on those
-coordinates — efficient and avoids the ambient (n+1)-dim arithmetic.
+Manifold-agnostic: this primitive works on any manifold that exposes
+`log(x, y)`, `inner(x, u, v)`, and `origin(batch_size)`. For
+`LorentzManifold` the Riemannian inner at the north-pole tangent
+agrees with the Euclidean inner of the spatial coordinates (the time
+coordinate of the tangent is 0 at the origin). For
+`KappaStereographicManifold` it carries the conformal factor
+`λ_κ(o)² = 4`, so `manifold_aware_inner(x, x) = d(o, x)²` on both
+manifolds — a model-invariant similarity.
 
 References:
   Pennec, X. (2006). Intrinsic statistics on Riemannian manifolds.
@@ -40,21 +44,17 @@ def manifold_aware_inner(
     y: torch.Tensor,
     manifold,
 ) -> torch.Tensor:
-    """Riemannian inner product of x and y via the tangent at the origin.
+    """Riemannian inner product `⟨log_o(x), log_o(y)⟩_o` at the
+    manifold origin.
 
-    Computes `⟨log_o(x), log_o(y)⟩_o` where `o` is the manifold's origin.
-    The pair `(x, y)` must both lie on `manifold`.
-
-    For `LorentzManifold` the origin is the north pole; `log_0(x)`
-    returns the spatial part of the tangent there, so the inner product
-    is just the Euclidean dot of those `(B, n)` coordinates.
+    Manifold-agnostic — works on any manifold exposing `log(x, y)`,
+    `inner(x, u, v)`, and `origin(batch_size)`. The result is the
+    metric-consistent "similarity at origin" and satisfies
+    `manifold_aware_inner(x, x) = d_M(o, x)²` on all manifolds.
 
     Args:
       x, y: points on the manifold, shape `(B, ambient_dim)`.
-        For `LorentzManifold(n)` `ambient_dim = n + 1`.
-      manifold: a manifold object exposing a `log_0(point)` method that
-        returns the tangent-at-origin representation of `point` as a
-        `(B, n)` tensor (the spatial / intrinsic coordinates).
+      manifold: a manifold object exposing `log`, `inner`, `origin`.
 
     Returns:
       `(B,)` tensor of Riemannian inner products.
@@ -63,13 +63,15 @@ def manifold_aware_inner(
       >>> from holonomy_lib.manifolds import LorentzManifold
       >>> mfd = LorentzManifold(n=3)
       >>> x = mfd.random_point(batch_size=4)
-      >>> sim = manifold_aware_inner(x, x, mfd)  # ‖log_0(x)‖² per batch
+      >>> sim = manifold_aware_inner(x, x, mfd)  # = d(o, x)² per batch
       >>> sim.shape
       torch.Size([4])
 
     References:
       Pennec (2006), §3 — tangent-space statistics on Riemannian manifolds.
     """
-    log_x = manifold.log_0(x)        # (B, n) Euclidean tangent coords
-    log_y = manifold.log_0(y)        # (B, n)
-    return (log_x * log_y).sum(dim=-1)
+    B = x.shape[0]
+    origin = manifold.origin(batch_size=B)
+    log_x = manifold.log(origin, x)       # ambient tangent at o
+    log_y = manifold.log(origin, y)
+    return manifold.inner(origin, log_x, log_y)

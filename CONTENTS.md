@@ -29,7 +29,10 @@ Shapes use `B` for batch, `n`/`m`/`r`/etc. for math.
 ## Available imports (canonical paths)
 
 ```python
-from holonomy_lib.manifolds import FixedRankManifold, LorentzManifold, SPDManifold
+from holonomy_lib.manifolds import (
+    FixedRankManifold, KappaStereographicManifold, LorentzManifold,
+    SPDManifold,
+)
 from holonomy_lib.algebra import truncated_svd
 from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
 from holonomy_lib.algebra import lanczos_eigsh
@@ -179,6 +182,42 @@ Euclidean optimizer step on `v` is well-defined.
 Refs: Nickel-Kiela (2018), Chen et al. (2022) HyboNet, Lee (2018)
 *Introduction to Riemannian Manifolds*, Cannon et al. (1997),
 Pennec (2006).
+
+### `KappaStereographicManifold(n, kappa=-1.0, device="cpu", dtype=torch.float64)`
+κ-stereographic model with parametric curvature κ ∈ R interpolating
+**spherical** (κ > 0, projection of `S^n`), **Euclidean** (κ = 0),
+and **hyperbolic** (κ < 0, Poincaré ball). Points live directly in
+`R^n` (no extra ambient dimension — `ambient_dim = n`, unlike
+`LorentzManifold` which uses `n+1`). Branch dispatched at
+`__init__` from the sign of `kappa`; v1 accepts a Python float
+(learnable scalar κ is a planned extension).
+
+| Method | Signature | Returns |
+|---|---|---|
+| `random_point` | `(batch_size=1, generator=None)` | `(B, n)` |
+| `origin` | `(batch_size=1)` | `(B, n)` zero vector |
+| `is_on_manifold` | `(x, atol=1e-9)` | `(B,)` bool |
+| `mobius_add` | `(x, y)` | `(B, n)` `x ⊕_κ y` |
+| `projection` | `(x, w)` | `(B, n)` (identity — open subset of R^n) |
+| `inner` | `(x, u, v)` | `(B,)` with `λ_κ(x)² · ⟨u,v⟩` |
+| `norm` | `(x, v)` | `(B,)` |
+| `exp` | `(x, v)` | `(B, n)` |
+| `log` | `(x, y)` | `(B, n)` |
+| `distance` | `(x, y)` | `(B,)` geodesic |
+| `parallel_transport` | `(x, y, v)` | `(B, n)` via Möbius gyrator |
+| `retraction` | `(x, v)` | = `exp(x, v)` |
+| `exp_0` | `(v)` | `(B, n)` origin shortcut |
+| `log_0` | `(y)` | `(B, n)` origin shortcut |
+
+All operations are autograd-finite at the boundary inputs (`x = y`,
+`v = 0`, `y = origin`) via the same `_safe_sqrt` / `_safe_tanhc` /
+`_safe_atanhc` idioms as `LorentzManifold`. Convention follows
+Bachmann–Bécigneul–Ganea 2020: `λ_κ(o) = 2`, so `d_κ=0(x, y) =
+2·‖y - x‖_Eucl` (twice the standard Euclidean distance). Refs:
+Bachmann-Bécigneul-Ganea (2020) *Constant Curvature GCN*; Skopek
+et al. (2019) *Mixed-curvature VAEs*; Ungar (2008) *Gyrovector
+spaces*; Ganea et al. (2018) *Hyperbolic Neural Networks* (Poincaré
+ball special case).
 
 ---
 
@@ -697,8 +736,10 @@ Open frontiers the library does not yet cover:
   ~21× slower than CPython sets at n=80; the win is a future kernel).
 - Sparse-input shift-and-invert via iterative solver (CG/MINRES) for
   sparse SA Lanczos.
-- Further manifolds: sphere, Stiefel, Grassmann, κ-stereographic
-  (parametric curvature interpolating spherical/Euclidean/hyperbolic).
+- Further manifolds: sphere, Stiefel, Grassmann, product.
+- Learnable-κ extension of `KappaStereographicManifold` (v1 is
+  static-float κ; learnable scalar requires smooth `κ → 0`
+  recovery via Taylor expansion).
 - Higher-dimensional cellular sheaves on simplicial complexes (with
   2-cells / faces and the corresponding chain identity ∂_1 ∘ ∂_2 = 0).
 - SE(3) / SU(2) / SL(n) Lie group primitives.

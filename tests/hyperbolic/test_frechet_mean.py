@@ -179,3 +179,23 @@ def test_frechet_mean_backward_at_collapsed_points():
     assert torch.isfinite(v0.grad).all(), (
         f"v0.grad NaN: {torch.isnan(v0.grad).sum().item()}"
     )
+
+
+# --------------------------------------------------------------------
+# Cross-manifold: Fréchet mean on KappaStereographicManifold
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("k", [-1.0, -0.5, 0.0, 0.5, 1.0])
+def test_works_on_kappa_stereographic(k):
+    """Fréchet mean uses log/exp/norm — all available on
+    KappaStereographicManifold. Works across all κ branches."""
+    from holonomy_lib.manifolds import KappaStereographicManifold
+
+    mfd = KappaStereographicManifold(n=3, kappa=k)
+    P = mfd.random_point(batch_size=10, generator=_seed(90)).reshape(
+        1, 10, mfd.ambient_dim,
+    )
+    mu = frechet_mean(P, mfd, max_iter=50, tol=1e-10)
+    assert mu.shape == (1, mfd.ambient_dim)
+    assert mfd.is_on_manifold(mu).all()

@@ -6,6 +6,38 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- **`manifolds.KappaStereographicManifold`** — Stage 3 of the
+  hyperbolic-extension plan. Parametric κ ∈ R model interpolating
+  **spherical** (κ > 0), **Euclidean** (κ = 0), and **hyperbolic**
+  (κ < 0) constant-curvature geometry. Points live in `R^n` (no
+  extra ambient dimension; `ambient_dim = n` vs `n+1` for Lorentz).
+  Closed-form Möbius gyro-addition, conformal-factor metric,
+  branch-dispatched exp/log/distance/parallel-transport — all
+  autograd-finite at boundary inputs from day one (same
+  `_safe_sqrt` / `_safe_tanhc` / `_safe_atanhc` idioms as the
+  Lorentz fix). 151 new tests; cross-comparison against geoopt's
+  `Stereographic` across all four non-zero κ branches; Euclidean
+  recovery at κ = 0 verified independently. v1 takes a Python-float
+  κ; learnable scalar κ is a planned follow-up. Refs: Bachmann-
+  Bécigneul-Ganea (2020) *Constant Curvature Graph Convolutional
+  Networks*; Skopek et al. (2019); Ungar (2008) *Gyrovector
+  Spaces*; Ganea et al. (2018) *Hyperbolic Neural Networks*.
+
+- **`holonomy_lib.hyperbolic` ops generalize to
+  `KappaStereographicManifold`.** `manifold_aware_inner`,
+  `frechet_mean`, and `hyperbolic_laplacian_eigenmaps` now work
+  unchanged on either manifold via the new
+  `manifold.ambient_dim` property (n+1 on Lorentz, n on
+  Stereographic) and a refactored `manifold_aware_inner` that uses
+  the Riemannian inner at origin instead of the Euclidean dot of
+  `log_0` outputs (metric-consistent across both manifolds:
+  `manifold_aware_inner(x, x) = d(o, x)²` on both). 13 new
+  cross-manifold tests verify the model-agnosticism.
+
+  Test count now 1001 (was 837).
+
 ### Fixed
 
 - **`LorentzManifold` autograd produces finite gradients at boundary

@@ -127,7 +127,10 @@ def hyperbolic_laplacian_eigenmaps(
         raise ValueError(f"lr must be > 0, got {lr}")
 
     B, N, _ = adjacency.shape
-    D = manifold.n + 1  # ambient dim for Lorentz; matches convention
+    # Ambient dim is manifold-specific (n+1 for Lorentz, n for
+    # κ-stereographic). Use the `ambient_dim` property when available
+    # so the primitive is model-agnostic.
+    D = getattr(manifold, "ambient_dim", manifold.n + 1)
 
     if init is None:
         # `random_point` returns (BN, D); reshape into (B, N, D).

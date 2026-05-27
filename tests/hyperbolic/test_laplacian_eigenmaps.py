@@ -98,3 +98,22 @@ def test_zero_steps_returns_init():
     )
     Y = hyperbolic_laplacian_eigenmaps(A, mfd, max_steps=0, init=init.clone())
     torch.testing.assert_close(Y, init, atol=0, rtol=0)
+
+
+# --------------------------------------------------------------------
+# Cross-manifold: laplacian_eigenmaps on KappaStereographicManifold
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("k", [-1.0, 0.0, 1.0])
+def test_works_on_kappa_stereographic(k):
+    """hyperbolic_laplacian_eigenmaps now uses `manifold.ambient_dim`
+    so it works on κ-stereographic without modification."""
+    from holonomy_lib.manifolds import KappaStereographicManifold
+
+    mfd = KappaStereographicManifold(n=3, kappa=k)
+    A = _binary_tree_adjacency(depth=2)  # N = 7
+    Y = hyperbolic_laplacian_eigenmaps(A, mfd, max_steps=20,
+                                         lr=0.05, generator=_seed(40))
+    assert Y.shape == (1, 7, mfd.ambient_dim)
+    assert mfd.is_on_manifold(Y.reshape(-1, mfd.ambient_dim)).all()
