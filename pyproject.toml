@@ -99,6 +99,19 @@ comparison = [
     "GraphRicciCurvature",
 ]
 
+# MCP server: exposes a saved provenance registry as a set of MCP
+# tools (list_ops, where, node_info, ancestors, get_tensor_summary,
+# replay). Useful for letting Claude / other agents inspect a live
+# registry from outside the Python process. Requires the official
+# `mcp` SDK; entry point is `python -m holonomy_lib.provenance.mcp`.
+mcp = ["mcp>=0.9"]
+
+# Jupyter cell magic for inline DAG rendering. Enables
+# `%load_ext holonomy_lib.provenance.jupyter` + `%%record_provenance`
+# wrapping a cell with `record()` and showing the Mermaid DAG below
+# the output. Requires IPython; not used by the core library.
+jupyter = ["ipython"]
+
 # Development toolchain.
 dev = ["pytest", "ruff", "mypy"]
 
