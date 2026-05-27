@@ -4,6 +4,17 @@ All notable changes to `holonomy_lib` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org).
 
+## [0.2.1] - 2026-05-27
+
+Packaging-metadata-only release. No code changes.
+
+### Changed
+
+- `pyproject.toml` description synced with the GitHub repo description:
+  adds cellular sheaves, SO(3) Lie primitives, and information geometry
+  to the listed capabilities (these modules shipped in 0.2.0 but the
+  description hadn't caught up).
+
 ## [0.2.0] - 2026-05-27
 
 Six new modules and several extensions on top of the v0.1.0 seed.
@@ -176,5 +187,6 @@ Initial public release. Six seed modules:
   every numerical literal must be derived, a universal invariant, or
   cataloged in `notes/magic_numbers.md` with scale-of-validity.
 
+[0.2.1]: https://github.com/superninjv/holonomy_lib/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/superninjv/holonomy_lib/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/superninjv/holonomy_lib/releases/tag/v0.1.0
