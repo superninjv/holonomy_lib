@@ -4,6 +4,109 @@ All notable changes to `holonomy_lib` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org).
 
+## [0.3.0] - 2026-05-27
+
+Provenance module sweep: performance, robustness, visualization, and
+an agent-access layer (MCP + Jupyter). Ten commits across four phases.
+The construction side (decorator, record(), hex) was already mature;
+this release rounds out the consumption side and addresses the two
+biggest perf gaps (hashing cost on big tensors, memory growth from
+cache_tensors). Tests: 622 -> 659 passing.
+
+### Added: performance
+
+- **Sketch hashing (opt-in)**: `record(hash_mode="sketch")` and
+  `ProvenanceRegistry(hash_mode="sketch")`. Hashes
+  `shape + dtype + SKETCH_SAMPLES = 64` strided samples + `sum` + `std`
+  instead of the full tensor bytes. **15× faster** on 8 MB (n=1024
+  float64) inputs; crossover with full mode at ~n=256. Hexes are not
+  portable across modes; the chosen mode is stamped in to_dict() and
+  round-trips through save()/load().
+- **On-disk tensor cache**: `record(cache_to_disk=path)` mirrors every
+  cached output to a directory via torch.save. Memory eviction under
+  `max_cache_size` drops the in-memory copy but the disk copy persists
+  and `get_tensor()` reloads on demand. New
+  `ProvenanceRegistry.clear(delete_disk=False)` cleans the in-memory
+  caches and optionally the disk files. ~2.3× I/O overhead vs memory-
+  only caching at n=1024.
+- **Extended benchmark suite**: `tests/benchmarks/bench_provenance.py`
+  now covers hashing scale (n=16/256/1024), cache + replay overhead,
+  and sketch/disk variants. Baseline + post-Phase-1 numbers preserved
+  in `notes/benchmark_provenance_v0.2.md` and `_v0.3.md`.
+
+### Added: robustness
+
+- **Replay completion**: `ProvenanceRegistry.replay()` now works for
+  class-method calls and ops taking tuple-of-tensor inputs (e.g.,
+  `FixedRankPoint = (U, S, Vt)`). New
+  `@provenance.register_provenance_class("FixedRankManifold")`
+  decorator opts a class into replay; classes must define
+  `_from_signature(cls, sig: dict)` as the inverse of
+  `_provenance_signature`. `FixedRankManifold` and `SPDManifold` are
+  registered out of the box. Unregistered classes still hit a clear
+  `NotImplementedError` with actionable text.
+- **User-input caching for replay**: when `cache_tensors=True`,
+  user-supplied input tensors are now cached in a separate
+  `_user_input_cache` (not bounded by `max_cache_size`) so replay
+  can find them. Without this, chains like `mfd.exp(S, V)` where S
+  is a user tensor couldn't replay past the substitution.
+- **Op-version drift detector on load()**: new
+  `ProvenanceVersionWarning` (subclass of UserWarning) is emitted
+  when any loaded node's `op_version` differs from the currently-
+  installed `OP_REGISTRY[op_id]` version. New `strict: bool = False`
+  kwarg converts to ValueError. Unknown op_ids (recorded by a module
+  not imported in this process) are flagged in the same diagnostic.
+
+### Added: consumption / visualization
+
+- **Mermaid + Graphviz exports**: `to_mermaid()` returns a flowchart
+  string suitable for inline GitHub Markdown / JupyterLab; `to_graphviz()`
+  returns DOT source. Neither imports the optional rendering library
+  (output is a string the caller pipes to whatever renderer they
+  prefer.
+- **diff_summary(other)**: human-readable rendering of `diff()`,
+  bucketed into Cache hits / Drift / Only in self / Only in other.
+  Drift (same op_id, different inputs) is the interesting category
+  for "did my refactor preserve semantics" questions.
+- **ancestors_with_tensors(hex)**: returns
+  `dict[hex, (ProvenanceNode, Optional[Tensor])]`. One call instead
+  of `ancestors()` + N `get_tensor()` calls.
+
+### Added: agent access
+
+- **to_llm_context(max_ops, show_shapes, show_params)**: compact text
+  summary suitable for placing in an LLM agent's prompt. Format:
+  header (op + cached tensor counts, hash_mode), Ops by op_id with
+  counts, Notable shapes, Roots (no provenance-internal parents),
+  Leaves (no provenance-internal consumers).
+- **MCP server (`holonomy_lib.provenance.mcp`, optional extra)**:
+  exposes a saved registry as six MCP tools (`list_ops`, `where`,
+  `node_info`, `ancestors`, `get_tensor_summary`, `replay`). Entry
+  point: `python -m holonomy_lib.provenance.mcp` reads the registry
+  from `HOLONOMY_PROVENANCE_REGISTRY` env var, starts the server on
+  stdio. Install via `pip install 'holonomy-lib[mcp]'`. File-loaded
+  registries only in v0.3; live-process attachment is v0.4.
+- **Jupyter cell magic (`holonomy_lib.provenance.jupyter`, optional
+  extra)**: `%load_ext holonomy_lib.provenance.jupyter` enables
+  `%%record_provenance` which wraps a cell in `record()`, binds the
+  registry to `_prov` (or a custom name via the magic line), and
+  renders the Mermaid DAG below the cell output. Install via
+  `pip install 'holonomy-lib[jupyter]'`.
+
+### Changed
+
+- `ProvenanceRegistry.to_dict()` schema bumped 0.2 -> 0.3; older saved
+  registries default to `hash_mode="full"` and `cache_to_disk=None`
+  on load for backward compat.
+- `SKETCH_SAMPLES = 64` cataloged in `notes/magic_numbers.md` with
+  scale-of-validity (empirically zero collisions on 200 random 16² and
+  no known structural collisions on Laplacian inputs).
+
+### New optional-extras groups
+
+- `[mcp]`: `mcp>=0.9` for the MCP server.
+- `[jupyter]`: `ipython` for the cell magic.
+
 ## [0.2.1] - 2026-05-27
 
 Packaging-metadata-only release. No code changes.
@@ -187,6 +290,7 @@ Initial public release. Six seed modules:
   every numerical literal must be derived, a universal invariant, or
   cataloged in `notes/magic_numbers.md` with scale-of-validity.
 
+[0.3.0]: https://github.com/superninjv/holonomy_lib/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/superninjv/holonomy_lib/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/superninjv/holonomy_lib/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/superninjv/holonomy_lib/releases/tag/v0.1.0

@@ -264,7 +264,13 @@ nnsight / SAELens ride on top of for geometric/spectral mech interp.
 ### Context managers
 
 ```python
-with provenance.record(cache_tensors=False, hash_algorithm=...) as reg:
+with provenance.record(
+    cache_tensors=False,    # cache output tensors for replay / inspection
+    hash_algorithm=...,      # "blake3" / "sha256"
+    hash_mode="full",        # "full" (crypto-grade) or "sketch" (~15× faster on big tensors)
+    cache_to_disk=None,      # Path: mirror cache to .pt files; survives memory eviction
+    max_cache_size=None,     # bound the in-memory output cache; disk copy retained
+) as reg:
     out = pipeline(...)
     # reg is a ProvenanceRegistry
 ```
@@ -276,30 +282,75 @@ with provenance.record(cache_tensors=False, hash_algorithm=...) as reg:
 | `reg[hex]` | Look up a ProvenanceNode by hex |
 | `reg.where(op_id=..., op_version=...)` | Filter nodes by op |
 | `reg.ancestors(hex)` | Walk DAG upstream |
+| `reg.ancestors_with_tensors(hex)` | Ancestor subgraph paired with cached tensors |
 | `reg.parents(hex)` | Direct parents |
-| `reg.get_tensor(hex)` | Cached output (if `cache_tensors=True`) |
+| `reg.get_tensor(hex)` | Cached output (memory, then user-input cache, then disk) |
 | `reg.on_op(op_id, callback)` | TransformerLens-style observation hook |
 | `reg.substitute({hex: value})` | Context mgr: activation patching at call time |
 | `reg.replay({hex: value})` | Re-execute downstream DAG with substitution |
+| `reg.clear(delete_disk=False)` | Drop in-memory caches; optionally delete disk files |
 | `reg.to_networkx()` | Export DAG to networkx DiGraph |
 | `reg.to_dataframe()` | Export node table to pandas |
 | `reg.to_dict()` | JSON-friendly export |
+| `reg.to_mermaid()` | Mermaid flowchart string (inline JupyterLab / GitHub MD) |
+| `reg.to_graphviz()` | Graphviz DOT source |
+| `reg.to_llm_context(max_ops=20, ...)` | Compact text summary for agent prompts |
 | `reg.to_sae_dataset(op_id=None)` | Yield `(tensor, metadata)` for SAE training |
-| `reg.diff(other)` | Structural diff of two recordings |
-| `reg.save(path)` / `Registry.load(path)` | JSON persistence (no tensors) |
+| `reg.diff(other)` | Structural diff (dict form) of two recordings |
+| `reg.diff_summary(other)` | Human-readable diff: Cache hits / Drift / Only in self / Only in other |
+| `reg.save(path)` / `Registry.load(path, strict=False)` | JSON persistence (disk-cached tensors re-attach on load; op_version drift triggers `ProvenanceVersionWarning`) |
 
 ### Decorating new primitives
 
 ```python
-from holonomy_lib.provenance import with_provenance
+from holonomy_lib.provenance import with_provenance, register_provenance_class
 
 @with_provenance("holonomy_lib.module.op_name", op_version="0.1")
 def op_name(x: torch.Tensor, k: int = 3) -> torch.Tensor:
     ...
+
+# To opt a class into replay() of its methods, register it with both
+# a `_provenance_signature(self) -> dict` AND a classmethod
+# `_from_signature(cls, sig) -> instance` that inverts it:
+@register_provenance_class("MyManifold")
+class MyManifold:
+    def _provenance_signature(self):
+        return {"class": "MyManifold", "n": self.n, ...}
+
+    @classmethod
+    def _from_signature(cls, sig):
+        return cls(n=sig["n"], ...)
 ```
 
 Hex computation: `sha256(op_id || op_version || canonical(params) || ":".join(input_hexes))`
 truncated to 16 chars. Pluggable hash function (blake3 if installed, else sha256).
+Pluggable hash mode: full byte hash (default) or O(1)-bytes sketch hash.
+
+### Agent access: MCP server and Jupyter magic
+
+Optional extras for inspecting registries from outside Python:
+
+```bash
+pip install 'holonomy-lib[mcp]'      # MCP server for Claude / GPT / any MCP client
+pip install 'holonomy-lib[jupyter]'  # %record_provenance cell magic
+```
+
+The MCP server exposes `list_ops`, `where`, `node_info`, `ancestors`,
+`get_tensor_summary`, and `replay` as tools an LLM agent can call.
+Entry point: `python -m holonomy_lib.provenance.mcp`; configure the
+registry file via `HOLONOMY_PROVENANCE_REGISTRY` env var.
+
+The Jupyter magic wraps a cell in `record()` and renders the DAG
+inline:
+
+```python
+%load_ext holonomy_lib.provenance.jupyter
+
+%%record_provenance
+L = laplacian.combinatorial(A)
+U, S, Vt = truncated_svd(L, r=3)
+# _prov now holds the registry; Mermaid DAG renders below the cell.
+```
 
 ---
 

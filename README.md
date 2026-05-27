@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 613 passing](https://img.shields.io/badge/tests-613%20passing-brightgreen.svg)](#testing)
+[![tests: 659 passing](https://img.shields.io/badge/tests-659%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Twelve modules, 613
+modern ML keeps reinventing project by project. Twelve modules, 659
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -375,6 +375,26 @@ for tensor, metadata in reg.to_sae_dataset(op_id="holonomy_lib.algebra.linear.tr
 Pluggable hash function (blake3 if installed, else SHA-256). Persist
 the DAG with `reg.save(path)` / `ProvenanceRegistry.load(path)`.
 
+**Performance modes** (v0.3): `record(hash_mode="sketch")` swaps the
+byte-level content hash for an O(1)-bytes sketch (shape + dtype + 64
+strided samples + sum + std). About 15× faster than full mode on 8 MB
+tensors; crossover at ~n=256. `record(cache_to_disk=path)` mirrors the
+output cache to torch.save'd files, so memory eviction from
+`max_cache_size` doesn't lose tensors: `get_tensor()` reloads on
+demand. Both default off.
+
+**Inspection** (v0.3): `reg.to_mermaid()`, `reg.to_graphviz()` for
+visualization; `reg.diff_summary(other)` for "did my refactor preserve
+semantics" comparisons; `reg.to_llm_context()` for a compact text
+summary suitable for an agent prompt.
+
+**Agent access** (v0.3, optional extras): `pip install 'holonomy-lib[mcp]'`
+adds an MCP server (`python -m holonomy_lib.provenance.mcp`) that
+exposes the registry as agent tools for Claude, GPT, or any MCP
+client. `pip install 'holonomy-lib[jupyter]'` adds a
+`%%record_provenance` cell magic that records and renders the DAG
+inline.
+
 ---
 
 ## Testing
@@ -422,7 +442,7 @@ holonomy_lib/
 │   ├── lie/                   # SO(3) primitives, real spherical harmonics (l ≤ 4)
 │   ├── provenance/            # content-addressable hex protocol
 │   └── audit.py               # audit gate: no magic numbers
-├── tests/                     # 613 tests across all modules
+├── tests/                     # 659 tests across all modules
 │   └── benchmarks/            # device-agnostic timing harness
 ├── notes/
 │   ├── magic_numbers.md       # cataloged constants with scale-of-validity
@@ -439,7 +459,24 @@ holonomy_lib/
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full release history.
 
-**v0.2.0** (current): six new modules and several extensions since
+**v0.3.0** (current): provenance module sweep.
+
+- Performance: opt-in sketch hashing (15× faster on 8 MB tensors via
+  shape + dtype + 64 strided samples + sum + std) and on-disk tensor
+  cache (memory eviction retains the disk copy; `get_tensor()`
+  reloads on demand).
+- Robustness: `replay()` now works for class-method calls and
+  tuple-of-tensor inputs (FixedRankPoint = (U, S, Vt)). Op-version
+  drift detector on `load()` emits `ProvenanceVersionWarning` with
+  optional `strict=True` escalation.
+- Visualization: `to_mermaid()`, `to_graphviz()`, `diff_summary(other)`
+  with Cache hits / Drift / Only-in-self / Only-in-other categories,
+  `ancestors_with_tensors(hex)` convenience.
+- Agent access: `to_llm_context()` text summary; MCP server
+  (`pip install 'holonomy-lib[mcp]'`); Jupyter `%record_provenance`
+  cell magic (`pip install 'holonomy-lib[jupyter]'`).
+
+**v0.2.0**: six new modules and several extensions since
 the v0.1.0 seed.
 
 - New modules: `optimization` (RiemannianSGD), `simplicial`
@@ -462,7 +499,7 @@ the v0.1.0 seed.
 `tensor_calculus`, `spectral` (4 Laplacians + eigenmaps),
 `discrete_geometry` (Ollivier-Ricci + flow + surgery), `provenance`.
 
-**Frontiers** (v0.3+): Wigner-D matrices (real basis) to complete the
+**Frontiers** (v0.4+): Wigner-D matrices (real basis) to complete the
 SO(3) equivariance story so spherical-harmonic features mix
 correctly under rotation; optimal transport extensions
 (Gromov-Wasserstein for metric-measure-space comparison, Sinkhorn

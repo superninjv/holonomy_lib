@@ -88,6 +88,26 @@ HEX_PREFIX_LEN: int = 16
 # elements) is bounded but non-zero — full mode remains the default.
 SKETCH_SAMPLES: int = 64
 
+# Display-cap constants for human-readable text output. All cataloged
+# as 🔬 experimentally-set in notes/magic_numbers.md.
+#
+# Default cap on the number of per-op-id rows that to_llm_context()
+# lists before collapsing the rest into "...and N more". 20 keeps
+# the output bounded for huge registries while staying useful for
+# typical research-scale chains.
+LLM_CONTEXT_MAX_OPS_DEFAULT: int = 20
+
+# Preview limit for roots / leaves in to_llm_context() and for the
+# per-op-id hex lists in diff_summary(). Five is enough to identify
+# pattern; more is noise.
+DISPLAY_PREVIEW_COUNT: int = 5
+
+# Detail-line cap in load()'s ProvenanceVersionWarning. Caps both
+# the drifted-nodes list and the unknown-op_ids list, so a huge
+# registry doesn't produce an unreadable warning. Larger than the
+# preview cap because drift is more actionable per entry.
+LOAD_DRIFT_DETAIL_LIMIT: int = 10
+
 # Hash mode literal — sketch trades crypto-grade for speed.
 HashMode = Literal["full", "sketch"]
 
@@ -580,7 +600,7 @@ class ProvenanceRegistry:
 
     def to_llm_context(
         self,
-        max_ops: int = 20,
+        max_ops: int = LLM_CONTEXT_MAX_OPS_DEFAULT,
         show_shapes: bool = True,
         show_params: bool = False,
     ) -> str:
@@ -669,12 +689,18 @@ class ProvenanceRegistry:
             if n.hex not in consumed:
                 leaves.append(n.hex)
         if roots:
-            shown_roots = roots[:5]
-            extra = "" if len(roots) <= 5 else f", ...({len(roots) - 5} more)"
+            shown_roots = roots[:DISPLAY_PREVIEW_COUNT]
+            extra = (
+                "" if len(roots) <= DISPLAY_PREVIEW_COUNT
+                else f", ...({len(roots) - DISPLAY_PREVIEW_COUNT} more)"
+            )
             lines.append(f"Roots:  {', '.join(shown_roots)}{extra}")
         if leaves:
-            shown_leaves = leaves[:5]
-            extra = "" if len(leaves) <= 5 else f", ...({len(leaves) - 5} more)"
+            shown_leaves = leaves[:DISPLAY_PREVIEW_COUNT]
+            extra = (
+                "" if len(leaves) <= DISPLAY_PREVIEW_COUNT
+                else f", ...({len(leaves) - DISPLAY_PREVIEW_COUNT} more)"
+            )
             lines.append(f"Leaves: {', '.join(shown_leaves)}{extra}")
 
         return "\n".join(lines)
@@ -863,10 +889,12 @@ class ProvenanceRegistry:
                 self_h = d["only_in_self"][op_id]
                 other_h = d["only_in_other"][op_id]
                 lines.append(
-                    f"  {op_id}: self has {self_h[:3]}"
-                    f"{'...' if len(self_h) > 3 else ''}, "
-                    f"other has {other_h[:3]}"
-                    f"{'...' if len(other_h) > 3 else ''}"
+                    f"  {op_id}: self has "
+                    f"{self_h[:DISPLAY_PREVIEW_COUNT]}"
+                    f"{'...' if len(self_h) > DISPLAY_PREVIEW_COUNT else ''}, "
+                    f"other has "
+                    f"{other_h[:DISPLAY_PREVIEW_COUNT]}"
+                    f"{'...' if len(other_h) > DISPLAY_PREVIEW_COUNT else ''}"
                 )
 
         if new_ops:
@@ -1170,8 +1198,8 @@ class ProvenanceRegistry:
                     f"that differ from the currently-installed ops:"
                 )
                 # Cap the per-message detail so a huge registry doesn't
-                # produce an unreadable warning. Show first 10 entries.
-                visible = drifted[:10]
+                # produce an unreadable warning.
+                visible = drifted[:LOAD_DRIFT_DETAIL_LIMIT]
                 for hex_id, op_id, recorded, current in visible:
                     lines.append(
                         f"  {hex_id} {op_id} recorded={recorded!r} "
@@ -1187,7 +1215,7 @@ class ProvenanceRegistry:
                     f"currently registered (the module may not have "
                     f"been imported in this process):"
                 )
-                visible = unknown[:10]
+                visible = unknown[:LOAD_DRIFT_DETAIL_LIMIT]
                 for hex_id, op_id, recorded in visible:
                     lines.append(f"  {hex_id} {op_id} recorded={recorded!r}")
                 if len(unknown) > len(visible):
