@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 659 passing](https://img.shields.io/badge/tests-659%20passing-brightgreen.svg)](#testing)
+[![tests: 702 passing](https://img.shields.io/badge/tests-702%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Twelve modules, 659
+modern ML keeps reinventing project by project. Twelve modules, 702
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -442,7 +442,7 @@ holonomy_lib/
 │   ├── lie/                   # SO(3) primitives, real spherical harmonics (l ≤ 4)
 │   ├── provenance/            # content-addressable hex protocol
 │   └── audit.py               # audit gate: no magic numbers
-├── tests/                     # 659 tests across all modules
+├── tests/                     # 702 tests across all modules
 │   └── benchmarks/            # device-agnostic timing harness
 ├── notes/
 │   ├── magic_numbers.md       # cataloged constants with scale-of-validity
@@ -459,7 +459,28 @@ holonomy_lib/
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full release history.
 
-**v0.3.0** (current): provenance module sweep.
+**v0.4.0** (current): provenance agent-API redesign.
+
+- New `holonomy_lib.provenance.agent` module holds the canonical
+  agent tool inventory. Each tool is a Python function decorated
+  with `@agent_tool`; `to_anthropic_schema()` / `to_openai_schema()`
+  emit native LLM tool-use JSON.
+- Inspection tools (each callable as a native LLM tool, an MCP tool,
+  or directly from Python): `tensor_slice` (numpy-syntax indexing),
+  `tensor_per_batch_summary`, `tensor_eigenvalues`,
+  `tensor_singular_values`, `tensor_norm`, `tensor_compare`,
+  `op_docstring`. Replaces v0.3.0's global-stats-only
+  `get_tensor_summary`, which couldn't see per-batch anomalies.
+- `replay_with(target_hex, recipe)` substitution DSL: kinds are
+  `zeros_like`, `from_hex`, `perturb` (Gaussian noise with required
+  seed), `scale`, `swap_batch`, `literal`. Replaces v0.3.0's
+  zero-fill-only MCP `replay`.
+- `mcp.py` refactored to pure transport: iterates the agent
+  inventory and pre-binds the registry argument. Same v0.3 nav
+  tools by name (back-compat); the new inspection + replay_with
+  tools land alongside.
+
+**v0.3.0**: provenance module sweep.
 
 - Performance: opt-in sketch hashing (15× faster on 8 MB tensors via
   shape + dtype + 64 strided samples + sum + std) and on-disk tensor

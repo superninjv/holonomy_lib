@@ -4,6 +4,114 @@ All notable changes to `holonomy_lib` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org).
 
+## [0.4.0] - 2026-05-27
+
+Provenance agent-API redesign. The v0.3.0 MCP server was structurally
+limited: agents could navigate the DAG but couldn't inspect tensor
+content beyond global mean/std/min/max, slice tensors, run linear
+algebra on cached values, or express anything other than zero-fill
+substitutions. A driven validation pass against a non-trivial
+"find the anomalous batch" question hit 7 falls-down before
+dropping back to Python. v0.4 reshapes the surface around what
+agents actually need.
+
+The core move: a new `holonomy_lib.provenance.agent` module holds
+the canonical tool inventory. Each tool is a Python function
+decorated with `@agent_tool`. The module emits native LLM tool-use
+schemas (`to_anthropic_schema()`, `to_openai_schema()`); the
+existing `mcp.py` becomes a thin transport adapter that iterates
+the same registered tools. Three call sites (native tool-use, MCP,
+direct Python) all hit the same underlying functions.
+
+### Added: agent module
+
+- `@agent_tool(description=, name=)` decorator. Inspects signatures
+  + docstrings + resolved type hints (via `typing.get_type_hints`,
+  so `from __future__ import annotations` modules work transparently);
+  registers a `ToolSpec` in module-level `_AGENT_TOOLS`.
+- `to_anthropic_schema()` / `to_openai_schema()`. Provider-specific
+  schema dumpers. Both share the same JSON-schema mapping (str /
+  int / float / bool / list / dict / Optional). The `registry:
+  ProvenanceRegistry` parameter is automatically stripped from the
+  LLM-facing schema; transport adapters pre-bind it.
+- `list_tools()` / `get_tool(name)`. Inventory helpers.
+
+### Added: inspection tools (the v0.3.0 falls-down list, addressed)
+
+- `tensor_slice(hex_id, expr)`: numpy-syntax slicing of a cached
+  tensor. Returns raw values inline if the slice has at most
+  `TENSOR_SLICE_INLINE_LIMIT = 256` elements; otherwise returns
+  shape + stats summary. Index parser accepts only digits, '-',
+  ':', ',' (injection-safe).
+- `tensor_per_batch_summary(hex_id)`: per-batch mean/std/min/max.
+  Fixes the v0.3.0 "global stats hide anomalies" wall: the
+  revalidation drive confirms it picks the anomalous batch in a
+  fixture where v0.3.0's get_tensor_summary lumped everything
+  together.
+- `tensor_eigenvalues(hex_id, k)`: top-k eigvalsh per batch. Default
+  k = `TENSOR_SPECTRAL_DEFAULT_K = 10`.
+- `tensor_singular_values(hex_id, k)`: top-k SVD per batch.
+- `tensor_norm(hex_id, order)`: Frobenius or spectral norm.
+  Per-batch for batched inputs.
+- `tensor_compare(hex_a, hex_b, metric)`: pairwise comparison.
+  Metrics: max_abs / frobenius / cosine.
+- `op_docstring(op_id)`: returns the registered op's signature +
+  docstring + op_version. Fixes the v0.3.0 "discovery is weak" wall.
+
+### Added: replay recipe DSL
+
+- `replay_with(target_hex, recipe)` replaces the v0.3.0 MCP `replay`
+  tool's zero-fill-only substitution. The recipe is a dict with a
+  `kind` field; supported kinds:
+  - `zeros_like`: same shape/dtype, all zeros.
+  - `from_hex` + `hex`: substitute with another cached tensor.
+  - `perturb` + `noise_std` + `seed`: original + Gaussian noise.
+    Seed is required; no implicit defaults.
+  - `scale` + `factor`: multiply original by a scalar.
+  - `swap_batch` + `i` + `j`: swap two batch elements along dim 0.
+  - `literal` + `values`: explicit nested-list values (small tensors
+    only; JSON arrays balloon agent prompts).
+- Internal `_build_substitute()` helper is testable in isolation;
+  `replay_with` is the agent-facing wrapper that builds + replays
+  + summarizes new outputs.
+
+### Changed
+
+- `mcp.py` refactored to be transport-only. Drops ~80 lines of
+  inline tool definitions; iterates over `agent.list_tools()` and
+  pre-binds the registry argument. Resolves stringified type hints
+  before pydantic / FastMCP sees them (the old inline approach
+  worked only because pydantic resolved each function's annotations
+  in the local scope where it was defined).
+- The v0.3.0 MCP nav tools (`list_ops`, `where`, `node_info`,
+  `ancestors`, `get_tensor_summary`) are preserved by name and
+  signature for backward compat with existing MCP clients; they
+  just live in `agent.py` now instead of `mcp.py`.
+- `replay` (zero-fill via shape spec) is dropped from the MCP
+  surface in favor of `replay_with` (`{"kind": "zeros_like"}` is
+  equivalent for the v0.3 use case).
+- The `hex` parameter is renamed to `hex_id` in agent tools to
+  avoid shadowing Python's `hex()` builtin AND match the v0.3
+  convention.
+
+### Cataloged constants
+
+- `TENSOR_SLICE_INLINE_LIMIT = 256` (🔬 experimentally-set,
+  agent.py).
+- `TENSOR_SPECTRAL_DEFAULT_K = 10` (🔬).
+- `PYTHON_SLICE_ARITY = 3` (✅ derived; Python language constant).
+
+### Tests
+
+`tests/provenance/test_agent.py` adds 52 new tests covering the
+decorator + schema generators (Phase 1), every inspection tool
+(Phase 2), and every recipe kind + end-to-end replay roundtrip
+(Phase 3). `tests/provenance/test_mcp.py` updated to assert the
+v0.3 nav tools still register AND the new v0.4 inspection tools
+land.
+
+Tests: 659 -> 702 passing. Audit: 0 undocumented, 28 cataloged.
+
 ## [0.3.0] - 2026-05-27
 
 Provenance module sweep: performance, robustness, visualization, and
@@ -290,6 +398,7 @@ Initial public release. Six seed modules:
   every numerical literal must be derived, a universal invariant, or
   cataloged in `notes/magic_numbers.md` with scale-of-validity.
 
+[0.4.0]: https://github.com/superninjv/holonomy_lib/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/superninjv/holonomy_lib/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/superninjv/holonomy_lib/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/superninjv/holonomy_lib/compare/v0.1.0...v0.2.0
