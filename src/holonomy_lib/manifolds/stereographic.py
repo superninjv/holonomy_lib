@@ -101,6 +101,21 @@ def _safe_atanhc(t: torch.Tensor) -> torch.Tensor:
     Domain: `|t| < 1` (arctanh's natural domain). Used in `log_0` for
     κ < 0. Caller is responsible for keeping points strictly inside
     the Poincaré ball so `√|κ|·‖y‖ < 1`.
+
+    **Substitute-value note** (deliberate inconsistency with the
+    other `_safe_*c` helpers in this module): the masked-out
+    `t_safe` is `0.5`, NOT `1.0` as in `_safe_tanc` / `_safe_tanhc` /
+    `_safe_atanc` / `_safe_sinhc` etc. The reason: `arctanh(1.0) = ∞`
+    (the function diverges at the domain boundary), so substituting
+    `1.0` would produce a non-finite *value* in the formula branch.
+    `torch.where`'s gradient-masking by the boolean condition
+    multiplies the formula-branch gradient by `(1 − cond)`; an
+    infinite gradient times the boolean-as-int mask gives `∞ · 0 =
+    NaN` and propagates. `0.5` is the smallest "round" value
+    strictly inside `(-1, 1)` that keeps both the value and
+    derivative of `arctanh(0.5)/0.5 ≈ 1.099 / 1.099`-derivative
+    finite, so the masking works cleanly. Any value in
+    `(-1, 1) \\ {0}` would do; we pick `0.5` for definiteness.
     """
     is_positive = t > 0
     t_safe = torch.where(is_positive, t, torch.ones_like(t) * 0.5)

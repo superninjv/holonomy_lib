@@ -4,7 +4,91 @@ All notable changes to `holonomy_lib` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [0.5.0] - 2026-05-28
+
+The hyperbolic / pseudo-Riemannian / mixed-curvature manifold pass.
+This release adds **five new manifold classes**, the
+`holonomy_lib.hyperbolic` module of manifold-aware graph
+operations, and a sweep of autograd-stability + correctness fixes
+along the way. Test count went from 707 (v0.4.1) to **1143**.
+
+### Summary at a glance
+
+| New manifold | Geometry | Status |
+|---|---|---|
+| `LorentzManifold` | Hyperbolic — hyperboloid model `H^n_k` at curvature `k < 0` | Standard, fully validated |
+| `KappaStereographicManifold` | Parametric κ ∈ R, spherical / Euclidean / hyperbolic interpolation. **Learnable κ with dynamic sign dispatch** (κ may cross 0 during training) | Standard model (Bachmann et al. 2020); learnable-κ extension |
+| `LorentzianManifold` | Pseudo-Riemannian (1, n-1) signature Minkowski spacetime with causal structure + curvature tensors | Standard (MTW; O'Neill) |
+| `ProductManifold` | Riemannian product of any of the above (mixed-curvature embedding) | Standard (Gu-Sala 2019; Skopek 2019) |
+| `HeterogeneousKappaManifold` | Per-point κ; configurable pair-κ combiner | Closest prior art: GraphMoRE (AAAI 2025); continuous per-point κ is our research |
+
+New module **`holonomy_lib.hyperbolic`** with four manifold-agnostic
+graph primitives that compose with the above:
+
+- `manifold_aware_inner(x, y, manifold)` — Riemannian inner via the
+  tangent at origin
+- `frechet_mean(points, manifold, weights, ...)` — Karcher iteration
+- `hyperbolic_laplacian_eigenmaps(adjacency, manifold, ...)` — RSGD
+  embedding under `Σ A_ij d_M(Y_i, Y_j)²`
+- `hyperbolic_heat_kernel(t, distances, manifold, ...)` —
+  dimension-dispatched heat kernel: Gaussian (n=1),
+  Davies-Mandouvalos closed forms (n=3, 5), Gauss-Legendre quadrature
+  on the integral form (n=2), spectral-shift-corrected recursion
+  for all higher odd/even n
+
+### Major correctness work along the way
+
+- **Heat-kernel recursion bug found and fixed.** The
+  `k^{n+2} = -(2π sinh r)^{-1} · ∂_r k^n` recursion that
+  appears in some references is **missing a spectral-shift factor**.
+  Correct form: `k^{n+2} = -exp(-n·t) / (2π·sinh r) · ∂_r k^n`.
+  Caught by independent PDE-residual validation
+  (`notes/validation/heat_kernel_findings.md`); residuals dropped
+  from O(1) to FD noise floor.
+- **`hyperbolic_laplacian_eigenmaps` silent NaN on dense graphs**
+  (n_edges > ~500) fixed via per-node degree normalization
+  (random-walk-Laplacian gradient) + fail-loud `RuntimeError` on
+  divergence.
+- **Autograd-finite gradients at every boundary input**
+  (`d(x, x) = 0`, `log(x, x) = 0`, `exp(x, 0) = x`,
+  `parallel_transport(x, x, v) = v`). Established `_safe_sqrt` /
+  `_safe_sinhc` / `_safe_arcsinhc` idiom that confines boundary-
+  singular ops to the masked-out branch of `torch.where`. Reused
+  across all new manifolds.
+- **Closed-form `n=5` heat kernel** for precision push — `~3
+  orders of magnitude` tighter PDE residual than the
+  autograd-recursion path; cascades to `n=7, 9, ...`.
+- **Even n ≥ 4 heat kernel** now works via the corrected recursion
+  seeded from the n=2 integral form (was previously raising
+  `NotImplementedError`).
+
+### Fixed (pre-release sweep)
+
+- `LorentzianManifold.inner` added (was missing — would crash any
+  manifold-generic primitive that took it). Returns signed Minkowski
+  form for API parity; docstring explains the indefinite-metric
+  semantics.
+- `HeterogeneousKappaManifold.random_point` added (was missing —
+  would crash `hyperbolic_laplacian_eigenmaps`).
+- `LorentzianManifold.metric_tensor` `@with_provenance`-decorated
+  (was the only undecorated op in that class).
+- `_safe_atanhc` substitute-value docstring clarified: `0.5` is
+  the **correct** choice (not the `1.0` used by other `_safe_*`
+  helpers), because `arctanh(1) = ∞` blows up the formula branch's
+  gradient and `torch.where`'s mask can't recover `0 · ∞ = NaN`.
+
+### Notes / docs
+
+- `notes/validation/` — five new validation reports:
+  `heat_kernel_validation.py` + `heat_kernel_results.md` +
+  `heat_kernel_findings.md`; `frechet_spherical_validation.py` +
+  `frechet_spherical_results.md`; `autograd_safe_vs_geoopt.py` +
+  `autograd_safe_results.md`; `cross_manifold_validation.py` +
+  `cross_manifold_results.md`; `findings_summary.md`.
+- `notes/research_open_questions.md` — explicit posture on what's
+  standard prior art vs. our research.
+- `tests/benchmarks/bench_hyperbolic.py` — wall-clock benchmarks
+  for `hyperbolic_laplacian_eigenmaps` and `frechet_mean`.
 
 ### Added (Stage 4 follow-ups)
 

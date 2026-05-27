@@ -251,3 +251,39 @@ class TestProvenance:
         sig = het._provenance_signature()
         het2 = HeterogeneousKappaManifold._from_signature(sig)
         assert het2._combiner_name == "arithmetic_mean"
+
+
+# --------------------------------------------------------------------
+# random_point + interop
+# --------------------------------------------------------------------
+
+
+class TestRandomPoint:
+    def test_random_point_default_kappa(self):
+        """When kappa is None, defaults to small standard-normal."""
+        het = HeterogeneousKappaManifold(n=4, dtype=torch.float64)
+        x = het.random_point(batch_size=5, generator=_seed(200))
+        assert x.shape == (5, 4)
+        assert torch.isfinite(x).all()
+
+    def test_random_point_explicit_kappa(self):
+        """kappa argument is honored when provided."""
+        het = HeterogeneousKappaManifold(n=4, dtype=torch.float64)
+        kappa = torch.tensor([-1.0, -0.5, +0.5, -1.0, +1.0],
+                              dtype=torch.float64)
+        x = het.random_point(batch_size=5, kappa=kappa, generator=_seed(201))
+        assert x.shape == (5, 4)
+        # All on manifold under their respective κ
+        assert het.is_on_manifold(x, kappa).all()
+
+    def test_random_point_rejects_mismatched_kappa(self):
+        het = HeterogeneousKappaManifold(n=3, dtype=torch.float64)
+        with pytest.raises(ValueError, match="shape"):
+            het.random_point(
+                batch_size=5, kappa=torch.tensor([1.0, 2.0]),
+            )
+
+    def test_random_point_rejects_negative_batch(self):
+        het = HeterogeneousKappaManifold(n=3, dtype=torch.float64)
+        with pytest.raises(ValueError, match="batch_size"):
+            het.random_point(batch_size=-1)

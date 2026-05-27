@@ -269,6 +269,46 @@ class HeterogeneousKappaManifold:
         return torch.zeros(batch_size, self.n,
                            device=self.device, dtype=self.dtype)
 
+    def random_point(
+        self,
+        batch_size: int = 1,
+        kappa: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
+    ) -> torch.Tensor:
+        """Sample `batch_size` random points on the manifold.
+
+        For a heterogeneous-κ manifold the per-point curvature is
+        the user's modeling choice, so this method requires a
+        `kappa` tensor of shape `(batch_size,)` (or `(batch_size, 1)`
+        broadcastable). If `kappa` is omitted, we default to a
+        small standard-normal κ per point — useful for tests but
+        not a substantively-motivated prior.
+
+        The standard sampling pattern: draw a Euclidean tangent
+        `v ~ N(0, σ² I)` and apply `exp_0(v, κ)`. This stays
+        inside the manifold's domain when `‖v‖` is small enough
+        (the typical regime for tangent-at-origin training init).
+        """
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be >= 0, got {batch_size}")
+        # Default κ: per-point standard normal scaled by 0.5
+        # (gives a mix of mild spherical / hyperbolic for tests).
+        if kappa is None:
+            kappa = 0.5 * torch.randn(
+                batch_size, generator=generator,
+                device=self.device, dtype=self.dtype,
+            )
+        elif kappa.shape != (batch_size,):
+            raise ValueError(
+                f"kappa shape {tuple(kappa.shape)} must be ({batch_size},)"
+            )
+        # Small tangent scale so spherical samples stay in-domain.
+        v = 0.5 * 0.5 * torch.randn(
+            batch_size, self.n, generator=generator,
+            device=self.device, dtype=self.dtype,
+        )
+        return self.exp_0(v, kappa)
+
     def is_on_manifold(
         self, x: torch.Tensor, kappa: torch.Tensor,
         atol: float = 1e-9,

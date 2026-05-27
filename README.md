@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 1136 passing](https://img.shields.io/badge/tests-1136%20passing-brightgreen.svg)](#testing)
+[![tests: 1143 passing](https://img.shields.io/badge/tests-1143%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Twelve modules, 1136
+modern ML keeps reinventing project by project. Twelve modules, 1143
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -83,6 +83,11 @@ properties this library guarantees:
 | Content-addressable provenance | ✓ | – | – | – | – | – |
 | Audit / no-magic-numbers | ✓ | – | – | – | – | – |
 | Information geometry (Bregman + KL) | ✓ | – | ✓ | – | – | – |
+| Differentiable hyperbolic heat kernel (all `n`) | ✓ | – | – | – | – | – |
+| Pseudo-Riemannian (Lorentzian) manifold | ✓ | – | – | – | – | – |
+| Per-point κ (heterogeneous curvature) | ✓ | – | – | – | – | – |
+| Mixed-curvature product manifold | ✓ | – | – | – | – | – |
+| Learnable κ that can cross 0 mid-training | ✓ | – | – | – | – | – |
 
 ---
 

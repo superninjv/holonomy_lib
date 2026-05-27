@@ -151,6 +151,39 @@ class LorentzianManifold:
         return (u[..., 1:] * v[..., 1:]).sum(dim=-1) - u[..., 0] * v[..., 0]
 
     @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.inner",
+        op_version="0.1",
+    )
+    def inner(
+        self, x: torch.Tensor, u: torch.Tensor, v: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pseudo-Riemannian inner product `⟨u, v⟩_x = ⟨u, v⟩_M`.
+
+        **Signed**: the Minkowski form restricted to ambient vectors,
+        with the (1, n-1) signature. NOT positive-definite — `inner(x,
+        v, v)` can be any sign depending on `v`'s causal type. This
+        differs from the conventional Riemannian `inner` (which is
+        always positive); for `LorentzianManifold` the indefinite
+        metric IS the geometry.
+
+        Provided primarily for API uniformity with the other manifold
+        classes — so `manifold_aware_inner`, `ProductManifold.inner`
+        and similar manifold-generic primitives don't crash when
+        passed a `LorentzianManifold`. Callers that compute Riemannian
+        norms via `sqrt(inner(...))` should be aware that the result
+        is imaginary on timelike inputs; prefer `proper_time` /
+        `proper_distance` for type-appropriate magnitudes.
+
+        Args:
+          x: base point (unused; flat-space metric is point-independent).
+          u, v: ambient `(B, n)` vectors.
+        Returns:
+          `(B,)` signed inner products.
+        """
+        del x
+        return self.minkowski_inner(u, v)
+
+    @with_provenance(
         "holonomy_lib.manifolds.LorentzianManifold.norm_sq",
         op_version="0.1",
     )
@@ -338,6 +371,10 @@ class LorentzianManifold:
     #   R_μν          (n, n)    Ricci tensor
     #   R             ( )       Ricci scalar (scalar curvature)
 
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.metric_tensor",
+        op_version="0.1",
+    )
     def metric_tensor(self, x: torch.Tensor) -> torch.Tensor:
         """Minkowski metric `g_μν = diag(-1, +1, +1, …, +1)`.
 

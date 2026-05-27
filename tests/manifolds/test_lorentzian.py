@@ -443,3 +443,65 @@ class TestCurvatureTensors:
         ip_metric = torch.einsum("bij,bi,bj->b", g, u, v)
         torch.testing.assert_close(ip_direct, ip_metric,
                                     atol=1e-12, rtol=0)
+
+
+# --------------------------------------------------------------------
+# `inner` for API uniformity (so manifold-generic primitives don't
+# crash when passed a LorentzianManifold). The metric is INDEFINITE
+# (signed Minkowski form) — `inner(x, v, v)` can be any sign.
+# --------------------------------------------------------------------
+
+
+class TestInnerForApiUniformity:
+    def test_inner_returns_signed_minkowski(self):
+        """`inner(x, u, v)` = ⟨u, v⟩_M, signed (no positivity)."""
+        mfd = _make_manifold(n=4)
+        x = mfd.random_point(batch_size=3, generator=_seed(80))
+        u = torch.randn(3, 4, dtype=torch.float64, generator=_seed(81))
+        v = torch.randn(3, 4, dtype=torch.float64, generator=_seed(82))
+        out = mfd.inner(x, u, v)
+        expected = mfd.minkowski_inner(u, v)
+        torch.testing.assert_close(out, expected, atol=1e-12, rtol=0)
+
+    def test_inner_self_can_be_signed(self):
+        """A timelike v has ⟨v, v⟩_M < 0; a spacelike v has > 0."""
+        mfd = _make_manifold(n=4)
+        x = mfd.origin(batch_size=1)
+        # Pure timelike (Δt = 2, no spatial)
+        v_time = torch.tensor([[2.0, 0.0, 0.0, 0.0]], dtype=torch.float64)
+        assert mfd.inner(x, v_time, v_time).item() < 0
+        # Pure spacelike (no Δt, Δx = 1)
+        v_space = torch.tensor([[0.0, 1.0, 0.0, 0.0]], dtype=torch.float64)
+        assert mfd.inner(x, v_space, v_space).item() > 0
+
+
+# --------------------------------------------------------------------
+# Interop: LorentzianManifold as a component of ProductManifold
+# --------------------------------------------------------------------
+
+
+def test_lorentzian_in_product_manifold():
+    """ProductManifold mixes Lorentzian (pseudo-Riemannian, indefinite)
+    with a Riemannian manifold. ProductManifold.inner sums per-component
+    contributions; the Lorentzian piece contributes a *signed* term."""
+    from holonomy_lib.manifolds import (
+        KappaStereographicManifold, ProductManifold,
+    )
+    mfd = ProductManifold([
+        KappaStereographicManifold(n=2, kappa=-1.0, dtype=torch.float64),
+        LorentzianManifold(n=2, dtype=torch.float64),
+    ])
+    x = mfd.random_point(batch_size=3, generator=_seed(90))
+    y = mfd.random_point(batch_size=3, generator=_seed(91))
+    # Distance is well-defined: Pythagorean over Riemannian parts +
+    # the Lorentzian piece contributes via its (signed) inner. NB:
+    # the Pythagorean composition assumes positive d_i² per component,
+    # but `LorentzianManifold` doesn't define `distance` — so this
+    # call would only succeed if it does. Let's just verify the inner
+    # composition works.
+    u = torch.randn(3, mfd.ambient_dim, dtype=torch.float64,
+                    generator=_seed(92))
+    v = torch.randn(3, mfd.ambient_dim, dtype=torch.float64,
+                    generator=_seed(93))
+    out = mfd.inner(x, u, v)
+    assert torch.isfinite(out).all()
