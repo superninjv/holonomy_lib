@@ -113,11 +113,20 @@ def test_curvature_scaling_n3():
 
 
 def test_recursion_identity_n3_to_n5():
-    """Numerical check: k^5_t(d) = -(2π sinh d)^{-1} · ∂_d k^3_t(d).
+    """Numerical check of the correct spectral-shifted recursion:
 
-    Use a central finite difference on `k^3` to approximate the
-    derivative; compare to the result from the autograd-recursion
-    path used internally for n=5.
+        k^5_t(d) = -exp(-3·t) / (2π sinh d) · ∂_d k^3_t(d)
+
+    where the `exp(-3·t)` factor is the spectral-shift correction
+    (the heat-kernel spectral bottom on `H^n` is `((n-1)/2)²`; going
+    from n=3 to n=5 shifts by 4-1 = 3, so the recursion picks up
+    `exp(-3·t)`).
+
+    The earlier version of this test verified the *uncorrected*
+    `k^5 = -1/(2π sinh r) · ∂_r k^3` identity — which is what our
+    code computed — but that quantity is NOT the actual H^5 heat
+    kernel. The omission was caught by the heat-equation residual
+    validation (`notes/validation/heat_kernel_results.md`).
     """
     mfd_3 = LorentzManifold(n=3)
     mfd_5 = LorentzManifold(n=5)
@@ -127,10 +136,69 @@ def test_recursion_identity_n3_to_n5():
     k_plus = hyperbolic_heat_kernel(t, d + eps, mfd_3)
     k_minus = hyperbolic_heat_kernel(t, d - eps, mfd_3)
     fd = (k_plus - k_minus) / (2.0 * eps)
-    expected_n5 = -fd / (2.0 * math.pi * torch.sinh(d))
+    expected_n5 = (
+        -torch.exp(-3.0 * t) * fd / (2.0 * math.pi * torch.sinh(d))
+    )
     actual_n5 = hyperbolic_heat_kernel(t, d, mfd_5)
-    # Finite differences are O(eps²) accurate; 1e-6 absolute is fine.
     torch.testing.assert_close(actual_n5, expected_n5, atol=1e-6, rtol=1e-6)
+
+
+def test_recursion_identity_n5_to_n7():
+    """Same correct recursion at the next step: `k^7 = -exp(-5·t) ·
+    (2π sinh d)^{-1} · ∂_d k^5`. Catches any further off-by-shift
+    errors in the iteration."""
+    mfd_5 = LorentzManifold(n=5)
+    mfd_7 = LorentzManifold(n=7)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.tensor([0.5, 1.0, 1.5], dtype=torch.float64)
+    eps = 1e-5
+    k_plus = hyperbolic_heat_kernel(t, d + eps, mfd_5)
+    k_minus = hyperbolic_heat_kernel(t, d - eps, mfd_5)
+    fd = (k_plus - k_minus) / (2.0 * eps)
+    expected_n7 = (
+        -torch.exp(-5.0 * t) * fd / (2.0 * math.pi * torch.sinh(d))
+    )
+    actual_n7 = hyperbolic_heat_kernel(t, d, mfd_7)
+    torch.testing.assert_close(actual_n7, expected_n7, atol=1e-6, rtol=1e-6)
+
+
+def test_heat_equation_residual_n5():
+    """Strong validation: k^5_t(d) satisfies the radial heat equation
+    on H^5 to finite-difference noise floor (~1e-5). This is the
+    independent check that caught the earlier missing spectral-shift
+    factor — see `notes/validation/heat_kernel_results.md`."""
+    mfd = LorentzManifold(n=5)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    r = torch.tensor(1.0, dtype=torch.float64)
+    dt = 1e-5
+    dr = 1e-5
+    k_plus_t = hyperbolic_heat_kernel(t + dt, r, mfd).item()
+    k_minus_t = hyperbolic_heat_kernel(t - dt, r, mfd).item()
+    k_0 = hyperbolic_heat_kernel(t, r, mfd).item()
+    k_plus_r = hyperbolic_heat_kernel(t, r + dr, mfd).item()
+    k_minus_r = hyperbolic_heat_kernel(t, r - dr, mfd).item()
+    dk_dt = (k_plus_t - k_minus_t) / (2.0 * dt)
+    dk_dr = (k_plus_r - k_minus_r) / (2.0 * dr)
+    d2k_dr2 = (k_plus_r - 2.0 * k_0 + k_minus_r) / (dr * dr)
+    coth_r = math.cosh(r.item()) / math.sinh(r.item())
+    lap_k = d2k_dr2 + 4.0 * coth_r * dk_dr   # n - 1 = 4 for n=5
+    residual = abs(dk_dt - lap_k) / max(abs(dk_dt), abs(lap_k), 1e-300)
+    assert residual < 1e-4, (
+        f"heat-equation residual at (n=5, t=0.5, r=1.0): {residual:.4e}"
+    )
+
+
+def test_even_n_not_implemented():
+    """For now we raise on even n >= 4. The previous code path was
+    mathematically wrong (failed the heat-equation residual check)
+    and a correct even-n recursion needs a separate implementation."""
+    import pytest
+
+    mfd = LorentzManifold(n=4)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.tensor([0.5, 1.0], dtype=torch.float64)
+    with pytest.raises(NotImplementedError, match="even n >= 4"):
+        hyperbolic_heat_kernel(t, d, mfd)
 
 
 # --------------------------------------------------------------------

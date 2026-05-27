@@ -6,6 +6,38 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed (validation pass — major math bug)
+
+- **`hyperbolic_heat_kernel` produced WRONG values for n ≥ 5.** Caught
+  by the heat-equation residual validation
+  (`notes/validation/heat_kernel_validation.py`). The recursion
+  `k^{n+2} = -(2π sinh r)^{-1} · ∂_r k^n` that we (and apparently
+  some references) used is missing a spectral-shift factor:
+  the correct form is
+
+      k^{n+2}(t, r) = -exp(-n·t) / (2π·sinh r) · ∂_r k^n(t, r),
+
+  where `exp(-n·t)` accounts for the shift in the spectral-bottom
+  decay between dimensions (`((n+1)/2)² − ((n-1)/2)² = n`). Without
+  this factor, the function we computed for n=5 had spectral-bottom
+  `exp(-t)` (inherited from n=3) instead of the correct `exp(-4t)`,
+  so it didn't solve the H^5 heat equation. Heat-equation residual
+  was O(1) for n=5, 7, 9; now at finite-difference noise floor
+  (1e-7 to 1e-5).
+
+  **Even n ≥ 4 now raises `NotImplementedError`.** The previous
+  "recurse from n=2" path was also based on the (wrong) simple
+  recursion; the correct even-n recursion involves a different
+  operator chain and needs separate work.
+
+  Three new tests pin the correct recursion at n=3→5, n=5→7, and an
+  independent heat-equation residual check at n=5. The previous
+  `test_recursion_identity_n3_to_n5` was rewritten to verify the
+  *correct* identity (it had been verifying self-consistency with
+  the buggy formula).
+
+  Findings document: `notes/validation/heat_kernel_findings.md`.
+
 ### Added (Stage 4)
 
 - **`manifolds.LorentzianManifold`** — flat pseudo-Riemannian

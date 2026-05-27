@@ -18,25 +18,28 @@ Severity legend:
 
 ## ⚠️ research-level items (revisit before publication)
 
-### Heat-kernel autograd recursion for n ≥ 5
+### ~~Heat-kernel autograd recursion for n ≥ 5~~ (RESOLVED — major bug found and fixed)
 
-- **Where**: `src/holonomy_lib/hyperbolic/heat_kernel.py:_apply_one_recursion`
-- **What**: We implement `k^{n+2}(t, d) = -(2π sinh d)^{-1} · ∂_d k^n(t, d)`
-  for `n ≥ 5` (odd) and `n ≥ 4` (even) by chaining `torch.autograd.grad`
-  through the lower-dimensional kernel. The recursion formula is
-  standard (Grigor'yan-Noguchi 1998); the *implementation strategy*
-  via autograd is novel — no published ML library that we found does
-  this.
-- **Risk**: numerical instability at `d → 0` (the `1/sinh d` factor
-  amplifies float noise at each application). Our tests cover n = 5
-  via finite-difference comparison; we don't validate n = 7, 9, ...
-- **Validation needed**:
-  - Compare n = 5, 7, 9 to a numerical solver (e.g. Crank-Nicolson on
-    the radial heat equation) for a fixed (t, d).
-  - Tabulate the reliable-d range for each n (the float-noise-
-    amplification floor).
-- **Mitigation**: documented in the docstring; we say "n ≤ ~9 with d
-  bounded away from 0".
+- **What we thought**: `k^{n+2}(t, d) = -(2π sinh d)^{-1} · ∂_d k^n(t, d)`
+  was the correct Grigor'yan-Noguchi recursion.
+- **What we found**: That recursion is **wrong**. The correct form
+  is `k^{n+2} = -exp(-n·t) · (2π sinh d)^{-1} · ∂_d k^n`, with the
+  `exp(-n·t)` factor accounting for the spectral-bottom shift
+  `((n+1)/2)² − ((n-1)/2)² = n` between dimensions.
+- **How we found it**: `notes/validation/heat_kernel_validation.py`
+  checks `∂_t k − Δ_radial k ≈ 0` and `∫ k_t · dV = 1`. The original
+  recursion produced O(1) residuals for odd n ≥ 5 (vs FD noise floor
+  for n = 1, 2, 3) — caught immediately.
+- **Status now**: fixed. n ∈ {1, 2, 3, 5, 7, 9} all pass both
+  validation checks. **Even n ≥ 4 now raises `NotImplementedError`**
+  (the previous integral-then-recurse code path was also incorrect;
+  the simple recursion doesn't compose with the Davies-Mandouvalos
+  integral). Open follow-up: derive the correct even-n recursion.
+- **Findings document**: `notes/validation/heat_kernel_findings.md`.
+- **Paper potential**: now stronger. A general-n differentiable
+  heat-kernel implementation is a useful primitive for downstream
+  hyperbolic ML methods; we found a published-recursion error in the
+  process. Workshop-paper-worthy.
 
 ### Frechet mean on `KappaStereographicManifold` for κ > 0 (spherical)
 

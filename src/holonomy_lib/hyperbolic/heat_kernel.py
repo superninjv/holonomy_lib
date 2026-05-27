@@ -200,26 +200,35 @@ def _heat_kernel_unit_n2(
 
 def _apply_one_recursion(
     prev_kernel_fn,
+    n_prev: int,
     t: torch.Tensor,
     d: torch.Tensor,
 ) -> torch.Tensor:
-    """Apply one step of the Grigor'yan–Noguchi recursion
+    """Apply one step of the Grigor'yan recursion.
 
-        k^{n+2}(t, d) = -(2π · sinh d)^{-1} · ∂_d k^n(t, d).
+    The CORRECT recursion (derived from the operator chain on the
+    spectrally-shifted Gaussian; see also `notes/validation/
+    heat_kernel_results.md` for the validation history) is
 
-    Computes the derivative via `torch.autograd.grad` while preserving
-    the outer computation graph: if the caller's `d` has
-    `requires_grad`, the recursion output is connected to the caller's
-    graph so `backward()` flows correctly through `d`. Otherwise we use
-    a local grad-enabled clone and the result is forward-only (correct
-    in value, no upstream gradient — which is exactly what callers
-    without `requires_grad` expect).
+        k^{n_prev + 2}(t, r) = -exp(-n_prev · t) / (2π · sinh r)
+                                · ∂_r k^{n_prev}(t, r).
 
-    Numerical note: the `1/sinh d` factor amplifies float noise near
-    d = 0. The implementation clamps the denominator at
-    `finfo(dtype).tiny` to prevent NaN, but the kernel value itself
-    is ill-defined exactly at d = 0 for n ≥ 5 (the recursion produces
-    a `1/sinh^{n-3}` factor in the dominant term).
+    The `exp(-n_prev · t)` factor is essential. Heat kernels on
+    `H^{n}` carry a spectral-bottom factor `exp(-((n-1)/2)²·t)`; going
+    from `n_prev` to `n_prev+2` shifts the spectral bottom by
+    `((n_prev+1)/2)² − ((n_prev-1)/2)² = n_prev`, so we multiply by
+    `exp(-n_prev · t)`. The earlier omission of this factor was
+    caught by the heat-equation-residual validation
+    (`notes/validation/heat_kernel_validation.py`); without it, the
+    residual was O(1) for n ≥ 5 instead of the float-noise floor.
+
+    Args:
+      prev_kernel_fn: function `(t, d) -> k^{n_prev}(t, d)`.
+      n_prev: the dimension `n_prev` of `prev_kernel_fn`'s output.
+      t, d: time and radial distance tensors.
+
+    Returns:
+      `k^{n_prev + 2}(t, d)` — heat kernel at the next-odd dimension.
     """
     # If `d` is already a grad-tracked input, differentiate through it
     # so the output remains in the caller's graph. `create_graph=True`
@@ -239,7 +248,9 @@ def _apply_one_recursion(
         kn = prev_kernel_fn(t, d_local)
         dk_dd, = torch.autograd.grad(kn.sum(), d_local, create_graph=False)
     sinh_d = torch.sinh(d).clamp(min=torch.finfo(d.dtype).tiny)
-    return -dk_dd / (2.0 * math.pi * sinh_d)
+    # The exp(-n_prev · t) factor is the spectral-shift correction
+    # between dimensions; see the docstring.
+    return -torch.exp(-n_prev * t) * dk_dd / (2.0 * math.pi * sinh_d)
 
 
 def _heat_kernel_unit(
@@ -252,11 +263,21 @@ def _heat_kernel_unit(
     """Unit-curvature dimension dispatch.
 
     Maps `n` to the appropriate routine:
-      - n = 1 → Gaussian
+      - n = 1 → Gaussian closed form
       - n = 2 → Gauss–Legendre on the Davies–Mandouvalos integral
       - n = 3 → Davies–Mandouvalos closed form
-      - n ≥ 5 odd → recursion from n=3, `(n-3)/2` applications
-      - n ≥ 4 even → recursion from n=2, `(n-2)/2` applications
+      - n ≥ 5 odd → recursion from n=3 with the
+        `exp(-n_prev · t) / (2π sinh r) · ∂_r` operator iterated
+        `(n - 3) / 2` times.
+      - Even n ≥ 4: `NotImplementedError`. The spectral-shift
+        recursion used for odd n applies the operator
+        `(1/sinh r ∂_r)` to the Gaussian seed, which has a clean
+        closed form. The Davies–Mandouvalos integral path for even
+        n uses a different operator structure that the simple
+        `exp(-n_prev · t) · ∂_r` recursion does not extend. Pending
+        a separate even-n implementation; the previous code-path was
+        mathematically incorrect (caught by the heat-equation
+        residual validation in `notes/validation/`).
     """
     if n == 1:
         return _heat_kernel_unit_n1(t, d)
@@ -264,28 +285,31 @@ def _heat_kernel_unit(
         return _heat_kernel_unit_n2(t, d, n_quad, tail_budget)
     if n == _N_DAVIES_MANDOUVALOS:
         return _heat_kernel_unit_n3(t, d)
+    if n % 2 == 0:
+        raise NotImplementedError(
+            f"hyperbolic_heat_kernel for even n >= 4 (got n={n}) is not "
+            f"currently implemented. Only n in {{1, 2, 3}} and odd n >= 3 "
+            f"have validated implementations. The previous recursion-based "
+            f"path for even n was mathematically incorrect (caught by "
+            f"`notes/validation/heat_kernel_results.md`); a correct even-n "
+            f"implementation requires extending the Davies-Mandouvalos "
+            f"integral with the right operator chain — pending."
+        )
 
-    # Higher dimensions via recursion. The seed depends on the parity.
-    if n % 2 == 1:
-        # Odd n ≥ 5: seed at n=3, apply recursion (n - 3) / 2 times.
-        steps = (n - _N_DAVIES_MANDOUVALOS) // 2
-        kernel_fn = _heat_kernel_unit_n3
-    else:
-        # Even n ≥ 4: seed at n=2, apply recursion (n - 2) / 2 times.
-        steps = (n - _N_GRIGORYAN_INTEGRAL) // 2
-
-        def kernel_fn(_t, _d):
-            return _heat_kernel_unit_n2(_t, _d, n_quad, tail_budget)
-
-    # Each application wraps the previous function in another autograd
-    # call. The chain depth is bounded by `steps` (typically ≤ 4 for
-    # practical n ≤ 11), so the runtime is `steps × prev_cost`.
-    current_fn = kernel_fn
-    for _ in range(steps):
+    # Odd n >= 5: recurse from n=3 with the spectral-shift-corrected
+    # operator. At each step the current dimension `current_n`
+    # determines the `exp(-current_n · t)` factor passed to
+    # `_apply_one_recursion`.
+    current_fn = _heat_kernel_unit_n3
+    current_n = _N_DAVIES_MANDOUVALOS  # = 3
+    while current_n < n:
         prev_fn = current_fn
+        prev_n = current_n
 
-        def current_fn(_t, _d, _prev=prev_fn):
-            return _apply_one_recursion(_prev, _t, _d)
+        def current_fn(_t, _d, _prev=prev_fn, _n=prev_n):
+            return _apply_one_recursion(_prev, _n, _t, _d)
+
+        current_n += 2
 
     return current_fn(t, d)
 
