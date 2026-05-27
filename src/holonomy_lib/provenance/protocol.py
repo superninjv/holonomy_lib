@@ -82,6 +82,43 @@ HashMode = Literal["full", "sketch"]
 # / lookup. Populated by the @with_provenance decorator at import time.
 OP_REGISTRY: dict[str, tuple[Callable, str]] = {}
 
+# Global registry mapping class name → factory(sig: dict) -> instance.
+# Used by `_restore_value` during replay to reconstruct the bound `self`
+# of class methods from their provenance signature. Populated at import
+# time by `@register_provenance_class`.
+_CLASS_REGISTRY: dict[str, Callable[[dict], Any]] = {}
+
+
+def register_provenance_class(class_name: Optional[str] = None) -> Callable:
+    """Decorator: opt a class into class-method replay.
+
+    The class must define a classmethod `_from_signature(cls, sig: dict)`
+    that reconstructs an instance from the dict produced by the
+    instance's `_provenance_signature(self) -> dict` method. Together
+    these two are an inverse pair: `_from_signature(self._provenance_signature())`
+    should return an equivalent instance.
+
+    Without this registration, `ProvenanceRegistry.replay()` raises a
+    clear `NotImplementedError` when it encounters a method node whose
+    `self` was canonicalized into a signature dict.
+
+    Args:
+      class_name: registry key. Defaults to the class's `__name__`;
+        override when two classes share a name (e.g., across modules
+        with the same simple name).
+    """
+    def decorator(cls):
+        if not hasattr(cls, "_from_signature"):
+            raise TypeError(
+                f"@register_provenance_class: {cls.__name__} must "
+                f"implement a classmethod `_from_signature(cls, sig: dict)` "
+                f"that reverses `_provenance_signature`."
+            )
+        name = class_name if class_name is not None else cls.__name__
+        _CLASS_REGISTRY[name] = cls._from_signature
+        return cls
+    return decorator
+
 # Thread-local active recording context.
 _local = threading.local()
 
@@ -206,6 +243,12 @@ class ProvenanceRegistry:
         self._disk_cache_keys: set[str] = set()
         if self._disk_cache_dir is not None:
             self._disk_cache_dir.mkdir(parents=True, exist_ok=True)
+        # User-input cache: tensors that were passed AS INPUTS to a
+        # recorded op (not produced by one). Kept separate from
+        # `_tensor_cache` so `max_cache_size` continues to bound only
+        # op outputs — user inputs are typically few and replay needs
+        # them all to reconstruct a chain.
+        self._user_input_cache: dict[str, torch.Tensor] = {}
 
     # ----- low-level registration -----
 
@@ -269,7 +312,7 @@ class ProvenanceRegistry:
         return self._disk_cache_dir / f"{safe}.pt"
 
     def clear(self, delete_disk: bool = False) -> None:
-        """Drop the in-memory cache. Optionally also delete disk artifacts.
+        """Drop the in-memory caches. Optionally also delete disk artifacts.
 
         Args:
           delete_disk: if True and a disk cache is configured, remove
@@ -278,6 +321,7 @@ class ProvenanceRegistry:
             destroy persisted state.
         """
         self._tensor_cache.clear()
+        self._user_input_cache.clear()
         if delete_disk and self._disk_cache_dir is not None:
             for key in list(self._disk_cache_keys):
                 p = self._disk_path_for(key)
@@ -333,15 +377,19 @@ class ProvenanceRegistry:
         return out
 
     def get_tensor(self, hex_id: str) -> Optional[torch.Tensor]:
-        """Retrieve a cached output tensor by hex (requires cache_tensors=True).
+        """Retrieve a cached tensor by hex (requires cache_tensors=True).
 
-        If a disk cache is configured and the tensor is not in memory,
-        loads it from disk and re-promotes to the in-memory cache so
-        subsequent reads are fast. Returns None if the key isn't cached
-        anywhere.
+        Looks in three places:
+          1. In-memory op-output cache (`_tensor_cache`).
+          2. In-memory user-input cache (`_user_input_cache`).
+          3. Disk cache (if configured), which mirrors both.
+
+        Returns None if the key isn't cached anywhere.
         """
         if hex_id in self._tensor_cache:
             return self._tensor_cache[hex_id]
+        if hex_id in self._user_input_cache:
+            return self._user_input_cache[hex_id]
         if (
             self._disk_cache_dir is not None
             and hex_id in self._disk_cache_keys
@@ -675,10 +723,15 @@ class ProvenanceRegistry:
                     if indegree[child] == 0:
                         ready.append(child)
 
-        # Shadow cache: starts from baseline, gets overwritten as we go.
-        # Substitutions are merged in immediately so any node that reads
-        # them sees the substituted value.
-        shadow: dict[str, torch.Tensor] = dict(self._tensor_cache)
+        # Shadow cache: starts from baseline (user inputs + op outputs),
+        # gets overwritten as we go. Substitutions are merged in
+        # immediately so any node that reads them sees the substituted
+        # value. User inputs come first so output-cache entries win on
+        # any hex collision (shouldn't happen in practice — outputs and
+        # inputs use the same content hex, so if the same tensor was
+        # used both ways, the entries are equal anyway).
+        shadow: dict[str, torch.Tensor] = dict(self._user_input_cache)
+        shadow.update(self._tensor_cache)
         for h, val in substitutions.items():
             shadow[h] = val
 
@@ -697,22 +750,28 @@ class ProvenanceRegistry:
             call_kwargs: dict[str, Any] = {
                 k: _restore_value(v) for k, v in node.parsed_params().items()
             }
-            # Class-method replay is not yet supported: `self` was
-            # canonicalized via `_provenance_signature` into a dict
-            # rather than a class instance, and `fn(**call_kwargs)`
-            # would crash with that dict bound to `self`. Fail loudly
-            # instead of crashing on whatever the manifold method
-            # tries to access first.
+            # `_restore_value` reconstructs class instances for any class
+            # registered via `@register_provenance_class`. If a param
+            # still carries the signature tag here, the class wasn't
+            # registered — emit a clear, actionable error.
             for k, v in call_kwargs.items():
                 if isinstance(v, dict) and v.get(_PROVENANCE_SIGNATURE_TAG):
+                    cls_name = v.get("sig", {}).get("class", "?")
                     raise NotImplementedError(
-                        f"replay of class-method calls is not yet "
-                        f"supported (op_id={node.op_id!r}, param "
-                        f"{k!r} is a class instance). Use "
-                        f"`substitute()` instead, or rerun your "
-                        f"pipeline with the substituted upstream "
-                        f"tensors. Tracked for v0.2."
+                        f"replay of class-method calls requires the class "
+                        f"to be registered via @register_provenance_class. "
+                        f"Class {cls_name!r} (op_id={node.op_id!r}, "
+                        f"param {k!r}) is not registered; either register "
+                        f"it or use `substitute()` to intervene without "
+                        f"replaying through this op."
                     )
+            # Walk input_hexes. Scalar tensor inputs go straight to
+            # call_kwargs[name]; tuple/list inputs were unpacked into
+            # per-element hex keys at record time (e.g. `point[0]`,
+            # `point[1]`, `point[2]` for a FixedRankPoint = (U, S, Vt))
+            # and need to be reassembled into a positional tuple before
+            # calling fn(**call_kwargs).
+            tuple_inputs: dict[str, dict[int, torch.Tensor]] = {}
             for input_hex in node.input_hexes:
                 name, _, hex_part = input_hex.partition("=")
                 if hex_part not in shadow:
@@ -720,18 +779,28 @@ class ProvenanceRegistry:
                         f"replay: missing tensor for {hex_part!r} (parent of {h!r})"
                     )
                 if "[" in name and name.endswith("]"):
-                    # Tuple/list-of-tensor input was unpacked into
-                    # per-element hex keys at record time. Replaying
-                    # would need to reassemble `name[i]` back into a
-                    # positional tuple — not yet implemented.
-                    raise NotImplementedError(
-                        f"replay of methods taking tuple/list-of-tensor "
-                        f"inputs is not yet supported (op_id="
-                        f"{node.op_id!r}, input parameter {name!r} was "
-                        f"unpacked into per-element hex keys). Tracked "
-                        f"for v0.2."
+                    # name is e.g. "point[2]"; split into base + index.
+                    bracket = name.index("[")
+                    base_name = name[:bracket]
+                    try:
+                        index = int(name[bracket + 1:-1])
+                    except ValueError:
+                        raise RuntimeError(
+                            f"replay: malformed tuple-input name {name!r}"
+                        )
+                    tuple_inputs.setdefault(base_name, {})[index] = shadow[hex_part]
+                else:
+                    call_kwargs[name] = shadow[hex_part]
+            # Reassemble tuple inputs in index order; require contiguous
+            # 0..n-1 indices so we don't silently drop a missing element.
+            for base_name, by_index in tuple_inputs.items():
+                sorted_indices = sorted(by_index)
+                if sorted_indices != list(range(len(sorted_indices))):
+                    raise RuntimeError(
+                        f"replay: tuple input {base_name!r} has non-contiguous "
+                        f"indices {sorted_indices!r}; can't reassemble"
                     )
-                call_kwargs[name] = shadow[hex_part]
+                call_kwargs[base_name] = tuple(by_index[i] for i in sorted_indices)
             output = fn(**call_kwargs)
             # Store in shadow so downstream ops can find it.
             if isinstance(output, torch.Tensor):
@@ -933,11 +1002,25 @@ def _restore_value(v: Any) -> Any:
     through stochastic ops that consume the generator partway will
     produce different bits past that consumption point. The replay
     docstring already warns about stochastic ops.
+
+    For class-method provenance signatures, looks up the class in
+    `_CLASS_REGISTRY` and calls its `_from_signature(sig)` to
+    reconstruct an instance. If the class isn't registered, returns
+    the original dict unchanged; the caller (replay) sees the tag and
+    raises a clear error.
     """
     if isinstance(v, dict) and v.get(_TORCH_GENERATOR_TAG):
         g = torch.Generator(device=v["device"])
         g.manual_seed(int(v["seed"]))
         return g
+    if isinstance(v, dict) and v.get(_PROVENANCE_SIGNATURE_TAG):
+        sig = v.get("sig", {})
+        class_name = sig.get("class")
+        if class_name in _CLASS_REGISTRY:
+            return _CLASS_REGISTRY[class_name](sig)
+        # Fall through with the unrestored dict so replay's check
+        # produces the clearer "class not registered" error.
+        return v
     return v
 
 
@@ -1017,6 +1100,13 @@ def _resolve_tensor_hex(t: torch.Tensor, ctx: ProvenanceRegistry) -> str:
 
     Dispatches on `ctx.hash_mode`: "full" uses byte-level cryptographic
     hashing (default); "sketch" uses the O(1)-bytes sketch hash.
+
+    When `cache_tensors` is on, user-input tensors (those whose hex
+    was computed here, not chained from an upstream op) are also stashed
+    in the cache keyed by their content hex. This is what makes
+    `replay()` work for chains where a recorded op takes a user-supplied
+    tensor — without it, replay can't find that tensor's hex in the
+    shadow cache.
     """
     upstream = ctx._lookup_tensor_hex(t)
     if upstream is not None:
@@ -1026,6 +1116,18 @@ def _resolve_tensor_hex(t: torch.Tensor, ctx: ProvenanceRegistry) -> str:
     else:
         h = _tensor_content_hex(t, ctx._hasher_factory)
     ctx._register_tensor_hex(t, h)
+    if ctx._cache_tensors and h not in ctx._user_input_cache:
+        # Cache user inputs so replay can find them. Goes into the
+        # separate _user_input_cache (not bounded by max_cache_size)
+        # so eviction policy on outputs is unchanged. Also mirrors
+        # to disk when cache_to_disk is configured.
+        ctx._user_input_cache[h] = t.detach()
+        if ctx._disk_cache_dir is not None:
+            torch.save(
+                t.detach().cpu(),
+                ctx._disk_path_for(h),
+            )
+            ctx._disk_cache_keys.add(h)
     return h
 
 

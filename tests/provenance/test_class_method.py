@@ -177,56 +177,136 @@ class TestDeterminismAndSensitivity:
 # ---------------------------------------------------------------
 
 
-class TestReplayLimitations:
-    """Class-method calls record into the DAG correctly, but replay()
-    cannot reconstruct the manifold instance from its provenance
-    signature in v0.1. Verify a clear error fires instead of crashing
-    on a downstream attribute access."""
+class TestReplayClassMethod:
+    """Class-method calls replay correctly: `self` is reconstructed
+    from `_provenance_signature` via `@register_provenance_class`,
+    user-input tensors are pulled from the new user-input cache, and
+    the downstream computation re-executes with the substituted value.
+    """
 
-    def test_replay_class_method_raises_clear_error(self):
-        """Chain two class-method calls and substitute the upstream
-        node's output. Replay walks the DAG and must hit the
-        class-method node downstream, triggering the clear error."""
+    def test_replay_through_class_method(self):
+        """Chain two SPD class-method calls; substitute the upstream
+        projection output; downstream exp re-executes."""
         mfd = SPDManifold(n=3)
         S = mfd.random_point(batch_size=1, generator=_seeded(0))
         Z = torch.randn(1, 3, 3, dtype=torch.float64, generator=_seeded(1))
         with provenance.record(cache_tensors=True) as reg:
             V = mfd.projection(S, Z)
-            mfd.exp(S, V)
+            T_original = mfd.exp(S, V)
 
         nodes_by_id = {n.op_id: n for n in reg}
         proj_hex = nodes_by_id[
             "holonomy_lib.manifolds.SPDManifold.projection"
         ].hex
+        exp_hex = nodes_by_id[
+            "holonomy_lib.manifolds.SPDManifold.exp"
+        ].hex
 
-        # Substitute the projection output → exp downstream must replay.
+        # Substitute projection with a fresh symmetric tensor, then
+        # verify the downstream exp re-executes and produces a result
+        # that differs from the original.
         V_new = mfd.projection(
             S, torch.randn(1, 3, 3, dtype=torch.float64, generator=_seeded(2)),
         )
-        with pytest.raises(NotImplementedError, match="class-method"):
-            reg.replay({proj_hex: V_new})
+        new_outputs = reg.replay({proj_hex: V_new})
+        assert exp_hex in new_outputs
+        T_new = new_outputs[exp_hex]
+        # Result must still be SPD (proves we replayed through the
+        # actual mfd.exp, not just returned the cached value).
+        assert torch.linalg.cholesky(T_new).isfinite().all()
+        # And must differ from the original since V changed.
+        diff = (T_original - T_new).abs().max().item()
+        assert diff > 1e-6
 
-    def test_replay_tuple_input_raises_clear_error(self):
-        """FixedRankPoint = (U, S, Vt) gets unpacked into per-element
-        hex keys at record time. Trigger replay through a class-method
-        node and verify the clear error covers it (either via the
-        class-method branch or via the tuple-input branch, both
-        register as NotImplementedError)."""
+    def test_replay_unregistered_class_raises_clear_error(self):
+        """A class that defines `_provenance_signature` but ISN'T
+        registered via `@register_provenance_class` still hits the
+        clear NotImplementedError on replay."""
+        # Build a tiny one-off class on the fly and decorate one of
+        # its methods so we have a class-method recording for an
+        # unregistered class.
+        class _Probe:
+            def _provenance_signature(self):
+                return {"class": "_Probe_Unregistered"}
+
+            @provenance.with_provenance(
+                "test._probe.identity_pair", op_version="0.1",
+            )
+            def identity_pair(self, x: torch.Tensor) -> torch.Tensor:
+                return x
+
+        p = _Probe()
+        x = torch.zeros(2, 2, dtype=torch.float64)
+        with provenance.record(cache_tensors=True) as reg:
+            p.identity_pair(x)
+        # Replay walks every affected node. With no substitution, the
+        # affected set is empty — so we substitute the node itself.
+        hex_id = next(iter(reg)).hex
+        # Substitution is a no-op here (target IS the substituted node)
+        # but the test asserts that absent the registration, replay
+        # would have raised; let's instead trigger downstream replay
+        # by adding a second op that consumes the output.
+        @provenance.with_provenance("test._probe.double", op_version="0.1")
+        def _double(y: torch.Tensor) -> torch.Tensor:
+            return y * 2
+
+        with provenance.record(cache_tensors=True) as reg2:
+            y = p.identity_pair(x)
+            _double(y)
+        probe_hex = reg2.where(op_id="test._probe.identity_pair")[0].hex
+        # Substitute the upstream probe output → _double should be in
+        # the affected set, but the class-method probe op isn't —
+        # replay will succeed because _double has no signature param.
+        # To actually exercise the unregistered-class branch we need
+        # the unregistered call to BE in the affected set: substitute
+        # the input tensor's hex instead.
+        # ...but we'd need to know the input hex. Use the user-input
+        # cache to find it.
+        # Actually, simpler: trigger by adding a class-method call
+        # downstream of _double, then substitute _double's output.
+        with provenance.record(cache_tensors=True) as reg3:
+            y = _double(x)
+            p.identity_pair(y)
+        dbl_hex = reg3.where(op_id="test._probe.double")[0].hex
+        with pytest.raises(NotImplementedError, match="not registered"):
+            reg3.replay({dbl_hex: torch.zeros(2, 2, dtype=torch.float64)})
+
+
+class TestReplayTupleInput:
+    """Tuple-of-tensor inputs (e.g., FixedRankPoint = (U, S, Vt))
+    replay correctly: per-element hex keys are regrouped and reassembled
+    into a positional tuple before the op is called.
+    """
+
+    def test_replay_through_fixed_rank_method(self):
+        """Chain two FixedRankManifold calls; substitute the upstream
+        dense() output; downstream projection() re-executes with the
+        reconstructed (U, S, Vt) tuple bound to its `point` arg."""
         mfd = FixedRankManifold(m=5, n=4, r=2)
-        # Build a 2-step chain so substitute → replay walks the DAG.
-        point = mfd.random_point(batch_size=1, generator=_seeded(0))
+        point = mfd.random_point(batch_size=1, generator=_seeded(10))
         with provenance.record(cache_tensors=True) as reg:
             M = mfd.dense(point)
-            mfd.projection(point, M)
+            P_original = mfd.projection(point, M)
 
-        # Substitute the dense output → projection downstream replays.
         nodes_by_id = {n.op_id: n for n in reg}
         dense_hex = nodes_by_id[
             "holonomy_lib.manifolds.FixedRankManifold.dense"
         ].hex
-        M_new = mfd.dense(mfd.random_point(batch_size=1, generator=_seeded(2)))
-        with pytest.raises(NotImplementedError, match="class-method|tuple"):
-            reg.replay({dense_hex: M_new})
+        proj_hex = nodes_by_id[
+            "holonomy_lib.manifolds.FixedRankManifold.projection"
+        ].hex
+
+        M_new = mfd.dense(mfd.random_point(batch_size=1, generator=_seeded(11)))
+        new_outputs = reg.replay({dense_hex: M_new})
+        assert proj_hex in new_outputs
+        P_new = new_outputs[proj_hex]
+        # Verify the tangent projection actually ran on the new M:
+        # the result must differ from the original.
+        diff = (P_original - P_new).abs().max().item()
+        assert diff > 1e-6
+        # And the result is still an (m, n) ambient-form tangent
+        # (shape matches the original).
+        assert P_new.shape == P_original.shape
 
 
 class TestNestedDecorationEmitsBothNodes:

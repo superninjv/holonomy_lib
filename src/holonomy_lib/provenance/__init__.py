@@ -37,6 +37,7 @@ from holonomy_lib.provenance.protocol import (
     ProvenanceNode,
     ProvenanceRegistry,
     record,
+    register_provenance_class,
     with_provenance,
 )
 
@@ -45,5 +46,6 @@ __all__ = [
     "ProvenanceNode",
     "ProvenanceRegistry",
     "record",
+    "register_provenance_class",
     "with_provenance",
 ]

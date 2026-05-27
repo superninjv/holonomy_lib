@@ -43,9 +43,10 @@ from typing import Optional
 
 import torch
 
-from holonomy_lib.provenance import with_provenance
+from holonomy_lib.provenance import register_provenance_class, with_provenance
 
 
+@register_provenance_class("SPDManifold")
 class SPDManifold:
     """Affine-invariant SPD(n) manifold, GPU-native + batched-first.
 
@@ -89,6 +90,19 @@ class SPDManifold:
             "device": str(self.device),
             "dtype": str(self.dtype),
         }
+
+    @classmethod
+    def _from_signature(cls, sig: dict) -> "SPDManifold":
+        """Inverse of `_provenance_signature` — reconstruct an instance
+        with the same parameters. Used by `ProvenanceRegistry.replay`
+        to rebuild the bound `self` of recorded class-method calls.
+        """
+        dtype_name = sig["dtype"].split(".")[-1]
+        return cls(
+            n=sig["n"],
+            device=sig["device"],
+            dtype=getattr(torch, dtype_name),
+        )
 
     # ----------------------------------------------------------------
     # Construction
