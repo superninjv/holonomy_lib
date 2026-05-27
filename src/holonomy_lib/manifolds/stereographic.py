@@ -239,10 +239,20 @@ class KappaStereographicManifold:
         return self.n
 
     def _provenance_signature(self) -> dict:
+        # κ may be a learnable Tensor; the provenance hex must be JSON-
+        # canonical, so we store the current scalar value. The hex
+        # therefore identifies the manifold AT this κ, which is the
+        # right semantics: a later call with a different κ value gets
+        # a different hex (cache key) because the operation's result
+        # differs.
+        kappa_serial = (
+            float(self.kappa.detach().item())
+            if self._kappa_is_tensor else float(self.kappa)
+        )
         return {
             "class": "KappaStereographicManifold",
             "n": self.n,
-            "kappa": self.kappa,
+            "kappa": kappa_serial,
             "device": str(self.device),
             "dtype": str(self.dtype),
         }
@@ -264,33 +274,46 @@ class KappaStereographicManifold:
     def _tan_kappa_c(self, alpha: torch.Tensor) -> torch.Tensor:
         """`tan_κ(α) / α` with the analytic limit `1` at α = 0.
 
-        Branch-dispatched:
+        Branch-dispatched (sign fixed at construction):
           - spherical (κ > 0): `tan(√κ · α)/(√κ · α)` → use
             `_safe_tanc(√κ · α)`.
           - hyperbolic (κ < 0): `tanh(√|κ| · α)/(√|κ| · α)` →
             `_safe_tanhc(√|κ| · α)`.
           - Euclidean (κ = 0): identically `1`.
+
+        Uses `_get_sqrt_abs_kappa()` so autograd flows back to κ when
+        κ is a learnable `torch.Tensor`. The frozen-float path returns
+        the cached scalar for free.
         """
         if self._branch == "euclidean":
             return torch.ones_like(alpha)
-        scaled = self._sqrt_abs_kappa * alpha
+        scaled = self._get_sqrt_abs_kappa() * alpha
         if self._branch == "spherical":
             return _safe_tanc(scaled)
         return _safe_tanhc(scaled)
 
     def _atan_kappa_c(self, alpha: torch.Tensor) -> torch.Tensor:
-        """`tan_κ⁻¹(α) / α` with the analytic limit `1` at α = 0."""
+        """`tan_κ⁻¹(α) / α` with the analytic limit `1` at α = 0.
+
+        Uses `_get_sqrt_abs_kappa()` for live-κ autograd; see
+        `_tan_kappa_c` for the dispatch + κ-tensor handling.
+        """
         if self._branch == "euclidean":
             return torch.ones_like(alpha)
-        scaled = self._sqrt_abs_kappa * alpha
+        scaled = self._get_sqrt_abs_kappa() * alpha
         if self._branch == "spherical":
             return _safe_atanc(scaled)
         return _safe_atanhc(scaled)
 
     def _conformal_factor(self, x: torch.Tensor) -> torch.Tensor:
-        """λ_κ(x) = 2 / (1 + κ‖x‖²). At origin = 2."""
+        """λ_κ(x) = 2 / (1 + κ‖x‖²). At origin = 2.
+
+        Uses `_get_kappa()` so the conformal factor's derivative w.r.t.
+        a learnable-κ tensor is captured — affects `inner`, `norm`,
+        `exp`, `log`, `parallel_transport`.
+        """
         norm_sq = (x * x).sum(dim=-1)
-        return 2.0 / (1.0 + self.kappa * norm_sq)
+        return 2.0 / (1.0 + self._get_kappa() * norm_sq)
 
     # ----------------------------------------------------------------
     # Construction
@@ -339,8 +362,19 @@ class KappaStereographicManifold:
             # 0.172 — comfortably inside the κ‖x‖² < 1 domain.
             # `π/(4√κ)` would land EXACTLY on the boundary
             # (tan(π/4) = 1), so we shrink by another factor of 2.
+            # Re-evaluate against the CURRENT √|κ| (for learnable κ
+            # that may have changed magnitude during training). The
+            # cap is not part of any gradient chain — `random_point` is
+            # a non-differentiable sampling op — so we extract a
+            # detached scalar.
+            if self._kappa_is_tensor:
+                sqrt_abs_k_now = float(
+                    torch.sqrt(torch.abs(self.kappa)).detach().item()
+                )
+            else:
+                sqrt_abs_k_now = self._sqrt_abs_kappa
             safe_v_norm = (
-                0.5 * math.pi / (2.0 * 2.0 * self._sqrt_abs_kappa)
+                0.5 * math.pi / (2.0 * 2.0 * sqrt_abs_k_now)
             )
             v_norm_safe = torch.where(
                 v_norm > 0, v_norm, torch.ones_like(v_norm),
@@ -363,15 +397,23 @@ class KappaStereographicManifold:
           - κ = 0 (Euclidean): always True.
           - κ < 0 (hyperbolic): `‖x‖² < 1/|κ|`.
 
-        The `atol` parameter pulls the strict inequality slightly inside
-        the domain to absorb float drift on points that are
-        mathematically on the boundary.
+        Uses the **current** value of κ — important when κ is a
+        learnable Tensor that has drifted from its initial value
+        during training (the membership domain shrinks/grows with |κ|).
+        The `atol` parameter absorbs float drift at the boundary.
         """
         if self._branch == "euclidean":
             return torch.ones(x.shape[:-1], dtype=torch.bool,
                                device=x.device)
         norm_sq = (x * x).sum(dim=-1)
-        return self.kappa * norm_sq < 1.0 - atol
+        # Extract a scalar value for the comparison; detach so this
+        # method (used in validation checks) doesn't insert spurious
+        # autograd connections to κ.
+        kappa_value = (
+            self.kappa.detach().item()
+            if self._kappa_is_tensor else self.kappa
+        )
+        return kappa_value * norm_sq < 1.0 - atol
 
     # ----------------------------------------------------------------
     # Möbius addition (gyro-addition)

@@ -189,8 +189,33 @@ Pennec (2006).
 and **hyperbolic** (κ < 0, Poincaré ball). Points live directly in
 `R^n` (no extra ambient dimension — `ambient_dim = n`, unlike
 `LorentzManifold` which uses `n+1`). Branch dispatched at
-`__init__` from the sign of `kappa`; v1 accepts a Python float
-(learnable scalar κ is a planned extension).
+`__init__` from the sign of `kappa`. **κ may be a Python float OR
+a 0-dim `torch.Tensor` (e.g. `nn.Parameter`); the manifold is fully
+differentiable through every κ-dependent op**, so joint training
+of embeddings `v` AND curvature `κ` works via standard SGD:
+
+```python
+import torch
+from holonomy_lib.manifolds import KappaStereographicManifold
+
+kappa = torch.nn.Parameter(torch.tensor(-1.0))         # learnable κ
+mfd = KappaStereographicManifold(n=4, kappa=kappa)
+v   = torch.randn(N, 4, requires_grad=True) * 0.3      # tangent-at-origin params
+optimizer = torch.optim.Adam([v, kappa], lr=1e-2)
+
+for step in range(n_steps):
+    optimizer.zero_grad()
+    T    = mfd.exp_0(v)                                # embeddings on manifold
+    loss = your_loss(T, mfd, ...)                      # any distance-based loss
+    loss.backward()                                    # both v.grad and kappa.grad finite
+    optimizer.step()
+```
+
+Constraint: the branch (`spherical` / `hyperbolic` / `Euclidean`)
+is fixed at construction from κ's initial sign; SGD updates that
+push κ across 0 produce undefined behavior (the static branch
+keeps dispatching to the original sign's formulas). Keep κ in one
+sign half during training.
 
 | Method | Signature | Returns |
 |---|---|---|
@@ -784,9 +809,11 @@ Open frontiers the library does not yet cover:
 - Sparse-input shift-and-invert via iterative solver (CG/MINRES) for
   sparse SA Lanczos.
 - Further manifolds: sphere, Stiefel, Grassmann, product.
-- Learnable-κ extension of `KappaStereographicManifold` (v1 is
-  static-float κ; learnable scalar requires smooth `κ → 0`
-  recovery via Taylor expansion).
+- Smooth-κ-across-zero extension of `KappaStereographicManifold`:
+  v1 supports learnable κ (as `nn.Parameter`) but the
+  spherical/hyperbolic/Euclidean branch is fixed at construction
+  from `sign(κ_init)`. Crossing 0 during training is undefined.
+  A full κ ∈ R Taylor-blended implementation would close this.
 - Higher-dimensional cellular sheaves on simplicial complexes (with
   2-cells / faces and the corresponding chain identity ∂_1 ∘ ∂_2 = 0).
 - SE(3) / SU(2) / SL(n) Lie group primitives.

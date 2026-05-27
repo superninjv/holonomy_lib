@@ -16,15 +16,26 @@ version numbers follow [Semantic Versioning](https://semver.org).
   for curved Lorentzian backgrounds (Schwarzschild, FLRW). 7 new
   tests verify shape + Minkowski signature.
 
-- **Learnable κ on `KappaStereographicManifold`.** Accept κ as a
-  0-dim `torch.Tensor` (e.g. `nn.Parameter`); the gradient of
-  distance-based losses flows back to κ so SGD can learn the
-  curvature magnitude from data. Constraint: the κ-branch
-  (spherical / hyperbolic / Euclidean) is fixed at construction
-  from the sign of κ's initial value; pushing κ across 0 during
-  training produces undefined behavior (caller's responsibility).
-  Two new tests verify gradient flow + an end-to-end SGD-on-κ loss
-  reduction.
+- **Learnable κ on `KappaStereographicManifold`** — **full
+  autograd through every κ-dependent operation**. Accept κ as a
+  0-dim `torch.Tensor` (e.g. `nn.Parameter`); the gradient of any
+  manifold operation with a κ-dependence flows back to κ so SGD can
+  learn the curvature alongside the embedding parameters. Every
+  internal κ reference (`_conformal_factor`, `_tan_kappa_c`,
+  `_atan_kappa_c`, `mobius_add`, `distance`, `is_on_manifold`,
+  `_provenance_signature`) now uses `_get_kappa()` /
+  `_get_sqrt_abs_kappa()` to read the live tensor value, preserving
+  the autograd chain. Constraint: the κ-branch (spherical /
+  hyperbolic / Euclidean) is fixed at construction from the sign of
+  κ's initial value; pushing κ across 0 during training is
+  undefined behavior (caller keeps κ in one sign-half).
+
+  10 new tests (`TestKappaGradientFlowPerOp`) — one per κ-dependent
+  op (distance, inner, norm, exp_0, log_0, exp, log,
+  parallel_transport, mobius_add) plus an end-to-end test through
+  the realistic substrate-training chain
+  (`v → exp_0(v) → all-pairs distance → NLL → backward`), confirming
+  both `v.grad` and `κ.grad` are finite and non-trivial.
 
 - **End-to-end cross-manifold validation pass.** New script at
   `notes/validation/cross_manifold_validation.py` runs a

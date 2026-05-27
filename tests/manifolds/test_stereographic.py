@@ -499,3 +499,147 @@ class TestLearnableKappa:
             f"Loss did not decrease: start={loss_history[0]:.4e}, "
             f"end={loss_history[-1]:.4e}"
         )
+
+
+# --------------------------------------------------------------------
+# Full κ-differentiability — every κ-dependent op contributes a
+# finite, non-zero gradient on κ when κ is a learnable Tensor.
+# --------------------------------------------------------------------
+
+
+class TestKappaGradientFlowPerOp:
+    """For each operation that depends on κ, a downstream
+    `.sum().backward()` must produce a finite, non-zero `κ.grad`.
+
+    These tests pin the live-κ plumbing through `_conformal_factor`,
+    `_tan_kappa_c`, `_atan_kappa_c`, `mobius_add`, and the higher-
+    level methods that compose them.
+    """
+
+    @staticmethod
+    def _make(kappa_init: float = -1.0):
+        kappa = torch.nn.Parameter(
+            torch.tensor(kappa_init, dtype=torch.float64),
+        )
+        mfd = KappaStereographicManifold(
+            n=3, kappa=kappa, dtype=torch.float64,
+        )
+        return mfd, kappa
+
+    def test_distance(self):
+        mfd, kappa = self._make()
+        x = mfd.random_point(batch_size=4, generator=_seed(200))
+        y = mfd.random_point(batch_size=4, generator=_seed(201))
+        d = mfd.distance(x, y)
+        d.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_inner(self):
+        """inner uses _conformal_factor which uses live κ."""
+        mfd, kappa = self._make()
+        x = mfd.random_point(batch_size=4, generator=_seed(202))
+        u = torch.randn(4, mfd.n, dtype=torch.float64, generator=_seed(203))
+        v = torch.randn(4, mfd.n, dtype=torch.float64, generator=_seed(204))
+        out = mfd.inner(x, u, v)
+        out.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_norm(self):
+        """norm uses _conformal_factor which uses live κ."""
+        mfd, kappa = self._make()
+        x = mfd.random_point(batch_size=4, generator=_seed(205))
+        v = torch.randn(4, mfd.n, dtype=torch.float64, generator=_seed(206))
+        out = mfd.norm(x, v)
+        out.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_exp_0(self):
+        """exp_0 uses _tan_kappa_c which uses live κ."""
+        mfd, kappa = self._make()
+        v = (torch.randn(4, mfd.n, dtype=torch.float64,
+                          generator=_seed(207)) * 0.2)
+        out = mfd.exp_0(v)
+        out.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_log_0(self):
+        """log_0 uses _atan_kappa_c which uses live κ."""
+        mfd, kappa = self._make()
+        v = (torch.randn(4, mfd.n, dtype=torch.float64,
+                          generator=_seed(208)) * 0.2)
+        y = mfd.exp_0(v).detach()  # detach so only κ-grad accrues
+        out = mfd.log_0(y)
+        out.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_exp(self):
+        """exp uses both _conformal_factor and _tan_kappa_c + mobius_add."""
+        mfd, kappa = self._make()
+        x = mfd.random_point(batch_size=3, generator=_seed(209))
+        v_tan = (torch.randn(3, mfd.n, dtype=torch.float64,
+                              generator=_seed(210)) * 0.1)
+        out = mfd.exp(x, v_tan)
+        out.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_log(self):
+        """log uses _conformal_factor + _atan_kappa_c + mobius_add."""
+        mfd, kappa = self._make()
+        x = mfd.random_point(batch_size=3, generator=_seed(211))
+        y = mfd.random_point(batch_size=3, generator=_seed(212))
+        out = mfd.log(x, y)
+        out.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_parallel_transport(self):
+        """parallel_transport uses _conformal_factor + mobius_add."""
+        mfd, kappa = self._make()
+        x = mfd.random_point(batch_size=3, generator=_seed(213))
+        y = mfd.random_point(batch_size=3, generator=_seed(214))
+        v_tan = (torch.randn(3, mfd.n, dtype=torch.float64,
+                              generator=_seed(215)) * 0.1)
+        out = mfd.parallel_transport(x, y, v_tan)
+        out.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_mobius_add(self):
+        """Direct test on mobius_add — used by exp / log / pt."""
+        mfd, kappa = self._make()
+        x = mfd.random_point(batch_size=3, generator=_seed(216))
+        y = mfd.random_point(batch_size=3, generator=_seed(217))
+        out = mfd.mobius_add(x, y)
+        out.sum().backward()
+        assert torch.isfinite(kappa.grad)
+        assert kappa.grad.abs() > 0
+
+    def test_kappa_grad_through_substrate_chain(self):
+        """End-to-end pattern: v -> exp_0(v) -> all-pairs distance ->
+        NLL. Confirms κ is differentiable through the realistic
+        substrate-training chain."""
+        mfd, kappa = self._make()
+        v = (torch.randn(6, mfd.n, dtype=torch.float64,
+                          generator=_seed(218)) * 0.3)
+        v.requires_grad_(True)
+        T = mfd.exp_0(v)
+        N = T.shape[0]
+        Ti = T.unsqueeze(1).expand(N, N, mfd.n).reshape(-1, mfd.n)
+        Tj = T.unsqueeze(0).expand(N, N, mfd.n).reshape(-1, mfd.n)
+        d_all = mfd.distance(Ti, Tj).reshape(N, N)
+        # NLL with cyclic target
+        log_partition = torch.logsumexp(-d_all, dim=-1)
+        target_d = d_all[torch.arange(N), (torch.arange(N) + 1) % N]
+        loss = (target_d + log_partition).sum()
+        loss.backward()
+        # Both v AND κ get finite gradients
+        assert torch.isfinite(v.grad).all()
+        assert torch.isfinite(kappa.grad)
+        # κ's gradient is non-trivial — the loss depends on curvature
+        assert kappa.grad.abs() > 0
