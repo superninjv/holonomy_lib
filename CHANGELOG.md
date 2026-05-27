@@ -4,6 +4,31 @@ All notable changes to `holonomy_lib` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+
+- **`manifolds.LorentzManifold`** — hyperboloid model of hyperbolic
+  space at configurable sectional curvature `k < 0` (default `k = -1`,
+  the canonical unit hyperboloid). Full closed-form API: Minkowski
+  inner, on-manifold check, random_point, origin, projection, inner,
+  norm, exp, log, distance, parallel_transport, retraction, plus
+  `exp_0` / `log_0` convenience methods at the origin. Batched-first,
+  GPU-native, `@with_provenance`-decorated, audit-clean. Integrates
+  transparently with `RiemannianSGD` via the existing
+  `projection + retraction` API. 80 new tests including a geoopt
+  cross-comparison suite (`pytest.importorskip("geoopt")`); test count
+  is now 788 (was 707). Numerical notes: `log` uses the
+  `(α/sinh α)·u` form rather than `β·u/‖u‖` and `distance` uses the
+  `2·arcsinh(√|k|·‖y-x‖_M/2)` identity rather than `arccosh(z)`
+  directly, both to avoid catastrophic cancellation at x ≈ y; `exp`
+  re-projects onto the hyperboloid to suppress drift. References:
+  Nickel & Kiela (2018) *Learning Continuous Hierarchies in the
+  Lorentz Model* (ICML); Chen et al. (2022) HyboNet *Fully Hyperbolic
+  Neural Networks* (ACL); Lee (2018) *Introduction to Riemannian
+  Manifolds* §5–§6; Cannon et al. (1997); Pennec (2006) on parallel
+  transport.
+
 ## [0.4.1] - 2026-05-27
 
 End-to-end MCP transport fixes. v0.4.0's MCP server worked when

@@ -29,7 +29,7 @@ Shapes use `B` for batch, `n`/`m`/`r`/etc. for math.
 ## Available imports (canonical paths)
 
 ```python
-from holonomy_lib.manifolds import FixedRankManifold, SPDManifold
+from holonomy_lib.manifolds import FixedRankManifold, LorentzManifold, SPDManifold
 from holonomy_lib.algebra import truncated_svd
 from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
 from holonomy_lib.algebra import lanczos_eigsh
@@ -104,6 +104,38 @@ Manifold dim `n(n+1)/2`.
 | `retraction` | `(S, V)` | = `exp(S, V)` |
 
 Refs: Pennec-Fillard-Ayache (2006), Bhatia (2007), Sra-Hosseini (2015).
+
+### `LorentzManifold(n, k=-1.0, device="cpu", dtype=torch.float64)`
+Hyperboloid model of `n`-dim hyperbolic space of sectional curvature `k < 0`:
+`H^n_k = { x ∈ R^{n+1} : ⟨x,x⟩_M = 1/k, x_0 > 0 }` where
+`⟨x,y⟩_M = -x_0·y_0 + Σ x_i·y_i`. Default `k=-1` is the canonical unit
+hyperboloid (Nickel-Kiela 2018). Points and tangents stored as `(B, n+1)`
+ambient tensors. Intrinsic manifold dim `n`.
+
+| Method | Signature | Returns |
+|---|---|---|
+| `random_point` | `(batch_size=1, generator=None)` | `(B, n+1)` |
+| `origin` | `(batch_size=1)` | `(B, n+1)` north pole |
+| `is_on_manifold` | `(x, atol=1e-9)` | `(B,)` bool |
+| `minkowski_inner` | `(x, y)` | `(B,)` |
+| `projection` | `(x, w)` | tangent `(B, n+1)` |
+| `inner` | `(x, u, v)` | `(B,)` |
+| `norm` | `(x, v)` | `(B,)` |
+| `exp` | `(x, v)` | `(B, n+1)` exp_x(v) |
+| `log` | `(x, y)` | `(B, n+1)` log_x(y) |
+| `distance` | `(x, y)` | `(B,)` geodesic |
+| `parallel_transport` | `(x, y, v)` | tangent at y, `(B, n+1)` |
+| `retraction` | `(x, v)` | = `exp(x, v)` |
+| `exp_0` | `(v_spatial)` | `(B, n+1)` (origin shortcut) |
+| `log_0` | `(y)` | `(B, n)` (origin shortcut) |
+
+Numerical notes: `log` uses the `(α/sinh α)·u` form rather than `β·u/‖u‖`
+to avoid catastrophic cancellation at x ≈ y. `distance` uses the
+`2·arcsinh(√|k|·‖y-x‖_M/2)` identity rather than `arccosh(z)` directly
+for the same reason. `exp` re-projects onto the hyperboloid after each
+call to suppress drift. Refs: Nickel-Kiela (2018), Chen et al. (2022)
+HyboNet, Lee (2018) *Introduction to Riemannian Manifolds*, Cannon et
+al. (1997), Pennec (2006).
 
 ---
 
@@ -573,7 +605,11 @@ Open frontiers the library does not yet cover:
   ~21× slower than CPython sets at n=80; the win is a future kernel).
 - Sparse-input shift-and-invert via iterative solver (CG/MINRES) for
   sparse SA Lanczos.
-- Further manifolds: sphere, Stiefel, Grassmann, hyperbolic.
+- Further manifolds: sphere, Stiefel, Grassmann, κ-stereographic
+  (parametric curvature interpolating spherical/Euclidean/hyperbolic).
+- Manifold-aware graph operations module `holonomy_lib.hyperbolic`:
+  Fréchet mean on a manifold, hyperbolic Laplacian eigenmaps,
+  manifold-aware inner product, hyperbolic heat kernel.
 - Higher-dimensional cellular sheaves on simplicial complexes (with
   2-cells / faces and the corresponding chain identity ∂_1 ∘ ∂_2 = 0).
 - SE(3) / SU(2) / SL(n) Lie group primitives.

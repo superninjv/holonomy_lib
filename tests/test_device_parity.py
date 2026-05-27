@@ -20,7 +20,7 @@ import torch
 
 from holonomy_lib.algebra import truncated_svd
 from holonomy_lib.discrete_geometry import ollivier_ricci_curvature
-from holonomy_lib.manifolds import FixedRankManifold, SPDManifold
+from holonomy_lib.manifolds import FixedRankManifold, LorentzManifold, SPDManifold
 from holonomy_lib.spectral import laplacian
 from holonomy_lib.tensor_calculus import hosvd
 
@@ -99,6 +99,26 @@ class TestParityOnGpu:
         d_g = mfd_g.distance(S_c.to("cuda"), T_c.to("cuda"))
         torch.testing.assert_close(d_c, d_g.cpu(), atol=1e-9, rtol=1e-9)
 
+    def test_lorentz_distance_parity(self):
+        mfd_c = LorentzManifold(n=4, device="cpu", dtype=torch.float64)
+        mfd_g = LorentzManifold(n=4, device="cuda", dtype=torch.float64)
+        x_c = mfd_c.random_point(batch_size=3, generator=_seeded(40))
+        y_c = mfd_c.random_point(batch_size=3, generator=_seeded(41))
+        d_c = mfd_c.distance(x_c, y_c)
+        d_g = mfd_g.distance(x_c.to("cuda"), y_c.to("cuda"))
+        torch.testing.assert_close(d_c, d_g.cpu(), atol=1e-10, rtol=1e-10)
+
+    def test_lorentz_exp_parity(self):
+        mfd_c = LorentzManifold(n=4, device="cpu", dtype=torch.float64)
+        mfd_g = LorentzManifold(n=4, device="cuda", dtype=torch.float64)
+        x_c = mfd_c.random_point(batch_size=2, generator=_seeded(42))
+        v_seed = torch.randn(2, mfd_c.n + 1, dtype=torch.float64,
+                              generator=_seeded(43))
+        v_c = mfd_c.projection(x_c, v_seed) * 0.1
+        out_c = mfd_c.exp(x_c, v_c)
+        out_g = mfd_g.exp(x_c.to("cuda"), v_c.to("cuda"))
+        torch.testing.assert_close(out_c, out_g.cpu(), atol=1e-10, rtol=1e-10)
+
     def test_fixed_rank_retraction_exact_parity(self):
         mfd_c = FixedRankManifold(m=8, n=8, r=3, retraction_mode="exact")
         mfd_g = FixedRankManifold(m=8, n=8, r=3, device="cuda",
@@ -157,3 +177,13 @@ class TestDeviceMovability:
         assert core.device.type == torch.device(device).type
         for f in factors:
             assert f.device.type == torch.device(device).type
+
+    def test_lorentz_preserves_input_device(self, device):
+        mfd = LorentzManifold(n=3, device=device, dtype=torch.float64)
+        x = mfd.random_point(batch_size=2, generator=_seeded(23))
+        y = mfd.random_point(batch_size=2, generator=_seeded(24))
+        d = mfd.distance(x, y)
+        v = mfd.log(x, y)
+        assert d.device.type == torch.device(device).type
+        assert v.device.type == torch.device(device).type
+        assert mfd.origin(2).device.type == torch.device(device).type

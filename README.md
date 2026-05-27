@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 707 passing](https://img.shields.io/badge/tests-707%20passing-brightgreen.svg)](#testing)
+[![tests: 788 passing](https://img.shields.io/badge/tests-788%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Twelve modules, 707
+modern ML keeps reinventing project by project. Twelve modules, 788
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -33,13 +33,13 @@ its inputs through a content-addressable provenance DAG.
 
 | Module | Primitives | What it gives you |
 |---|---|---|
-| `manifolds` | `FixedRankManifold`, `SPDManifold` | Riemannian geometry on low-rank matrices and SPD cones (Vandereycken 2013; Pennec et al. 2006) |
+| `manifolds` | `FixedRankManifold`, `SPDManifold`, **`LorentzManifold`** | Riemannian geometry on low-rank matrices, SPD cones, and the hyperboloid model of hyperbolic space at configurable curvature `k < 0` (Vandereycken 2013; Pennec et al. 2006; Nickel-Kiela 2018) |
 | `algebra` | `truncated_svd` (exact + randomized), **`lanczos_eigsh`** | Halko-Martinsson-Tropp randomized SVD; Eckart-Young exact; Lanczos top-k eigensolver with full reorthogonalization (Paige 1972) |
 | `tensor_calculus` | `hosvd`, `mode_product`, `mode_unfolding` | Truncated HOSVD with Kolda-Bader n-mode product |
 | `spectral` | `combinatorial`/`symmetric_normalized`/`random_walk`/`signed` Laplacians, `laplacian_eigenmaps`, `magnetic.*` (directed), `heat_kernel_chebyshev`, **`effective_resistance`**, **`commute_time`**, **`diffusion_map`** | Chung; von Luxburg; Kunegis (signed); Furutani 2020 (magnetic Hermitian); Hammond-Vandergheynst-Gribonval 2011 (Chebyshev heat kernel); Klein-Randić 1993 (resistance); Coifman-Lafon 2006 (diffusion maps) |
 | `discrete_geometry` | `ollivier_ricci_curvature`, `discrete_ricci_flow`, `ricci_flow_with_surgery`, `forman_ricci_simple`, `forman_ricci_augmented` | Sinkhorn-W₁ Ollivier on graphs (Ollivier 2009; Cuturi 2013; Sia/Ni-Lin-Luo-Gao 2019), the **Perelman-on-networks** flow + surgery primitive, and the cheap combinatorial Forman alternative (Sreejith et al. 2016; Samal et al. 2018) |
 | **`info_geometry`** | **`bregman_divergence`**, **`kl_divergence_categorical`**, **`kl_divergence_gaussian`** | Bregman divergence for any convex generator plus closed-form KL for the standard exponential families (Bregman 1967; Banerjee et al. 2005; Amari 2016) |
-| **`optimization`** | **`RiemannianSGD`** | Steepest descent on `FixedRankManifold` / `SPDManifold` via the existing projection + retraction API (Absil-Mahony-Sepulchre 2008, §4.1) |
+| **`optimization`** | **`RiemannianSGD`** | Steepest descent on `FixedRankManifold` / `SPDManifold` / `LorentzManifold` via the existing projection + retraction API (Absil-Mahony-Sepulchre 2008, §4.1) |
 | **`simplicial`** | **`DenseSimplicialComplex`**, **`SparseSimplicialComplex`**, **`vietoris_rips_*`** | Simplicial complex data structures + boundary operators + Vietoris-Rips construction; foundation for Hodge + persistent homology (Munkres 1984; Hausmann 1995; Bauer 2021) |
 | **`topology`** | **`hodge_laplacian`**, **`betti_numbers`**, **`persistence_diagrams`** | Hodge Laplacians + Betti numbers on simplicial complexes (Eckmann 1944; Lim 2020), plus batched persistent homology H₀+H₁+H₂ of Vietoris-Rips filtrations via union-find + Z/2 matrix reduction (Edelsbrunner-Letscher-Zomorodian 2002; Cohen-Steiner-Edelsbrunner-Harer 2007 stability) |
 | **`sheaf`** | **`GraphSheaf`**, **`sheaf_coboundary`**, **`sheaf_laplacian`**, **`sheaf_dirichlet_energy`** | Cellular sheaves on graphs and their Laplacians (Hansen-Ghrist 2019); reduces to the standard graph Laplacian under trivial stalks; the spectral foundation behind Neural Sheaf Diffusion (Bodnar et al. 2022) |
