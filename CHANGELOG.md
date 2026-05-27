@@ -59,6 +59,60 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
   Test count now 1082 (was 1072).
 
+### Added (mixed-curvature + heterogeneous-κ manifolds)
+
+- **`manifolds.ProductManifold`** — Riemannian product `M_1 × M_2 × …`
+  with flat concatenated point storage `(B, Σ ambient_dim_i)` and
+  the Pythagorean direct-sum metric. Each operation delegates per-
+  submanifold. **Mix any of our existing manifolds**: e.g.
+  `ProductManifold([KappaStereographic(n=4, κ=0), Lorentz(n=4)])`
+  gives a 4-Euclidean × 4-hyperbolic concept space. Standard prior
+  art: Gu-Sala et al. (2019) ICLR "Learning Mixed-Curvature
+  Representations in Product Spaces"; Skopek et al. (2019) ICLR
+  "Mixed-curvature VAEs". 16 new tests verify Pythagorean
+  decomposition, per-component delegation, weighted metrics,
+  autograd-finite through the substrate chain, provenance roundtrip.
+
+- **`manifolds.HeterogeneousKappaManifold`** — κ-stereographic
+  geometry with **per-point curvature**. The natural primitive for
+  substrate-style embeddings where different concepts have
+  different local curvatures. The class is a pure math primitive —
+  it doesn't store κ; the user owns the κ parameterization (smooth
+  field + per-concept residual is the recommended pattern but the
+  manifold is agnostic). Pair operations combine two per-point
+  κ's via a configurable combiner (arithmetic mean default;
+  harmonic mean built-in; any commutative callable accepted).
+
+  **Status (intentionally explicit per request)**:
+    - Per-point continuous κ extends the established
+      κ-stereographic model (Bachmann-Bécigneul-Ganea 2020).
+    - Closest prior art: **GraphMoRE** (Guo et al. AAAI 2025,
+      arXiv:2412.11085) uses mixture-of-experts gating for
+      discrete per-node curvature; **Di Giovanni et al. 2022**
+      (arXiv:2202.01185) uses homogeneous × spherically-symmetric
+      products for pointwise curvature; **kHGCN** (Yang et al.
+      2022) uses discrete Ollivier-Ricci curvature for
+      message-passing weights inside a single-curvature space.
+    - **Our research contribution**: continuous per-point κ (vs.
+      GraphMoRE's discrete gating); pair-κ combiner abstraction
+      (the rule for combining two per-point κ's into an effective
+      pair-κ isn't standardized in the literature — we ship
+      defensible defaults + caller-override). The substrate-team's
+      "κ_field + per-point residual" decomposition is a
+      parameterization pattern the manifold supports but doesn't
+      own.
+
+  22 new tests verify homogeneous-case agreement with
+  `KappaStereographicManifold` across κ ∈ {-1, -0.5, +0.5, +1}
+  (4 cases × 3 op = 12 round-trip checks), heterogeneous behavior
+  (different κ → different embedding / distance), the
+  arithmetic-mean default Euclidean recovery at sign-mixed pairs,
+  custom-combiner override, autograd through both v and κ in the
+  substrate-style training chain, and provenance roundtrip
+  (custom-callable combiners fall back to default on reload).
+
+  Test count now 1136 (was 1098).
+
 ### Added (heat-kernel precision + completeness)
 
 - **Even n ≥ 4 heat kernel re-enabled.** The previously-raised

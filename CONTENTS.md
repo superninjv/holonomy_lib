@@ -30,8 +30,9 @@ Shapes use `B` for batch, `n`/`m`/`r`/etc. for math.
 
 ```python
 from holonomy_lib.manifolds import (
-    FixedRankManifold, KappaStereographicManifold, LorentzManifold,
-    LorentzianManifold, SPDManifold,
+    FixedRankManifold, HeterogeneousKappaManifold,
+    KappaStereographicManifold, LorentzManifold, LorentzianManifold,
+    ProductManifold, SPDManifold,
 )
 from holonomy_lib.algebra import truncated_svd
 from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
@@ -284,6 +285,101 @@ Refs: Misner-Thorne-Wheeler (1973) *Gravitation* §1-§5;
 Hawking-Ellis (1973) *Large Scale Structure of Space-Time* §4
 (causal structure); O'Neill (1983) *Semi-Riemannian Geometry With
 Applications to Relativity* §3, §5.
+
+### `ProductManifold(manifolds, weights=None, device="cpu", dtype=torch.float64)`
+Riemannian product `M_1 × M_2 × … × M_k`. Combines existing
+manifolds into a single product space; useful for **mixed-curvature
+embeddings** (concept = (Euclidean coords, Hyperbolic coords, …)).
+
+Points are stored as a flat concatenated tensor `(B, Σ ambient_dim_i)`
+— compatible with the existing `holonomy_lib.hyperbolic.*`
+primitives (frechet_mean, laplacian_eigenmaps, …) that operate on
+flat tensors. Convention: `mfd.component(x, i)` slices into
+submanifold `i`'s coordinates.
+
+The combined metric is the (optionally weighted) direct sum:
+`g((u_1, …, u_k), (v_1, …, v_k))_x = Σ_i w_i · g_i(u_i, v_i)_{x_i}`,
+so geodesic distance is Pythagorean:
+`d² = Σ_i w_i · d_i²(x_i, y_i)`.
+
+Each manifold operation (exp, log, projection, retraction, …)
+delegates per-submanifold. **Status: well-grounded prior art —
+Gu-Sala et al. (2019) "Learning Mixed-Curvature Representations
+in Product Spaces" (ICLR); Skopek et al. (2019) "Mixed-curvature
+VAEs" (ICLR).**
+
+| Method | Signature | Returns |
+|---|---|---|
+| `random_point` | `(batch_size=1, generator=None)` | `(B, Σ ambient_dim_i)` |
+| `origin` | `(batch_size=1)` | `(B, Σ ambient_dim_i)` |
+| `is_on_manifold` | `(x, atol=1e-9)` | `(B,)` bool |
+| `component` | `(x, index)` | submanifold-`index` slice |
+| `distance` | `(x, y)` | `(B,)` Pythagorean |
+| `exp` / `log` / `inner` / `norm` / `projection` / `retraction` | per-component delegation | concatenated result |
+| `exp_0` / `log_0` | tangent-at-origin shortcuts | `(B, Σ dim_i)` ↔ `(B, Σ ambient_dim_i)` |
+
+### `HeterogeneousKappaManifold(n, combiner="arithmetic_mean", device="cpu", dtype=torch.float64)`
+κ-stereographic geometry **where the curvature varies per point**.
+The natural primitive when concepts in an embedding space have
+different local curvatures (some hierarchical / hyperbolic, some
+cyclical / spherical).
+
+The class is a **pure math primitive** — it doesn't store κ. The
+user owns the κ parameterization (e.g. an `nn.Parameter(torch.randn(N))`
+for per-concept κ, or a smooth `κ_field(T)` callable + per-concept
+residual δ) and passes effective-κ tensors into the manifold
+methods. This keeps the manifold model-agnostic and lets the user
+attach any architecture on top.
+
+**Status mix** (intentionally explicit):
+- **Standard / extension**: per-point continuous κ extends the
+  established κ-stereographic model (Bachmann-Bécigneul-Ganea
+  2020) from a global learnable κ to per-point κ.
+- **Closest published prior art**: GraphMoRE (Guo et al. 2024,
+  AAAI 2025, arXiv:2412.11085) — mixture-of-experts gating
+  selects per-node curvature from a discrete set; Di Giovanni
+  et al. (2022, arXiv:2202.01185) — heterogeneous manifolds via
+  product of a homogeneous factor and a spherically-symmetric
+  factor.
+- **Our research contribution**: continuous per-point κ as a real
+  number (vs. GraphMoRE's discrete gating); pair-κ combiner
+  abstraction (the rule for combining `(κ_x, κ_y) → κ_eff` for
+  pairwise distance isn't standardized in the literature; we ship
+  arithmetic-mean default, harmonic-mean built-in, and a callable
+  override).
+
+| Method | Signature | Returns |
+|---|---|---|
+| `origin` | `(batch_size=1)` | `(B, n)` zero vector |
+| `is_on_manifold` | `(x, kappa, atol=1e-9)` | `(B,)` bool |
+| `exp_0` | `(v, kappa)` | `(B, n)` per-point exp at origin |
+| `log_0` | `(y, kappa)` | `(B, n)` per-point log at origin |
+| `distance` | `(x, k_x, y, k_y)` | `(B,)` via combiner |
+
+Built-in combiners: `"arithmetic_mean"` (default), `"harmonic_mean"`.
+Pass any commutative `Callable[[κ_x, κ_y], κ_eff]` for a custom
+combiner. The homogeneous case (κ_x = κ_y) reduces exactly to
+`KappaStereographicManifold(κ)` (verified by tests).
+
+**Recommended substrate-team pattern** (from your design notes):
+
+```python
+mfd = HeterogeneousKappaManifold(n=K)
+# Smooth field as a small NN / polynomial:
+kappa_field: Callable[[torch.Tensor], torch.Tensor] = ...    # (B, n) -> (B,)
+# Per-concept residual:
+delta = torch.nn.Parameter(torch.zeros(N))
+
+def effective_kappa(T):
+    return kappa_field(T) + delta   # (N,)
+
+# In forward pass:
+T = mfd.exp_0(v, effective_kappa_at_each_point)
+d_ij = mfd.distance(T[i], k_eff[i], T[j], k_eff[j])
+```
+
+Refs: Bachmann-Bécigneul-Ganea (2020); Guo et al. AAAI 2025
+*GraphMoRE*; Di Giovanni et al. (2022); Yang et al. *kHGCN* (2022).
 
 ---
 
