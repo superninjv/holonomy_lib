@@ -695,7 +695,11 @@ Weighted Karcher (1977) iteration for the Fréchet mean — the
 geodesically-convex minimizer of `Σ_i w_i · d_M(μ, p_i)²` on a
 Hadamard manifold. Iterates
 `μ_{t+1} = exp_{μ_t}(Σ w_i log_{μ_t}(p_i) / Σ w_i)` until the update
-tangent's Riemannian norm falls below `tol`. Refs: Karcher (1977),
+tangent's Riemannian norm (at `μ_t`, before the step) falls below
+`tol`. Guaranteed convergence on `LorentzManifold` (any `k < 0`) and
+`KappaStereographicManifold(κ < 0)`; for κ > 0 the manifold is NOT
+Hadamard and convergence requires inputs within the injectivity
+radius `π/√κ` (caller's responsibility). Refs: Karcher (1977),
 Pennec (2006) §4, Afsari (2011) on uniqueness.
 
 ### `hyperbolic_laplacian_eigenmaps(adjacency, manifold, max_steps=200, lr=0.05, init=None, generator=None) → (B, N, n+1)`
@@ -715,7 +719,9 @@ Heat kernel `k^n_t(d)` on the hyperbolic manifold. Dimension dispatch:
   representation (32 nodes by default).
 - Higher odd / even `n`: Grigor'yan–Noguchi recursion
   `k^{n+2}(t, d) = -(2π sinh d)^{-1} · ∂_d k^n(t, d)` via
-  `torch.autograd.grad`, seeded at n=3 (odd) or n=2 (even).
+  `torch.autograd.grad`, seeded at n=3 (odd) or n=2 (even). The
+  recursion uses `create_graph=True` so backward through the kernel
+  flows correctly to upstream of `distances` for any n ≥ 5.
 Curvature scales out: `k^n_{−|k|, t}(d) = |k|^{n/2} · k^n_{−1, |k|·t}(√|k| · d)`.
 Refs: Davies–Mandouvalos (1988), Grigor'yan (2009) *Heat Kernel and
 Analysis on Manifolds* Theorem 8.21, Grigor'yan–Noguchi (1998).

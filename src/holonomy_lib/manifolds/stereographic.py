@@ -272,10 +272,10 @@ class KappaStereographicManifold:
         For the **spherical** branch (κ > 0) the tangent norm has a
         hard upper bound `‖v‖ < π/(2√κ)` (the `tan` singularity in
         `exp_0`). Random Gaussian draws can exceed this; we clip the
-        per-element tangent norm at `π/(4√κ)` (half the singular
-        radius — gives `‖exp_0(v)‖ ≤ tan(π/4)/√κ = 1/√κ`, on the
-        domain boundary, then we use this as a soft inner clip for
-        is_on_manifold safety).
+        per-element tangent norm at `π/(8√κ)` (one-quarter of the
+        singular radius — gives `‖exp_0(v)‖ ≤ tan(π/8)/√κ ≈ 0.414/√κ`,
+        so `κ‖x‖² ≤ 0.172` — comfortably inside the κ‖x‖² < 1 domain
+        with slack for `is_on_manifold` to pass at `atol = 1e-9`).
 
         For hyperbolic and Euclidean branches there is no upper bound
         on ‖v‖, so the raw Gaussian draw is used as-is.

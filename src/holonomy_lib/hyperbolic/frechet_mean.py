@@ -78,7 +78,17 @@ def frechet_mean(
       Existence and uniqueness of the minimizer hold on Hadamard
       manifolds (Karcher 1977; Afsari 2011); hyperbolic spaces of any
       negative curvature are Hadamard, so this primitive is well-
-      defined on `LorentzManifold` for all `k < 0`.
+      defined on `LorentzManifold` for all `k < 0` and on
+      `KappaStereographicManifold(κ < 0)`.
+
+      **Limitation on positive curvature.** For
+      `KappaStereographicManifold(κ > 0)` (spherical) the manifold is
+      NOT Hadamard — Karcher's convergence guarantee requires inputs
+      lie within the injectivity radius `π/√κ` from each other. For
+      well-spread spherical inputs the iteration may converge to a
+      local optimum or fail to converge. The implementation runs
+      unconditionally; the caller is responsible for checking the
+      input spread.
 
       Per-batch convergence is checked against the **max** update norm
       across the batch, not each batch element separately — so a slow-
@@ -130,10 +140,15 @@ def frechet_mean(
         ).reshape(B, N, D)
         # Weighted tangent average — the Riemannian gradient step.
         tangent_avg = (w.unsqueeze(-1) * log_p).sum(dim=1)  # (B, D)
+        # Convergence: Riemannian norm of the update tangent at the
+        # CURRENT base point. Must be computed BEFORE the `exp` step:
+        # `tangent_avg ∈ T_{μ_t}` is a tangent at the OLD μ, and for
+        # point-dependent metrics (e.g. KappaStereographicManifold's
+        # conformal factor) `‖tangent_avg‖_{μ_new}` differs from
+        # `‖tangent_avg‖_{μ_old}` by the metric ratio. Use the OLD μ.
+        update_norm = manifold.norm(mu, tangent_avg)         # (B,)
         # Step.
         mu = manifold.exp(mu, tangent_avg)
-        # Convergence: Riemannian norm of the update tangent.
-        update_norm = manifold.norm(mu, tangent_avg)         # (B,)
         if update_norm.max().item() < tol:
             break
 

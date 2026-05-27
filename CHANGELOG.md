@@ -6,6 +6,40 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed (third pass — senior-dev review findings)
+
+- **`hyperbolic_heat_kernel` was non-differentiable for n ≥ 5.** The
+  Grigor'yan–Noguchi autograd recursion called `torch.autograd.grad`
+  with `create_graph=False` on a `d.detach().clone()`, so any caller
+  doing `loss = hyperbolic_heat_kernel(t, d, mfd_n5).sum();
+  loss.backward()` got a detached zero gradient on `d`. Fix:
+  `create_graph=True` when upstream `d.requires_grad`, preserving
+  the graph through the recursion (and through nested calls at n=7,
+  9, …). When upstream doesn't track grad, a local grad-enabled
+  clone is used as before. Two new tests pin the fix at n=3 and n=5.
+
+- **`frechet_mean` convergence norm evaluated at wrong base point.**
+  After `μ ← exp(μ, tangent_avg)`, the convergence check
+  `manifold.norm(μ_new, tangent_avg)` evaluated a tangent at μ_new
+  using the metric at μ_new — but the tangent lives in T_{μ_old}.
+  For `LorentzManifold` the induced metric is point-independent so
+  the bug was a no-op; for `KappaStereographicManifold` the
+  conformal factor `λ_κ(x)` depends on x and the threshold was off
+  by `λ(μ_new)/λ(μ_old)`. Fixed by computing the norm at μ_old
+  before the `exp` step.
+
+- **`KappaStereographicManifold.random_point` docstring inconsistency.**
+  The comment said "clip at π/(4√κ)" but the code clipped at
+  `π/(8√κ)`. The code is correct (π/4 lands exactly on the κ‖x‖²=1
+  boundary; π/8 is the tighter conservative choice); the docstring
+  is now consistent.
+
+- **Documented `frechet_mean` limitation on the spherical branch.**
+  For `KappaStereographicManifold(κ > 0)` the manifold is NOT
+  Hadamard — Karcher convergence requires inputs within the
+  injectivity radius `π/√κ`. The implementation runs unconditionally;
+  added a docstring caveat.
+
 ### Fixed (second pass)
 
 - **`hyperbolic_laplacian_eigenmaps` silent NaN on dense graphs.**

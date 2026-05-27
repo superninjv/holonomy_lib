@@ -207,21 +207,37 @@ def _apply_one_recursion(
 
         k^{n+2}(t, d) = -(2π · sinh d)^{-1} · ∂_d k^n(t, d).
 
-    Uses `torch.autograd.grad` to compute the derivative, which is
-    accurate for the elementary kernels at n ∈ {1, 3} and reasonable
-    for the n=2 quadrature path (which is differentiable through
-    Gauss–Legendre as a finite sum of `prev_kernel_fn(t, d)` values).
+    Computes the derivative via `torch.autograd.grad` while preserving
+    the outer computation graph: if the caller's `d` has
+    `requires_grad`, the recursion output is connected to the caller's
+    graph so `backward()` flows correctly through `d`. Otherwise we use
+    a local grad-enabled clone and the result is forward-only (correct
+    in value, no upstream gradient — which is exactly what callers
+    without `requires_grad` expect).
 
-    Numerical note: the `1/sinh d` factor is amplifying float noise
-    near d = 0. The implementation clamps the denominator at
+    Numerical note: the `1/sinh d` factor amplifies float noise near
+    d = 0. The implementation clamps the denominator at
     `finfo(dtype).tiny` to prevent NaN, but the kernel value itself
     is ill-defined exactly at d = 0 for n ≥ 5 (the recursion produces
     a `1/sinh^{n-3}` factor in the dominant term).
     """
-    d_grad = d.detach().clone().requires_grad_(True)
-    kn = prev_kernel_fn(t, d_grad)
-    # `create_graph=False` — we only need first-order grad.
-    dk_dd, = torch.autograd.grad(kn.sum(), d_grad, create_graph=False)
+    # If `d` is already a grad-tracked input, differentiate through it
+    # so the output remains in the caller's graph. `create_graph=True`
+    # is essential for two reasons: (1) it lets `backward()` flow
+    # through the recursion to upstream of `d`, and (2) it allows
+    # nested recursion calls (n=7, 9, …) to keep building the graph.
+    if d.requires_grad:
+        kn = prev_kernel_fn(t, d)
+        dk_dd, = torch.autograd.grad(
+            kn.sum(), d, create_graph=True,
+        )
+    else:
+        # No outer grad context — use a local grad-enabled clone purely
+        # to evaluate the derivative. Output is forward-only, which is
+        # the correct semantics when the caller has no upstream grad.
+        d_local = d.detach().clone().requires_grad_(True)
+        kn = prev_kernel_fn(t, d_local)
+        dk_dd, = torch.autograd.grad(kn.sum(), d_local, create_graph=False)
     sinh_d = torch.sinh(d).clamp(min=torch.finfo(d.dtype).tiny)
     return -dk_dd / (2.0 * math.pi * sinh_d)
 

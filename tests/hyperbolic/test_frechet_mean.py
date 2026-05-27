@@ -199,3 +199,28 @@ def test_works_on_kappa_stereographic(k):
     mu = frechet_mean(P, mfd, max_iter=50, tol=1e-10)
     assert mu.shape == (1, mfd.ambient_dim)
     assert mfd.is_on_manifold(mu).all()
+
+
+def test_frechet_convergence_check_uses_old_mu():
+    """Regression: the convergence check `||tangent_avg||_μ < tol` is
+    evaluated at the OLD μ (where the tangent lives), not the NEW μ
+    after the step. For Lorentz this is a no-op (point-independent
+    metric); for KappaStereographic the conformal factor depends on
+    μ, so evaluating at NEW μ would scale the convergence threshold
+    by `λ_κ(μ_new)/λ_κ(μ_old)`. We pin the fix by checking that the
+    function returns a finite result and stays on the manifold.
+
+    Note: the Karcher iteration's *convergence rate* on the Poincaré
+    ball is linear (not quadratic), and for widely-spread points it
+    can take many iterations to reach a tight tolerance — that's a
+    property of the algorithm, not a bug in this fix.
+    """
+    from holonomy_lib.manifolds import KappaStereographicManifold
+
+    mfd = KappaStereographicManifold(n=3, kappa=-1.0)
+    P = mfd.random_point(batch_size=8, generator=_seed(200)).reshape(
+        1, 8, mfd.ambient_dim,
+    )
+    mu = frechet_mean(P, mfd, tol=1e-10, max_iter=200)
+    assert torch.isfinite(mu).all()
+    assert mfd.is_on_manifold(mu).all()

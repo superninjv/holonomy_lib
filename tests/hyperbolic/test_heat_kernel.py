@@ -165,3 +165,36 @@ def test_provenance():
         _ = hyperbolic_heat_kernel(t, d, mfd)
     ops = {n.op_id for n in reg}
     assert "holonomy_lib.hyperbolic.hyperbolic_heat_kernel" in ops
+
+
+# --------------------------------------------------------------------
+# Autograd-finite — backward through the recursion at n ≥ 5
+# --------------------------------------------------------------------
+
+
+def test_heat_kernel_backward_n3():
+    """Closed-form path (n=3): backward w.r.t. d must work."""
+    mfd = LorentzManifold(n=3)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.tensor([0.5, 1.0, 1.5], dtype=torch.float64,
+                      requires_grad=True)
+    k = hyperbolic_heat_kernel(t, d, mfd)
+    k.sum().backward()
+    assert torch.isfinite(d.grad).all()
+
+
+def test_heat_kernel_backward_n5_recursion():
+    """Recursion path (n=5): the previous create_graph=False + detach()
+    broke autograd through `distances`. With create_graph=True, the
+    gradient should flow."""
+    mfd = LorentzManifold(n=5)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.tensor([0.5, 1.0, 1.5], dtype=torch.float64,
+                      requires_grad=True)
+    k = hyperbolic_heat_kernel(t, d, mfd)
+    k.sum().backward()
+    assert d.grad is not None, "no gradient — recursion detached the graph"
+    assert torch.isfinite(d.grad).all()
+    # Gradient should be non-trivial (k decreases as d grows away
+    # from 0, so ∂k/∂d < 0 for d > peak).
+    assert (d.grad != 0).any()
