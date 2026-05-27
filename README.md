@@ -459,7 +459,22 @@ holonomy_lib/
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full release history.
 
-**v0.4.0** (current): provenance agent-API redesign.
+**v0.4.1** (current): end-to-end MCP transport fixes.
+
+- `mcp.py` eagerly imports all op-defining submodules at server
+  startup so `OP_REGISTRY` is populated before `replay_with` runs
+  (loaded registries reference ops the server process otherwise
+  never touches).
+- `_bind_registry` now inspects each tool's signature and only
+  pre-binds the `registry` argument when the function actually
+  declares one (`op_docstring` queries global state and doesn't).
+- List-returning tools wrap their return in `{"results": [...]}`
+  on the MCP transport so FastMCP serializes a single JSON content
+  item instead of one per element. Python callers still see the
+  underlying list via the unwrapped function — normalization is
+  transport-only.
+
+**v0.4.0**: provenance agent-API redesign.
 
 - New `holonomy_lib.provenance.agent` module holds the canonical
   agent tool inventory. Each tool is a Python function decorated

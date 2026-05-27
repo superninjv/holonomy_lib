@@ -335,10 +335,20 @@ pip install 'holonomy-lib[mcp]'      # MCP server for Claude / GPT / any MCP cli
 pip install 'holonomy-lib[jupyter]'  # %record_provenance cell magic
 ```
 
-The MCP server exposes `list_ops`, `where`, `node_info`, `ancestors`,
-`get_tensor_summary`, and `replay` as tools an LLM agent can call.
-Entry point: `python -m holonomy_lib.provenance.mcp`; configure the
-registry file via `HOLONOMY_PROVENANCE_REGISTRY` env var.
+The agent inventory lives in `holonomy_lib.provenance.agent` and is
+exposed to LLM agents three ways: native tool-use schemas via
+`to_anthropic_schema()` / `to_openai_schema()`, MCP tools via
+`python -m holonomy_lib.provenance.mcp`, and direct Python calls.
+Tools: navigation (`list_ops`, `where`, `node_info`, `ancestors`),
+tensor inspection (`get_tensor_summary`, `tensor_slice`,
+`tensor_per_batch_summary`, `tensor_eigenvalues`,
+`tensor_singular_values`, `tensor_norm`, `tensor_compare`),
+counterfactual execution (`replay_with` with `zeros_like` /
+`from_hex` / `perturb` / `scale` / `swap_batch` / `literal`
+substitution kinds), and op docs (`op_docstring`). The MCP entry
+point reads the registry file from `HOLONOMY_PROVENANCE_REGISTRY`.
+On the MCP transport, list-returning tools wrap their output as
+`{"results": [...]}` for a single uniform JSON content item.
 
 The Jupyter magic wraps a cell in `record()` and renders the DAG
 inline:
