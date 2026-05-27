@@ -779,18 +779,32 @@ Liu et al. (2019) *Hyperbolic GNN*.
 ### `hyperbolic_heat_kernel(t, distances, manifold, n_quad=32, tail_budget=20.0) → tensor`
 Heat kernel `k^n_t(d)` on the hyperbolic manifold. Dimension dispatch:
 - `n=1`: Gaussian on R (degenerate boundary case).
-- `n=3`: Davies–Mandouvalos (1988) closed form
-  `(4πt)^{-3/2} · exp(-t - d²/4t) · d/sinh d`.
 - `n=2`: Gauss–Legendre quadrature on the Davies–Mandouvalos integral
   representation (32 nodes by default).
-- Higher odd / even `n`: Grigor'yan–Noguchi recursion
-  `k^{n+2}(t, d) = -(2π sinh d)^{-1} · ∂_d k^n(t, d)` via
-  `torch.autograd.grad`, seeded at n=3 (odd) or n=2 (even). The
-  recursion uses `create_graph=True` so backward through the kernel
-  flows correctly to upstream of `distances` for any n ≥ 5.
+- `n=3`: Davies–Mandouvalos (1988) closed form
+  `(4πt)^{-3/2} · exp(-t - d²/4t) · d/sinh d`.
+- `n=5`: hand-derived closed form
+  `(4πt)^{-5/2} · exp(-4t - d²/4t) · [d²·sinh d + 2t·(d·cosh d − sinh d)] / sinh³ d`
+  — the operator chain `(1/sinh r · ∂_r)² exp(-4t - r²/4t)` expanded
+  analytically. Faster and ~3 orders of magnitude more precise than
+  the autograd-recursion alternative (validated by
+  `notes/validation/heat_kernel_results.md`).
+- Higher `n` (odd ≥ 7, even ≥ 4): spectral-shift-corrected
+  Grigor'yan recursion
+  `k^{n+2}(t, d) = -exp(-n·t) / (2π·sinh d) · ∂_d k^n(t, d)`
+  via `torch.autograd.grad`, seeded at n=5 (odd) or n=2 (even).
+  `create_graph=True` preserves the autograd chain for backward
+  through `distances`. The `exp(-n·t)` factor is the
+  spectral-bottom shift between dimensions
+  (`((n+1)/2)² − ((n-1)/2)² = n`); omitting it was a bug in the
+  original implementation, caught by independent PDE-residual
+  validation.
+
 Curvature scales out: `k^n_{−|k|, t}(d) = |k|^{n/2} · k^n_{−1, |k|·t}(√|k| · d)`.
-Refs: Davies–Mandouvalos (1988), Grigor'yan (2009) *Heat Kernel and
-Analysis on Manifolds* Theorem 8.21, Grigor'yan–Noguchi (1998).
+
+Refs: Davies–Mandouvalos (1988); Grigor'yan (2009) *Heat Kernel and
+Analysis on Manifolds* Theorem 8.21; Grigor'yan–Noguchi (1998).
+Validation: `notes/validation/heat_kernel_findings.md`.
 
 ---
 

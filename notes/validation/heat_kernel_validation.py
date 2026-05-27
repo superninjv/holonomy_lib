@@ -134,7 +134,7 @@ def main():
     dr = 1e-5
     config_pde = [
         (n, t, r)
-        for n in (1, 2, 3, 5, 7, 9)
+        for n in (1, 2, 3, 4, 5, 6, 7, 9)
         for t in (0.1, 0.5, 1.0, 2.0)
         for r in (0.2, 0.5, 1.0, 2.0, 4.0)
     ]
@@ -161,7 +161,7 @@ def main():
     ]
     config_mass = [
         (n, t)
-        for n in (1, 2, 3, 5, 7, 9)
+        for n in (1, 2, 3, 4, 5, 6, 7, 9)
         for t in (0.1, 0.5, 1.0, 2.0, 5.0)
     ]
     for n, t in config_mass:

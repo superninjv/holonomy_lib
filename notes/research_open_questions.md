@@ -40,6 +40,15 @@ Severity legend:
   heat-kernel implementation is a useful primitive for downstream
   hyperbolic ML methods; we found a published-recursion error in the
   process. Workshop-paper-worthy.
+- **Update (2026-05-28)**: even n ≥ 4 now also works via the
+  corrected spectral-shift recursion seeded from the n=2 integral
+  form. Probability mass = 1 to machine precision; heat-equation
+  residual at quadrature-error scale (1e-3..1e-5). Closed-form n=5
+  added, replacing the n=5 autograd-recursion path with a precise
+  polynomial expression — ~3 orders of magnitude tighter PDE
+  residual (1e-8..1e-6 vs 1e-5..1e-3) and faster (no autograd
+  calls). The n=7 recursion now seeds from the closed-form n=5,
+  cascading the precision win.
 
 ### Frechet mean on `KappaStereographicManifold` for κ > 0 (spherical)
 

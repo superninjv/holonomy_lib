@@ -46,6 +46,38 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
   Test count now 1082 (was 1072).
 
+### Added (heat-kernel precision + completeness)
+
+- **Even n ≥ 4 heat kernel re-enabled.** The previously-raised
+  `NotImplementedError` is gone — the spectral-shift-corrected
+  recursion `k^{n+2} = -exp(-n·t)/(2π sinh r) · ∂_r k^n` works for
+  even n too, seeded from the n=2 Davies–Mandouvalos integral form.
+  Validated by:
+  - Probability mass `∫ k_t · dV = 1` to machine precision (1e-13)
+    for n ∈ {4, 6}, all t ∈ {0.1, 0.5, 1.0, 2.0, 5.0}.
+  - Heat-equation residual `∂_t k − Δ_radial k ≈ 0` at 1e-5..1e-3
+    for n=4 and 1e-5..1e-1 for n=6 — bounded by the n=2 quadrature
+    error compounding through the autograd recursion, but small
+    enough that the kernel is physically meaningful at typical
+    `(t, r)` scales.
+
+- **Closed-form n=5 heat kernel** (precision push).
+  `k^5_t(r) = (4πt)^{-5/2} · exp(-4t - r²/4t) ·
+                  [r²·sinh r + 2t·(r·cosh r − sinh r)] / sinh³ r`,
+  derived analytically from the operator chain `(1/sinh r ∂_r)²
+  exp(-4t - r²/4t)`. Replaces the autograd-recursion path for n=5:
+  - **Precision**: heat-equation residual now 1e-8..1e-6 (was
+    1e-5..1e-3 via two `torch.autograd.grad` calls). The recursion
+    path's compounded float noise is gone.
+  - **Cascades to odd n ≥ 7**: previously recursed from n=3 via two
+    autograd steps; now recurses from the closed-form n=5 via one
+    step. n=7 residual improved similarly.
+  - **Speed**: no autograd-grad calls in the n=5 forward path.
+
+  3 new tests pin the closed-form against the recursion (atol 1e-10),
+  the analytic limit at r=0 (`(4πt)^{-5/2} · exp(-4t) · (1 + 2t/3)`),
+  and backward-finite gradient through `d`.
+
 ### Fixed (validation pass — major math bug)
 
 - **`hyperbolic_heat_kernel` produced WRONG values for n ≥ 5.** Caught

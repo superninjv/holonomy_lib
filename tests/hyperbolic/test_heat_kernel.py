@@ -188,17 +188,34 @@ def test_heat_equation_residual_n5():
     )
 
 
-def test_even_n_not_implemented():
-    """For now we raise on even n >= 4. The previous code path was
-    mathematically wrong (failed the heat-equation residual check)
-    and a correct even-n recursion needs a separate implementation."""
-    import pytest
-
-    mfd = LorentzManifold(n=4)
+def test_even_n_via_recursion():
+    """Even n ≥ 4 now uses the same spectral-shift-corrected recursion
+    as odd n, seeded from the n=2 Davies–Mandouvalos integral form.
+    Validated by heat-equation residual + probability-mass normalization
+    in `notes/validation/heat_kernel_results.md`. Here we just verify
+    forward + backward are finite and the result is a positive density."""
+    mfd_4 = LorentzManifold(n=4)
     t = torch.tensor(0.5, dtype=torch.float64)
-    d = torch.tensor([0.5, 1.0], dtype=torch.float64)
-    with pytest.raises(NotImplementedError, match="even n >= 4"):
-        hyperbolic_heat_kernel(t, d, mfd)
+    d = torch.tensor([0.5, 1.0, 2.0], dtype=torch.float64,
+                      requires_grad=True)
+    k = hyperbolic_heat_kernel(t, d, mfd_4)
+    assert torch.isfinite(k).all()
+    assert (k > 0).all()  # heat kernel is a probability density
+    # Backward through the recursion path must produce finite gradient
+    k.sum().backward()
+    assert torch.isfinite(d.grad).all()
+
+
+def test_n6_via_two_recursion_steps():
+    """n=6 applies the recursion twice (n=2 → n=4 → n=6). The
+    compounded autograd chain must stay finite and produce a
+    positive-valued kernel."""
+    mfd_6 = LorentzManifold(n=6)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.tensor([0.5, 1.0, 2.0], dtype=torch.float64)
+    k = hyperbolic_heat_kernel(t, d, mfd_6)
+    assert torch.isfinite(k).all()
+    assert (k > 0).all()
 
 
 # --------------------------------------------------------------------
@@ -265,4 +282,60 @@ def test_heat_kernel_backward_n5_recursion():
     assert torch.isfinite(d.grad).all()
     # Gradient should be non-trivial (k decreases as d grows away
     # from 0, so ∂k/∂d < 0 for d > peak).
+    assert (d.grad != 0).any()
+
+
+# --------------------------------------------------------------------
+# Closed-form n=5 precision push
+# --------------------------------------------------------------------
+
+
+def test_n5_closed_form_matches_recursion():
+    """The closed-form n=5 path (operator chain expanded analytically)
+    should agree with the autograd-based recursion path to a tight
+    tolerance — they compute the SAME mathematical function via
+    different numerical chains."""
+    from holonomy_lib.hyperbolic.heat_kernel import (
+        _apply_one_recursion,
+        _heat_kernel_unit_n3,
+        _heat_kernel_unit_n5,
+    )
+
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.linspace(0.1, 3.0, 7, dtype=torch.float64)
+
+    k_closed = _heat_kernel_unit_n5(t, d)
+    # Apply the recursion path manually
+    k_recursion = _apply_one_recursion(
+        _heat_kernel_unit_n3, 3, t, d,
+    )
+
+    torch.testing.assert_close(
+        k_closed, k_recursion, atol=1e-10, rtol=1e-10,
+    )
+
+
+def test_n5_closed_form_at_zero():
+    """Limit at r=0: k^5(t, 0) = (4πt)^{-5/2} exp(-4t) (1 + 2t/3)."""
+    mfd = LorentzManifold(n=5)
+    t_vals = torch.tensor([0.1, 0.5, 1.0, 2.0], dtype=torch.float64)
+    d = torch.zeros_like(t_vals)
+    k = hyperbolic_heat_kernel(t_vals, d, mfd)
+    expected = (
+        (4.0 * math.pi * t_vals) ** -2.5
+        * torch.exp(-4.0 * t_vals)
+        * (1.0 + 2.0 * t_vals / 3.0)
+    )
+    torch.testing.assert_close(k, expected, atol=1e-12, rtol=1e-12)
+
+
+def test_n5_closed_form_backward_finite():
+    """Backward through the closed form path stays finite."""
+    mfd = LorentzManifold(n=5)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.tensor([0.1, 0.5, 1.0, 2.0], dtype=torch.float64,
+                      requires_grad=True)
+    k = hyperbolic_heat_kernel(t, d, mfd)
+    k.sum().backward()
+    assert torch.isfinite(d.grad).all()
     assert (d.grad != 0).any()
