@@ -29,6 +29,7 @@ import hashlib
 import inspect
 import json
 import threading
+import warnings
 import weakref
 from collections import OrderedDict, deque
 from contextlib import contextmanager
@@ -38,6 +39,18 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Literal, Optional
 
 import torch
+
+
+class ProvenanceVersionWarning(UserWarning):
+    """Emitted when loading a registry whose recorded op_versions
+    differ from the currently-installed implementations.
+
+    A version drift means the math primitive has been bumped since
+    the registry was recorded — replay results may legitimately differ
+    from the cached values. Loading proceeds (the metadata is still
+    useful for inspection); replay() against drifted ops is the user's
+    call to make.
+    """
 
 # Pluggable hash algorithm. blake3 is ~5-10× faster than sha256 and
 # still cryptographic; falls back to sha256 if blake3 isn't installed.
@@ -844,11 +857,30 @@ class ProvenanceRegistry:
         path.write_text(json.dumps(self.to_dict(), indent=2))
 
     @classmethod
-    def load(cls, path: str | Path) -> "ProvenanceRegistry":
+    def load(
+        cls, path: str | Path, strict: bool = False,
+    ) -> "ProvenanceRegistry":
         """Load a registry's metadata from a JSON file written by save().
 
-        The loaded registry has no tensor cache (tensors aren't persisted).
-        Substitutions and hooks are reset to empty.
+        The loaded registry has no tensor cache (tensors aren't persisted
+        unless cache_to_disk was set; in that case the on-disk files are
+        re-attached). Substitutions and hooks are reset to empty.
+
+        On load, every node's recorded `op_version` is compared against
+        the currently-installed `OP_REGISTRY[op_id]` version. If any
+        differ, the behavior depends on `strict`:
+          - strict=False (default): emit a `ProvenanceVersionWarning`
+            listing the drifted nodes. Loading proceeds; the metadata
+            is still useful for inspection.
+          - strict=True: raise `ValueError` listing the drifted nodes.
+            Use this when you depend on replay() producing values
+            consistent with the original recording.
+
+        Unknown op_ids (recorded by an op that's no longer registered
+        in this process — e.g. the module wasn't imported) are listed
+        in the warning's drift report. They will block replay through
+        those nodes with a separate RuntimeError when actually
+        attempted.
         """
         path = Path(path)
         data = json.loads(path.read_text())
@@ -866,6 +898,10 @@ class ProvenanceRegistry:
         # already-persisted files without rewalking the directory.
         for k in data.get("disk_cache_keys", []):
             registry._disk_cache_keys.add(k)
+        # Track op_version drift while iterating; warn or raise once
+        # all nodes are loaded so the diagnostic is a single message.
+        drifted: list[tuple[str, str, str, str]] = []
+        unknown: list[tuple[str, str, str]] = []
         for entry in data["nodes"]:
             node = ProvenanceNode(
                 hex=entry["hex"],
@@ -877,6 +913,51 @@ class ProvenanceRegistry:
                 output_dtype=tuple(entry["output_dtype"]),
             )
             registry._nodes[node.hex] = node
+            # Check op_version drift against the currently-installed op.
+            if node.op_id in OP_REGISTRY:
+                current_ver = OP_REGISTRY[node.op_id][1]
+                if current_ver != node.op_version:
+                    drifted.append(
+                        (node.hex, node.op_id, node.op_version, current_ver)
+                    )
+            else:
+                unknown.append((node.hex, node.op_id, node.op_version))
+        if drifted or unknown:
+            lines: list[str] = []
+            if drifted:
+                lines.append(
+                    f"{len(drifted)} node(s) recorded with op_versions "
+                    f"that differ from the currently-installed ops:"
+                )
+                # Cap the per-message detail so a huge registry doesn't
+                # produce an unreadable warning. Show first 10 entries.
+                visible = drifted[:10]
+                for hex_id, op_id, recorded, current in visible:
+                    lines.append(
+                        f"  {hex_id} {op_id} recorded={recorded!r} "
+                        f"current={current!r}"
+                    )
+                if len(drifted) > len(visible):
+                    lines.append(
+                        f"  ...and {len(drifted) - len(visible)} more"
+                    )
+            if unknown:
+                lines.append(
+                    f"{len(unknown)} node(s) have op_ids that are not "
+                    f"currently registered (the module may not have "
+                    f"been imported in this process):"
+                )
+                visible = unknown[:10]
+                for hex_id, op_id, recorded in visible:
+                    lines.append(f"  {hex_id} {op_id} recorded={recorded!r}")
+                if len(unknown) > len(visible):
+                    lines.append(
+                        f"  ...and {len(unknown) - len(visible)} more"
+                    )
+            message = "\n".join(lines)
+            if strict:
+                raise ValueError(message)
+            warnings.warn(message, ProvenanceVersionWarning, stacklevel=2)
         return registry
 
 

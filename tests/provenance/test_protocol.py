@@ -19,6 +19,7 @@ Covers:
 from __future__ import annotations
 
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -1126,3 +1127,83 @@ class TestDiskCache:
                 # Tensor cache survives the round-trip via disk.
                 node = next(iter(reloaded))
                 assert reloaded.get_tensor(node.hex) is not None
+
+
+# --------------------------------------------------------------------
+# op_version drift detection on load() (phase 2b)
+# --------------------------------------------------------------------
+
+
+class TestLoadDrift:
+    """When the currently-installed op_version differs from the
+    version recorded at save-time, load() flags the drift so users
+    don't silently replay against semantics that have changed."""
+
+    def _make_registry(self) -> "tuple[provenance.ProvenanceRegistry, str]":
+        """Helper: record one laplacian call, return (registry, op_id)."""
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(90))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg:
+            laplacian.combinatorial(A)
+        return reg, "holonomy_lib.spectral.laplacian.combinatorial"
+
+    def test_no_warning_when_versions_match(self):
+        """The happy path: same versions on both ends, silent load."""
+        reg, _ = self._make_registry()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "reg.json"
+            reg.save(path)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", provenance.ProvenanceVersionWarning)
+                provenance.ProvenanceRegistry.load(path)  # must not raise
+
+    def test_warning_on_version_drift(self):
+        """Monkeypatch OP_REGISTRY to bump a version after save; load
+        must emit ProvenanceVersionWarning naming the drifted op.
+        """
+        reg, op_id = self._make_registry()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "reg.json"
+            reg.save(path)
+            original_fn, original_ver = provenance.OP_REGISTRY[op_id]
+            try:
+                provenance.OP_REGISTRY[op_id] = (original_fn, "99.0-drifted")
+                with pytest.warns(
+                    provenance.ProvenanceVersionWarning,
+                    match=op_id,
+                ):
+                    provenance.ProvenanceRegistry.load(path)
+            finally:
+                provenance.OP_REGISTRY[op_id] = (original_fn, original_ver)
+
+    def test_strict_raises_on_drift(self):
+        """strict=True converts the warning into a ValueError."""
+        reg, op_id = self._make_registry()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "reg.json"
+            reg.save(path)
+            original_fn, original_ver = provenance.OP_REGISTRY[op_id]
+            try:
+                provenance.OP_REGISTRY[op_id] = (original_fn, "99.0-drifted")
+                with pytest.raises(ValueError, match="differ from"):
+                    provenance.ProvenanceRegistry.load(path, strict=True)
+            finally:
+                provenance.OP_REGISTRY[op_id] = (original_fn, original_ver)
+
+    def test_unknown_op_flagged_in_warning(self):
+        """A node whose op_id is no longer registered (e.g., module
+        not imported) is listed in the warning alongside drifted ops.
+        """
+        reg, op_id = self._make_registry()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "reg.json"
+            reg.save(path)
+            original = provenance.OP_REGISTRY.pop(op_id)
+            try:
+                with pytest.warns(
+                    provenance.ProvenanceVersionWarning,
+                    match="not currently registered",
+                ):
+                    provenance.ProvenanceRegistry.load(path)
+            finally:
+                provenance.OP_REGISTRY[op_id] = original
