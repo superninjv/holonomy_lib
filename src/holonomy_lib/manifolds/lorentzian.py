@@ -1,0 +1,417 @@
+"""Lorentzian (pseudo-Riemannian, signature (1, n-1)) manifold —
+flat Minkowski spacetime `R^{1, n-1}`.
+
+Distinct from `LorentzManifold` (which is the *unit hyperboloid*, a
+Riemannian submanifold sitting inside this space). `LorentzianManifold`
+**is** the ambient Minkowski space:
+
+  - The manifold itself is `R^n` (no constraint surface).
+  - The metric is `g(u, v) = ⟨u, v⟩_M = -u_0·v_0 + Σ_{i ≥ 1} u_i·v_i` —
+    **indefinite signature (1, n-1)**: one timelike direction, `n - 1`
+    spacelike directions.
+  - Tangent space at any point is the full `R^n`; tangent vectors carry
+    a signed norm-squared `⟨v, v⟩_M ∈ R` (negative = timelike,
+    zero = null/lightlike, positive = spacelike).
+  - Geodesics are straight lines (the manifold is flat); `exp_x(v) = x + v`
+    and `log_x(y) = y - x`, regardless of causal type.
+
+The interesting structure isn't the geodesics (trivial) but the **causal
+classification**: which point pairs are timelike-separated, lightlike-
+separated, or spacelike-separated. This is the substrate-as-spacetime
+primitive — Lorentzian-geometry-aware operations that respect the
+sign-indefinite metric.
+
+API summary (compared to a Riemannian manifold):
+
+  - `minkowski_inner(u, v)`: SIGNED inner product; can be any real
+    number (vs `LorentzManifold.minkowski_inner` which is the same
+    function used purely as a helper, and `LorentzManifold.inner`
+    which is the *induced* positive-definite tangent-space metric).
+  - `norm_sq(v)`: signed `⟨v, v⟩_M`. **There is no `norm`** — the
+    square root would be complex for spacelike vectors.
+  - `interval_sq(x, y) := ⟨y - x, y - x⟩_M`: signed squared spacetime
+    interval. Negative for timelike-separated pairs, zero for null,
+    positive for spacelike.
+  - `causal_type(x, y) -> int`: integer label per pair:
+      0 = spacelike, 1 = future-timelike, -1 = past-timelike,
+      2 = future-null, -2 = past-null.
+  - `proper_time(x, y)`: `sqrt(-interval_sq)` for timelike pairs only;
+    raises (or returns NaN element-wise) for non-timelike.
+  - `proper_distance(x, y)`: `sqrt(interval_sq)` for spacelike pairs
+    only.
+  - `exp`, `log`, `retraction`: the trivial flat-space forms.
+
+References:
+  Misner, C. W., Thorne, K. S., Wheeler, J. A. (1973). *Gravitation*.
+    W. H. Freeman. Chapters 1–5 (Lorentzian-geometry foundations).
+  Hawking, S. W., Ellis, G. F. R. (1973). *The Large Scale Structure of
+    Space-Time*. Cambridge University Press, Ch. 4 (causal structure).
+  O'Neill, B. (1983). *Semi-Riemannian Geometry With Applications to
+    Relativity*. Academic Press, Ch. 5 (formal pseudo-Riemannian
+    geometry).
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+import torch
+
+from holonomy_lib.provenance import register_provenance_class, with_provenance
+
+
+@register_provenance_class("LorentzianManifold")
+class LorentzianManifold:
+    """Flat pseudo-Riemannian manifold `R^{1, n-1}`.
+
+    Args:
+      n: ambient dimension. The signature is `(1, n-1)` — one timelike
+        component (index 0) and `n - 1` spacelike components.
+      device, dtype: tensor placement / precision.
+
+    Example:
+      >>> mfd = LorentzianManifold(n=4)               # 4D spacetime
+      >>> x = mfd.random_point(batch_size=3)
+      >>> x.shape
+      torch.Size([3, 4])
+      >>> # Future-timelike pair (light cone of x_0)
+      >>> y = x + torch.tensor([2.0, 0.5, 0.0, 0.0])
+      >>> mfd.causal_type(x, y).tolist()              # 1 = future-timelike
+      [1, 1, 1]
+    """
+
+    # Causal-type integer codes (returned by `causal_type`). The
+    # mathematical sign agrees with the temporal-component sign of
+    # `y - x` for non-spacelike pairs.
+    SPACELIKE: int = 0
+    FUTURE_TIMELIKE: int = 1
+    PAST_TIMELIKE: int = -1
+    FUTURE_NULL: int = 2
+    PAST_NULL: int = -2
+
+    def __init__(self, n: int,
+                 device: str | torch.device = "cpu",
+                 dtype: torch.dtype = torch.float64):
+        if n < 2:
+            raise ValueError(
+                f"n must be >= 2 for a meaningful Lorentzian signature, "
+                f"got n={n}"
+            )
+        self.n = n
+        self.device = torch.device(device)
+        self.dtype = dtype
+
+    @property
+    def dim(self) -> int:
+        """Manifold dimension `n`. Same as ambient — flat space, no
+        constraint surface.
+        """
+        return self.n
+
+    @property
+    def ambient_dim(self) -> int:
+        """Ambient dimension `n`. Same as `.dim` for flat space."""
+        return self.n
+
+    def _provenance_signature(self) -> dict:
+        return {
+            "class": "LorentzianManifold",
+            "n": self.n,
+            "device": str(self.device),
+            "dtype": str(self.dtype),
+        }
+
+    @classmethod
+    def _from_signature(cls, sig: dict) -> "LorentzianManifold":
+        dtype_name = sig["dtype"].split(".")[-1]
+        return cls(
+            n=sig["n"],
+            device=sig["device"],
+            dtype=getattr(torch, dtype_name),
+        )
+
+    # ----------------------------------------------------------------
+    # Minkowski form
+    # ----------------------------------------------------------------
+
+    def minkowski_inner(
+        self, u: torch.Tensor, v: torch.Tensor,
+    ) -> torch.Tensor:
+        """Signed Minkowski inner product
+        `⟨u, v⟩_M = -u_0·v_0 + Σ_{i≥1} u_i·v_i`.
+
+        Can be any real number — negative on timelike, zero on null,
+        positive on spacelike directions.
+
+        Args:
+          u, v: `(B, n)` vectors.
+        Returns:
+          `(B,)` signed scalars.
+        """
+        return (u[..., 1:] * v[..., 1:]).sum(dim=-1) - u[..., 0] * v[..., 0]
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.norm_sq",
+        op_version="0.1",
+    )
+    def norm_sq(self, v: torch.Tensor) -> torch.Tensor:
+        """Signed `⟨v, v⟩_M`. Negative = timelike, zero = null,
+        positive = spacelike.
+
+        **No `norm` method exists** — `√⟨v, v⟩_M` is imaginary for
+        timelike `v`. Use `proper_time` or `proper_distance` for the
+        type-appropriate magnitude.
+
+        References:
+          MTW (1973) §2.3 (Minkowski metric); O'Neill (1983) §3.1.
+        """
+        return self.minkowski_inner(v, v)
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.interval_sq",
+        op_version="0.1",
+    )
+    def interval_sq(
+        self, x: torch.Tensor, y: torch.Tensor,
+    ) -> torch.Tensor:
+        """Signed squared spacetime interval `⟨y - x, y - x⟩_M`.
+
+        - Negative: `x` and `y` are timelike-separated (one is in the
+          past or future light cone of the other).
+        - Zero: `x` and `y` are null-separated (on each other's light
+          cone — photon path).
+        - Positive: `x` and `y` are spacelike-separated (no signal
+          can connect them).
+
+        References:
+          MTW (1973) §1.5; Hawking-Ellis (1973) §4.1.
+        """
+        return self.norm_sq(y - x)
+
+    # ----------------------------------------------------------------
+    # Causal classification
+    # ----------------------------------------------------------------
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.causal_type",
+        op_version="0.1",
+    )
+    def causal_type(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        null_atol: float = 1e-9,
+    ) -> torch.Tensor:
+        """Causal classification of point pairs `(x_i, y_i)`.
+
+        Returns an integer label per batch element:
+          - `SPACELIKE` (= 0): `(y - x)` is spacelike
+          - `FUTURE_TIMELIKE` (= 1): timelike with `(y - x)_0 > 0`
+          - `PAST_TIMELIKE` (= -1): timelike with `(y - x)_0 < 0`
+          - `FUTURE_NULL` (= 2): null/lightlike with `(y - x)_0 > 0`
+          - `PAST_NULL` (= -2): null/lightlike with `(y - x)_0 < 0`
+
+        The `null_atol` tolerance pulls "exactly null" inwards from
+        the |interval_sq| < null_atol band. Reuses the library's
+        `numerical_floor_convention`.
+
+        References:
+          Hawking-Ellis (1973) §4.1 (causal structure).
+          O'Neill (1983) §5.1 (timelike / null / spacelike vectors).
+
+        Args:
+          x, y: `(B, n)` points.
+          null_atol: |interval_sq| floor below which the pair is
+            classified as null. Default 1e-9.
+        Returns:
+          `(B,)` int64 tensor of causal-type codes.
+        """
+        diff = y - x
+        i_sq = self.norm_sq(diff)
+        dt = diff[..., 0]
+        # Classify by sign of interval_sq and direction in time
+        is_null = i_sq.abs() <= null_atol
+        is_timelike = (i_sq < -null_atol)  # negative beyond floor
+        is_future = dt > 0
+        # Start with SPACELIKE everywhere
+        out = torch.zeros(diff.shape[:-1], dtype=torch.int64,
+                           device=diff.device)
+        out = torch.where(
+            is_timelike & is_future,
+            torch.full_like(out, self.FUTURE_TIMELIKE), out,
+        )
+        out = torch.where(
+            is_timelike & ~is_future,
+            torch.full_like(out, self.PAST_TIMELIKE), out,
+        )
+        out = torch.where(
+            is_null & is_future,
+            torch.full_like(out, self.FUTURE_NULL), out,
+        )
+        out = torch.where(
+            is_null & ~is_future,
+            torch.full_like(out, self.PAST_NULL), out,
+        )
+        return out
+
+    # ----------------------------------------------------------------
+    # Proper time / distance
+    # ----------------------------------------------------------------
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.proper_time",
+        op_version="0.1",
+    )
+    def proper_time(
+        self, x: torch.Tensor, y: torch.Tensor,
+    ) -> torch.Tensor:
+        """Proper time `τ = √(-⟨y - x, y - x⟩_M)` for timelike-
+        separated pairs. Returns NaN element-wise for non-timelike
+        pairs (where the square root would be of a non-negative
+        quantity, making the operation type-inappropriate).
+
+        Physically: proper time along the straight-line world-line
+        from `x` to `y`, the time elapsed for an observer travelling
+        directly between the events.
+
+        References:
+          MTW (1973) §1.4 (proper time, "wristwatch time").
+        """
+        i_sq = self.interval_sq(x, y)
+        # Timelike ⇔ i_sq < 0. Mask out non-timelike to NaN to make
+        # type-error obvious to callers rather than silently returning
+        # a meaningless value (e.g. for spacelike, sqrt of positive ≠
+        # proper time but proper distance — different physics).
+        is_timelike = i_sq < 0
+        # Compute √(-i_sq) on the safe (timelike) values; substitute
+        # NaN elsewhere via where-mask.
+        safe = torch.where(is_timelike, -i_sq, torch.ones_like(i_sq))
+        tau = torch.where(
+            is_timelike,
+            torch.sqrt(safe),
+            torch.full_like(i_sq, float("nan")),
+        )
+        return tau
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.proper_distance",
+        op_version="0.1",
+    )
+    def proper_distance(
+        self, x: torch.Tensor, y: torch.Tensor,
+    ) -> torch.Tensor:
+        """Proper distance `s = √⟨y - x, y - x⟩_M` for spacelike-
+        separated pairs. Returns NaN element-wise for non-spacelike
+        pairs.
+
+        Physically: spatial distance in the reference frame where the
+        events are simultaneous.
+
+        References:
+          MTW (1973) §1.4 (proper distance / spatial interval).
+        """
+        i_sq = self.interval_sq(x, y)
+        is_spacelike = i_sq > 0
+        safe = torch.where(is_spacelike, i_sq, torch.ones_like(i_sq))
+        return torch.where(
+            is_spacelike,
+            torch.sqrt(safe),
+            torch.full_like(i_sq, float("nan")),
+        )
+
+    # ----------------------------------------------------------------
+    # Construction
+    # ----------------------------------------------------------------
+
+    def origin(self, batch_size: int = 1) -> torch.Tensor:
+        """Origin `(0, 0, …, 0) ∈ R^{1, n-1}` — convention for the
+        spacetime origin event."""
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be >= 0, got {batch_size}")
+        return torch.zeros(batch_size, self.n,
+                           device=self.device, dtype=self.dtype)
+
+    def random_point(
+        self,
+        batch_size: int = 1,
+        generator: Optional[torch.Generator] = None,
+    ) -> torch.Tensor:
+        """Sample B random points in spacetime — Gaussian in each of
+        the `n` coordinates. The manifold is `R^n` so no rejection
+        needed.
+        """
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be >= 0, got {batch_size}")
+        return torch.randn(batch_size, self.n, generator=generator,
+                            device=self.device, dtype=self.dtype)
+
+    # ----------------------------------------------------------------
+    # Trivial flat-space geodesic primitives (included for API parity
+    # with the Riemannian manifolds)
+    # ----------------------------------------------------------------
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.projection",
+        op_version="0.1",
+    )
+    def projection(
+        self, x: torch.Tensor, w: torch.Tensor,
+    ) -> torch.Tensor:
+        """Tangent-space projection. For flat space the tangent at
+        every point is the full `R^n`, so projection is the identity.
+        Included for API parity with curved Riemannian manifolds.
+        """
+        del x
+        return w
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.exp",
+        op_version="0.1",
+    )
+    def exp(
+        self, x: torch.Tensor, v: torch.Tensor,
+    ) -> torch.Tensor:
+        """Exponential map. In flat space all geodesics are straight
+        lines, so `exp_x(v) = x + v` regardless of `v`'s causal type.
+
+        References:
+          O'Neill (1983) §3.5 (flat semi-Riemannian geodesics).
+        """
+        return x + v
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.log",
+        op_version="0.1",
+    )
+    def log(
+        self, x: torch.Tensor, y: torch.Tensor,
+    ) -> torch.Tensor:
+        """Logarithmic map = `y - x` (the geodesic from `x` to `y` is
+        a straight line; its tangent at `x` is the difference vector).
+        """
+        return y - x
+
+    @with_provenance(
+        "holonomy_lib.manifolds.LorentzianManifold.retraction",
+        op_version="0.1",
+    )
+    def retraction(
+        self, x: torch.Tensor, v: torch.Tensor,
+    ) -> torch.Tensor:
+        """Retraction = exponential map for flat space."""
+        return self.exp(x, v)
+
+    # ----------------------------------------------------------------
+    # is_on_manifold — trivially True (flat space has no constraint)
+    # ----------------------------------------------------------------
+
+    def is_on_manifold(
+        self, x: torch.Tensor, atol: float = 1e-9,
+    ) -> torch.Tensor:
+        """Always True per-batch element — `R^n` has no constraint
+        surface. Included for API parity. `atol` is accepted for
+        signature compatibility but unused.
+        """
+        del atol
+        return torch.ones(x.shape[:-1], dtype=torch.bool,
+                           device=x.device)

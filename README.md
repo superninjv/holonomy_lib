@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 1031 passing](https://img.shields.io/badge/tests-1031%20passing-brightgreen.svg)](#testing)
+[![tests: 1069 passing](https://img.shields.io/badge/tests-1069%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Twelve modules, 1031
+modern ML keeps reinventing project by project. Twelve modules, 1069
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -33,7 +33,7 @@ its inputs through a content-addressable provenance DAG.
 
 | Module | Primitives | What it gives you |
 |---|---|---|
-| `manifolds` | `FixedRankManifold`, `SPDManifold`, `LorentzManifold`, **`KappaStereographicManifold`** | Riemannian geometry on low-rank matrices, SPD cones, the hyperboloid model of hyperbolic space at curvature `k < 0`, and the κ-stereographic model with parametric κ ∈ R interpolating spherical / Euclidean / hyperbolic (Vandereycken 2013; Pennec et al. 2006; Nickel-Kiela 2018; Bachmann-Bécigneul-Ganea 2020) |
+| `manifolds` | `FixedRankManifold`, `SPDManifold`, `LorentzManifold`, `KappaStereographicManifold`, **`LorentzianManifold`** | Riemannian geometry on low-rank matrices, SPD cones, the hyperboloid model of hyperbolic space at curvature `k < 0`, the κ-stereographic model with parametric κ ∈ R interpolating spherical / Euclidean / hyperbolic, and the pseudo-Riemannian (1, n-1)-signature Minkowski spacetime with causal structure (timelike/null/spacelike), proper time, and proper distance (Vandereycken 2013; Pennec et al. 2006; Nickel-Kiela 2018; Bachmann-Bécigneul-Ganea 2020; MTW 1973; O'Neill 1983) |
 | `algebra` | `truncated_svd` (exact + randomized), **`lanczos_eigsh`** | Halko-Martinsson-Tropp randomized SVD; Eckart-Young exact; Lanczos top-k eigensolver with full reorthogonalization (Paige 1972) |
 | `tensor_calculus` | `hosvd`, `mode_product`, `mode_unfolding` | Truncated HOSVD with Kolda-Bader n-mode product |
 | `spectral` | `combinatorial`/`symmetric_normalized`/`random_walk`/`signed` Laplacians, `laplacian_eigenmaps`, `magnetic.*` (directed), `heat_kernel_chebyshev`, **`effective_resistance`**, **`commute_time`**, **`diffusion_map`** | Chung; von Luxburg; Kunegis (signed); Furutani 2020 (magnetic Hermitian); Hammond-Vandergheynst-Gribonval 2011 (Chebyshev heat kernel); Klein-Randić 1993 (resistance); Coifman-Lafon 2006 (diffusion maps) |

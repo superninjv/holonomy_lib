@@ -31,7 +31,7 @@ Shapes use `B` for batch, `n`/`m`/`r`/etc. for math.
 ```python
 from holonomy_lib.manifolds import (
     FixedRankManifold, KappaStereographicManifold, LorentzManifold,
-    SPDManifold,
+    LorentzianManifold, SPDManifold,
 )
 from holonomy_lib.algebra import truncated_svd
 from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
@@ -218,6 +218,47 @@ Bachmann-Bécigneul-Ganea (2020) *Constant Curvature GCN*; Skopek
 et al. (2019) *Mixed-curvature VAEs*; Ungar (2008) *Gyrovector
 spaces*; Ganea et al. (2018) *Hyperbolic Neural Networks* (Poincaré
 ball special case).
+
+### `LorentzianManifold(n, device="cpu", dtype=torch.float64)`
+Flat pseudo-Riemannian Minkowski spacetime `R^{1, n-1}`. Distinct
+from `LorentzManifold` (which is the *unit hyperboloid* embedded in
+this space). `LorentzianManifold` *is* the ambient: the manifold
+itself is `R^n` with signature `(1, n-1)` — one timelike component
+(index 0) and `n − 1` spacelike. Tangent vectors carry a **signed**
+norm-squared `⟨v, v⟩_M ∈ R` (negative = timelike, zero = null,
+positive = spacelike); geodesics are straight lines (flat metric),
+so `exp_x(v) = x + v`, `log_x(y) = y − x`.
+
+The interesting structure isn't the geodesics (trivial) but the
+**causal classification** of point pairs:
+
+| Method | Signature | Returns |
+|---|---|---|
+| `random_point` | `(batch_size=1, generator=None)` | `(B, n)` Gaussian |
+| `origin` | `(batch_size=1)` | `(B, n)` zero |
+| `is_on_manifold` | `(x, atol=1e-9)` | `(B,)` all True (flat space) |
+| `minkowski_inner` | `(u, v)` | `(B,)` signed ⟨u,v⟩_M |
+| `norm_sq` | `(v)` | `(B,)` signed ⟨v,v⟩_M (no `norm` — would be complex) |
+| `interval_sq` | `(x, y)` | `(B,)` signed `⟨y-x, y-x⟩_M` |
+| `causal_type` | `(x, y, null_atol=1e-9)` | `(B,)` int64 — SPACELIKE / FUTURE_TIMELIKE / PAST_TIMELIKE / FUTURE_NULL / PAST_NULL |
+| `proper_time` | `(x, y)` | `(B,)` `√(-interval_sq)` for timelike, NaN otherwise |
+| `proper_distance` | `(x, y)` | `(B,)` `√interval_sq` for spacelike, NaN otherwise |
+| `projection` | `(x, w)` | identity (no constraint) |
+| `exp` | `(x, v)` | `x + v` |
+| `log` | `(x, y)` | `y - x` |
+| `retraction` | `(x, v)` | = `exp(x, v)` |
+
+Use cases:
+- **Spacetime substrate**: model embeddings as events in `R^{1, n-1}`;
+  use `causal_type` for causal-link inference; use `proper_time` for
+  the geodesic interval between causally-connected events.
+- **Indefinite-metric ML**: any task where the metric should be
+  sign-indefinite (vs. positive-definite Riemannian).
+
+Refs: Misner-Thorne-Wheeler (1973) *Gravitation* §1-§5;
+Hawking-Ellis (1973) *Large Scale Structure of Space-Time* §4
+(causal structure); O'Neill (1983) *Semi-Riemannian Geometry With
+Applications to Relativity* §3, §5.
 
 ---
 

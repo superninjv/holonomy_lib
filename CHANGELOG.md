@@ -6,6 +6,24 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Added (Stage 4)
+
+- **`manifolds.LorentzianManifold`** — flat pseudo-Riemannian
+  Minkowski spacetime `R^{1, n-1}`. Distinct from `LorentzManifold`
+  (which is the *unit hyperboloid* embedded in this space).
+  `LorentzianManifold` IS the ambient: the manifold is `R^n` with
+  signature `(1, n-1)` — one timelike component (index 0) and `n − 1`
+  spacelike. Geodesics are straight lines (`exp_x(v) = x + v`); the
+  interesting structure is the **causal classification** of point
+  pairs (timelike/null/spacelike, future/past) plus signed-interval
+  measures (`proper_time`, `proper_distance`). 38 new tests. Closes
+  Stage 4 of the hyperbolic-extension plan; opens the door to the
+  substrate-as-spacetime architecture. Refs: Misner-Thorne-Wheeler
+  (1973) *Gravitation*; Hawking-Ellis (1973) *Large Scale Structure
+  of Space-Time*; O'Neill (1983) *Semi-Riemannian Geometry*.
+
+  Test count now 1069 (was 1031).
+
 ### Fixed (third pass — senior-dev review findings)
 
 - **`hyperbolic_heat_kernel` was non-differentiable for n ≥ 5.** The
