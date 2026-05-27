@@ -250,8 +250,19 @@ continuous parameterization:
 **Paper section**: §5 "New primitives" — the heterogeneous-κ
 sub-section
 
-**Status**: 🔴 implementation + tests exist; needs downstream-task
-ablation + combiner study
+**Status**: 🟢 **paper-ready** — see
+`notes/strengthening/C5_C6_heterogeneous_kappa_strengthened.md`.
+Synthetic identifiability task
+(`notes/strengthening/C5_C6_synthetic_task.py` +
+`_results.md`) with 3-region ground-truth κ-field shows continuous
+per-point κ (with arithmetic_mean combiner) gives best final loss
+(0.0065 vs 0.0099 single, 0.0099 friendly-bank discrete) AND best
+κ-recovery correlation (+0.67 vs +0.63 friendly, +0.53 adversarial).
+The bank-choice penalty (~25% worse loss when bank doesn't match
+truth) is quantified. GraphMoRE-style discrete-gating baseline at
+`tests/research_baselines/graphmore_discrete.py`. Optimization-
+stability caveats documented (coord barrier + κ clamp + LR decay
+needed for robust training).
 
 ---
 
@@ -283,8 +294,17 @@ mean) and arbitrary callable override.
 
 **Paper section**: §5 "New primitives" — same sub-section as C5
 
-**Status**: 🔴 implementation + interface; needs theoretical /
-empirical motivation
+**Status**: 🟢 **paper-ready** — see
+`notes/strengthening/C5_C6_heterogeneous_kappa_strengthened.md`.
+Four combiners exercised on the same synthetic task (arithmetic_mean,
+harmonic_mean, signed_geometric_mean, max_magnitude). arithmetic_mean
+is the empirical winner (best fit + κ-recovery) AND the well-motivated
+smooth default. Non-smooth combiners (signed_geometric_mean's sign(),
+max_magnitude's |·|=|·|) are brittle in Adam-based training;
+harmonic_mean collapses when truth includes κ = 0 because of the
+finfo.tiny clamp guard. The abstraction's value isn't a single
+magic combiner — it's that the library exposes the design choice
+instead of hard-coding one, and lets the user override.
 
 ---
 
