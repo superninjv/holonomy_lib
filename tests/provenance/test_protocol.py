@@ -1018,3 +1018,111 @@ class TestSketchHash:
         with provenance.record(hash_mode="sketch") as rb:
             laplacian.combinatorial(b.unsqueeze(0))
         assert next(iter(ra)).hex != next(iter(rb)).hex
+
+
+# --------------------------------------------------------------------
+# Disk-backed tensor cache (phase 1c)
+# --------------------------------------------------------------------
+
+
+class TestDiskCache:
+    """`cache_to_disk=path` mirrors the in-memory cache to disk. Memory
+    eviction from max_cache_size only drops the in-memory copy; disk
+    survives and get_tensor() reloads on demand.
+    """
+
+    def _build(self, seed: int):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(seed))
+        return (A + A.mT).abs()
+
+    def test_cache_to_disk_implies_cache_tensors(self):
+        """Setting cache_to_disk auto-enables caching — no separate kwarg."""
+        with tempfile.TemporaryDirectory() as d:
+            with provenance.record(cache_to_disk=d) as reg:
+                pass
+            assert reg._cache_tensors is True
+
+    def test_round_trip_through_disk(self):
+        """A tensor written to disk loads back equal."""
+        with tempfile.TemporaryDirectory() as d:
+            A = self._build(80)
+            with provenance.record(cache_to_disk=d) as reg:
+                laplacian.combinatorial(A)
+            node = next(iter(reg))
+            # Force a disk reload by clearing the in-memory cache.
+            in_mem = reg.get_tensor(node.hex)
+            assert in_mem is not None
+            reg._tensor_cache.clear()
+            assert reg.get_tensor(node.hex) is not None
+            torch.testing.assert_close(reg.get_tensor(node.hex), in_mem)
+
+    def test_disk_files_use_safe_filenames(self):
+        """Multi-output keys with `:` separators map to `__` on disk."""
+        with tempfile.TemporaryDirectory() as d:
+            A = self._build(81)
+            with provenance.record(cache_to_disk=d) as reg:
+                # truncated_svd is a multi-output op (U, S, Vt) → its
+                # cache keys include ':0', ':1', ':2' suffixes.
+                truncated_svd(A, r=2)
+            disk_files = list(Path(d).iterdir())
+            assert disk_files, "no files written to disk cache"
+            # No filename should contain a raw ':' (Windows-incompatible).
+            for f in disk_files:
+                assert ":" not in f.name, f"unsafe filename: {f.name}"
+
+    def test_lru_eviction_retains_disk_copy(self):
+        """When max_cache_size evicts a tensor from memory, the disk
+        copy persists; subsequent get_tensor() reloads it.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            with provenance.record(
+                cache_to_disk=d, max_cache_size=1,
+            ) as reg:
+                laplacian.combinatorial(self._build(82))
+                laplacian.combinatorial(self._build(83))
+            hexes = [n.hex for n in reg]
+            assert len(hexes) == 2
+            # max_cache_size=1: only one is in memory at end of recording.
+            assert len(reg._tensor_cache) == 1
+            # But BOTH should be on disk and retrievable.
+            for h in hexes:
+                assert reg.get_tensor(h) is not None
+
+    def test_clear_keeps_disk_by_default(self):
+        """clear() without args only drops in-memory; disk persists."""
+        with tempfile.TemporaryDirectory() as d:
+            with provenance.record(cache_to_disk=d) as reg:
+                laplacian.combinatorial(self._build(84))
+            reg.clear()
+            assert len(reg._tensor_cache) == 0
+            assert len(list(Path(d).iterdir())) > 0  # disk untouched
+
+    def test_clear_with_delete_disk_removes_files(self):
+        """clear(delete_disk=True) removes the .pt files."""
+        with tempfile.TemporaryDirectory() as d:
+            with provenance.record(cache_to_disk=d) as reg:
+                laplacian.combinatorial(self._build(85))
+            assert list(Path(d).iterdir())  # something written
+            reg.clear(delete_disk=True)
+            # No .pt files remain (directory itself may still exist).
+            pt_files = [f for f in Path(d).iterdir() if f.suffix == ".pt"]
+            assert pt_files == []
+
+    def test_save_and_load_preserves_disk_attachment(self):
+        """A saved disk-cached registry reloads pointing at the same
+        cache directory; tensors are still retrievable.
+        """
+        with tempfile.TemporaryDirectory() as cache_dir:
+            with tempfile.TemporaryDirectory() as meta_dir:
+                A = self._build(86)
+                with provenance.record(cache_to_disk=cache_dir) as reg:
+                    laplacian.combinatorial(A)
+                meta = Path(meta_dir) / "reg.json"
+                reg.save(meta)
+                reloaded = provenance.ProvenanceRegistry.load(meta)
+                assert str(reloaded._disk_cache_dir) == str(
+                    Path(cache_dir).expanduser().resolve()
+                )
+                # Tensor cache survives the round-trip via disk.
+                node = next(iter(reloaded))
+                assert reloaded.get_tensor(node.hex) is not None

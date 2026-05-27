@@ -19,6 +19,8 @@ Three groups of cases:
 
 from __future__ import annotations
 
+import tempfile
+
 import torch
 
 from holonomy_lib import provenance
@@ -153,6 +155,42 @@ def _setup_replay_baseline(size, device, dtype):
     return fn
 
 
+# ----- group 4: phase-1 modes (sketch, disk cache) -----
+
+def _setup_hashing_big_tensor_sketch(size, device, dtype):
+    """Sketch-mode variant of hashing_big_tensor.
+
+    Compare against the full-mode case at the same sizes to see the
+    sketch-vs-full speedup. Sketch wins above ~256² float64.
+    """
+    n = size["n"]
+    def fn():
+        x = torch.zeros(n, n, dtype=dtype, device=device)
+        with provenance.record(hash_mode="sketch") as _:
+            _identity(x)
+    return fn
+
+
+def _setup_recording_with_disk_cache(size, device, dtype):
+    """Recording with cache_to_disk set: each output is torch.save'd.
+
+    Uses a single shared tempdir for the bench run. Files accumulate
+    across iterations — the I/O cost shown is the per-call write, not
+    a steady-state where the LRU is in play.
+    """
+    n = size["n"]
+    g = torch.Generator(device="cpu"); g.manual_seed(0)
+    A = torch.rand(size["B"], n, n, generator=g, dtype=dtype)
+    A = (A + A.mT) * 0.5
+    A = A.to(device)
+    tmpdir = tempfile.mkdtemp(prefix="bench_disk_cache_")
+    def fn():
+        with provenance.record(cache_to_disk=tmpdir) as _:
+            L = laplacian.combinatorial(A)
+            _identity(L)
+    return fn
+
+
 _sizes = [
     {"B": 1,  "n": 16},
     {"B": 1,  "n": 128},
@@ -187,3 +225,9 @@ bench.case("replay_overhead", _setup_replay_overhead, _big_sizes,
 bench.case("replay_baseline", _setup_replay_baseline, _big_sizes,
             notes="Direct call to the affected op with the substituted "
                   "tensor. The math floor that replay overhead sits on.")
+bench.case("hashing_big_tensor_sketch", _setup_hashing_big_tensor_sketch, _big_sizes,
+            notes="Sketch-mode hashing — compare against hashing_big_tensor "
+                  "(full mode) at matching sizes; crossover ~n=256.")
+bench.case("recording_with_disk_cache", _setup_recording_with_disk_cache, _big_sizes,
+            notes="Same chain as recording_with_cache but with cache_to_disk "
+                  "set — measures torch.save overhead per output.")

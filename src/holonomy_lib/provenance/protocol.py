@@ -143,6 +143,7 @@ class ProvenanceRegistry:
         max_cache_size: Optional[int] = None,
         cache_ops: Optional[Iterable[str]] = None,
         hash_mode: HashMode = "full",
+        cache_to_disk: Optional[str | Path] = None,
     ):
         self._nodes: dict[str, ProvenanceNode] = {}
         # OrderedDict so we can evict in insertion order ("oldest first")
@@ -150,6 +151,11 @@ class ProvenanceRegistry:
         # want recent intermediates around; if a workload needs LRU-by-
         # access, swap to `move_to_end` on read here.
         self._tensor_cache: "OrderedDict[str, torch.Tensor]" = OrderedDict()
+        # Setting cache_to_disk implies caching is on — there's no point
+        # configuring a disk path if nothing is being cached. Make this
+        # implicit so users only need the one kwarg.
+        if cache_to_disk is not None:
+            cache_tensors = True
         self._cache_tensors: bool = cache_tensors
         self._max_cache_size: Optional[int] = max_cache_size
         # Selective caching: if set, only outputs from these op_ids are
@@ -188,6 +194,18 @@ class ProvenanceRegistry:
                 f"hash_mode must be 'full' or 'sketch', got {hash_mode!r}"
             )
         self.hash_mode: HashMode = hash_mode
+        # Disk cache: a directory that mirrors the in-memory cache.
+        # When set, _cache_put writes the tensor both to memory and to
+        # disk; memory eviction (via max_cache_size) drops the in-memory
+        # copy but the disk copy persists and is reloaded on demand.
+        # Use an absolute path so a registry survives a chdir.
+        self._disk_cache_dir: Optional[Path] = (
+            Path(cache_to_disk).expanduser().resolve()
+            if cache_to_disk is not None else None
+        )
+        self._disk_cache_keys: set[str] = set()
+        if self._disk_cache_dir is not None:
+            self._disk_cache_dir.mkdir(parents=True, exist_ok=True)
 
     # ----- low-level registration -----
 
@@ -216,17 +234,56 @@ class ProvenanceRegistry:
                     self._cache_put(f"{node.hex}:{i}", o)
 
     def _cache_put(self, key: str, value: torch.Tensor) -> None:
-        """Insert into the tensor cache, evicting oldest if size-bounded."""
+        """Insert into the tensor cache, evicting oldest if size-bounded.
+
+        When `cache_to_disk` is set, the tensor is also persisted via
+        `torch.save` to a file named for the (filesystem-sanitized)
+        hex key. Memory eviction (from `max_cache_size`) drops the
+        in-memory copy but the disk copy persists; `get_tensor` will
+        reload it on demand.
+        """
         if key in self._tensor_cache:
             # Refresh to the end so it's not the next eviction victim.
             self._tensor_cache.move_to_end(key)
         self._tensor_cache[key] = value
+        if self._disk_cache_dir is not None:
+            torch.save(
+                value.detach().cpu(),
+                self._disk_path_for(key),
+            )
+            self._disk_cache_keys.add(key)
         if (
             self._max_cache_size is not None
             and len(self._tensor_cache) > self._max_cache_size
         ):
-            # popitem(last=False) pops the oldest entry.
+            # popitem(last=False) pops the oldest entry from memory.
+            # Disk copy (if any) is retained — get_tensor will reload it.
             self._tensor_cache.popitem(last=False)
+
+    def _disk_path_for(self, key: str) -> Path:
+        """Filesystem path for a cache key. Replaces ':' (multi-output
+        index separator) with '__' for Windows compatibility.
+        """
+        assert self._disk_cache_dir is not None
+        safe = key.replace(":", "__")
+        return self._disk_cache_dir / f"{safe}.pt"
+
+    def clear(self, delete_disk: bool = False) -> None:
+        """Drop the in-memory cache. Optionally also delete disk artifacts.
+
+        Args:
+          delete_disk: if True and a disk cache is configured, remove
+            every persisted `.pt` file (and the directory if it becomes
+            empty). Default False so that a `clear()` doesn't silently
+            destroy persisted state.
+        """
+        self._tensor_cache.clear()
+        if delete_disk and self._disk_cache_dir is not None:
+            for key in list(self._disk_cache_keys):
+                p = self._disk_path_for(key)
+                if p.exists():
+                    p.unlink()
+            self._disk_cache_keys.clear()
 
     def _register_tensor_hex(self, t: torch.Tensor, hex_id: str) -> None:
         """Tag a tensor with its hex so downstream ops can chain."""
@@ -276,8 +333,43 @@ class ProvenanceRegistry:
         return out
 
     def get_tensor(self, hex_id: str) -> Optional[torch.Tensor]:
-        """Retrieve a cached output tensor by hex (requires cache_tensors=True)."""
-        return self._tensor_cache.get(hex_id)
+        """Retrieve a cached output tensor by hex (requires cache_tensors=True).
+
+        If a disk cache is configured and the tensor is not in memory,
+        loads it from disk and re-promotes to the in-memory cache so
+        subsequent reads are fast. Returns None if the key isn't cached
+        anywhere.
+        """
+        if hex_id in self._tensor_cache:
+            return self._tensor_cache[hex_id]
+        if (
+            self._disk_cache_dir is not None
+            and hex_id in self._disk_cache_keys
+        ):
+            t = torch.load(
+                self._disk_path_for(hex_id),
+                map_location="cpu",
+                weights_only=True,
+            )
+            # Re-promote to memory; respects max_cache_size eviction.
+            self._cache_put_memory_only(hex_id, t)
+            return t
+        return None
+
+    def _cache_put_memory_only(self, key: str, value: torch.Tensor) -> None:
+        """Insert into the in-memory cache only (no disk write).
+
+        Used by `get_tensor` to re-promote a disk-loaded tensor without
+        re-persisting it — the disk copy already exists.
+        """
+        if key in self._tensor_cache:
+            self._tensor_cache.move_to_end(key)
+        self._tensor_cache[key] = value
+        if (
+            self._max_cache_size is not None
+            and len(self._tensor_cache) > self._max_cache_size
+        ):
+            self._tensor_cache.popitem(last=False)
 
     def parents(self, hex_id: str) -> list[ProvenanceNode]:
         """Direct upstream nodes (input_hexes of `hex_id`)."""
@@ -393,9 +485,14 @@ class ProvenanceRegistry:
     def to_dict(self) -> dict[str, Any]:
         """Plain-Python JSON-friendly export."""
         return {
-            "schema_version": "0.2",
+            "schema_version": "0.3",
             "hash_algorithm": self.hash_algorithm,
             "hash_mode": self.hash_mode,
+            "cache_to_disk": (
+                str(self._disk_cache_dir)
+                if self._disk_cache_dir is not None else None
+            ),
+            "disk_cache_keys": sorted(self._disk_cache_keys),
             "nodes": [n.to_dict() for n in self],
         }
 
@@ -690,7 +787,16 @@ class ProvenanceRegistry:
         # Pre-0.2 schemas predate hash_mode; default to "full" for
         # backward compatibility (the only mode that existed then).
         mode = data.get("hash_mode", "full")
-        registry = cls(hash_algorithm=algorithm, hash_mode=mode)
+        disk_dir = data.get("cache_to_disk")
+        registry = cls(
+            hash_algorithm=algorithm,
+            hash_mode=mode,
+            cache_to_disk=disk_dir,
+        )
+        # Repopulate the disk-key set so get_tensor() can find the
+        # already-persisted files without rewalking the directory.
+        for k in data.get("disk_cache_keys", []):
+            registry._disk_cache_keys.add(k)
         for entry in data["nodes"]:
             node = ProvenanceNode(
                 hex=entry["hex"],
@@ -717,6 +823,7 @@ def record(
     max_cache_size: Optional[int] = None,
     cache_ops: Optional[Iterable[str]] = None,
     hash_mode: HashMode = "full",
+    cache_to_disk: Optional[str | Path] = None,
 ) -> Iterator[ProvenanceRegistry]:
     """Activate provenance recording for decorated primitives.
 
@@ -745,6 +852,13 @@ def record(
         that happen to share the sampled positions and the two
         summary statistics. Hexes are NOT portable across modes; a
         registry serialized in one mode cannot be merged with another.
+      cache_to_disk: if set, cached tensors are also persisted to a
+        directory at this path (one `.pt` file per cache key). Implies
+        `cache_tensors=True`. Memory eviction from `max_cache_size`
+        only removes the in-memory copy; the disk copy persists and
+        is reloaded on demand by `get_tensor`. Useful when a recording
+        produces more cached intermediates than fit in RAM, or when
+        you want to inspect the cache after the Python process exits.
 
     Yields:
       The active ProvenanceRegistry.
@@ -755,6 +869,7 @@ def record(
         max_cache_size=max_cache_size,
         cache_ops=cache_ops,
         hash_mode=hash_mode,
+        cache_to_disk=cache_to_disk,
     )
     prev = getattr(_local, "context", None)
     _local.context = registry
