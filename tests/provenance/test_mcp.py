@@ -38,16 +38,13 @@ def _build_fixture_registry() -> provenance.ProvenanceRegistry:
 
 
 class TestBuildServer:
-    def test_build_server_creates_six_tools(self):
-        """build_server returns a FastMCP whose tool surface includes
-        all six tools the module advertises."""
+    def test_build_server_includes_v03_nav_tools(self):
+        """The v0.3.0 MCP nav-tool names (list_ops, where, node_info,
+        ancestors, get_tensor_summary) must remain registered for
+        backward compat with existing MCP clients."""
         from holonomy_lib.provenance.mcp import build_server
         reg = _build_fixture_registry()
         server = build_server(reg)
-        # FastMCP keeps tools on `_tool_manager._tools` (private but
-        # stable across recent SDK versions). Use the documented
-        # `.list_tools()` async API if `_tool_manager` is missing.
-        names = set()
         if hasattr(server, "_tool_manager"):
             names = set(server._tool_manager._tools.keys())
         else:
@@ -56,7 +53,24 @@ class TestBuildServer:
             names = {t.name for t in tools}
         for expected in [
             "list_ops", "where", "node_info", "ancestors",
-            "get_tensor_summary", "replay",
+            "get_tensor_summary",
+        ]:
+            assert expected in names, f"missing tool: {expected}"
+
+    def test_build_server_includes_v04_inspection_tools(self):
+        """The new v0.4 inspection tools are registered alongside the
+        v0.3 ones."""
+        from holonomy_lib.provenance.mcp import build_server
+        reg = _build_fixture_registry()
+        server = build_server(reg)
+        if not hasattr(server, "_tool_manager"):
+            pytest.skip("MCP SDK version doesn't expose tool internals")
+        names = set(server._tool_manager._tools.keys())
+        for expected in [
+            "tensor_slice", "tensor_per_batch_summary",
+            "tensor_eigenvalues", "tensor_singular_values",
+            "tensor_norm", "tensor_compare",
+            "replay_with", "op_docstring",
         ]:
             assert expected in names, f"missing tool: {expected}"
 
@@ -65,13 +79,9 @@ class TestBuildServer:
         from holonomy_lib.provenance.mcp import build_server
         reg = _build_fixture_registry()
         server = build_server(reg)
-        # Pull the underlying function out of the tool wrapper.
-        # FastMCP wraps callables, but the underlying fn is accessible.
         lap_node = reg.where(
             op_id="holonomy_lib.spectral.laplacian.combinatorial",
         )[0]
-        # Find the registered function. SDK shape varies; use
-        # _tool_manager when present.
         if hasattr(server, "_tool_manager"):
             tool = server._tool_manager._tools["get_tensor_summary"]
             fn = tool.fn if hasattr(tool, "fn") else tool.callable

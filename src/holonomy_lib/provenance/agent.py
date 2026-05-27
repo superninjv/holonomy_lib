@@ -260,6 +260,89 @@ PYTHON_SLICE_ARITY: int = 3
 # ============================================================
 
 
+# ============================================================
+# Registry-navigation tools (mirror of the v0.3.0 MCP surface,
+# moved here so agent.py is the canonical tool inventory)
+# ============================================================
+
+
+@agent_tool(description=(
+    "Return the distinct op_ids present in the registry. Use this "
+    "for orientation — what kinds of operations were recorded."
+))
+def list_ops(registry: ProvenanceRegistry) -> list[str]:
+    """Sorted distinct op_ids."""
+    return sorted({n.op_id for n in registry})
+
+
+@agent_tool(description=(
+    "Return nodes matching op_id and/or op_version filters. Each "
+    "entry is a node-info dict."
+))
+def where(
+    registry: ProvenanceRegistry,
+    op_id: Optional[str] = None,
+    op_version: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Filter nodes by op."""
+    return [
+        n.to_dict()
+        for n in registry.where(op_id=op_id, op_version=op_version)
+    ]
+
+
+@agent_tool(description=(
+    "Return the full ProvenanceNode dict (op_id, op_version, params, "
+    "input_hexes, output_shape, output_dtype) for a given hex."
+))
+def node_info(registry: ProvenanceRegistry, hex_id: str) -> dict[str, Any]:
+    """Look up a node by hex."""
+    if hex_id not in registry:
+        return {"error": "hex not in registry", "hex_id": hex_id}
+    return registry[hex_id].to_dict()
+
+
+@agent_tool(description=(
+    "Return the sorted set of all transitive upstream hexes — the "
+    "Merkle DAG above the given node."
+))
+def ancestors(registry: ProvenanceRegistry, hex_id: str) -> dict[str, Any]:
+    """Transitive ancestors of a node."""
+    if hex_id not in registry:
+        return {"error": "hex not in registry", "hex_id": hex_id}
+    return {"hex": hex_id, "ancestors": sorted(registry.ancestors(hex_id))}
+
+
+@agent_tool(description=(
+    "Global mean/std/min/max for a cached tensor (over ALL elements). "
+    "For batched tensors, prefer tensor_per_batch_summary — global "
+    "stats average over the batch dim and can hide per-batch anomalies."
+))
+def get_tensor_summary(
+    registry: ProvenanceRegistry, hex_id: str,
+) -> dict[str, Any]:
+    """Global tensor stats. Mirror of the v0.3.0 MCP tool, kept for
+    quick scalar-overview use; prefer per-batch summaries for batched
+    tensors."""
+    t = registry.get_tensor(hex_id)
+    if t is None:
+        return {"error": "tensor not cached", "hex_id": hex_id}
+    promoted = t.to(torch.float64)
+    return {
+        "hex": hex_id,
+        "shape": list(t.shape),
+        "dtype": str(t.dtype),
+        "device": str(t.device),
+        "numel": t.numel(),
+        "mean": float(promoted.mean().item()),
+        "std": (
+            float(promoted.std().item()) if t.numel() > 1 else 0.0
+        ),
+        "min": float(promoted.min().item()),
+        "max": float(promoted.max().item()),
+    }
+
+
 def _parse_index_expr(expr: str) -> Union[int, slice, tuple]:
     """Parse a numpy-style index expression into a Python index value.
 
@@ -327,7 +410,7 @@ def _parse_index_expr(expr: str) -> Union[int, slice, tuple]:
 ))
 def tensor_slice(
     registry: ProvenanceRegistry,
-    hex: str,
+    hex_id: str,
     expr: str = ":",
 ) -> dict[str, Any]:
     """Slice a cached tensor by hex.
@@ -341,9 +424,9 @@ def tensor_slice(
     Returns a dict with keys `shape`, `dtype`, and either `values`
     (inline list) or `truncated=True` + `stats` summary.
     """
-    t = registry.get_tensor(hex)
+    t = registry.get_tensor(hex_id)
     if t is None:
-        return {"error": "tensor not cached", "hex": hex}
+        return {"error": "tensor not cached", "hex_id": hex_id}
     try:
         idx = _parse_index_expr(expr)
     except (ValueError, TypeError) as e:
@@ -380,15 +463,15 @@ def tensor_slice(
 ))
 def tensor_per_batch_summary(
     registry: ProvenanceRegistry,
-    hex: str,
+    hex_id: str,
 ) -> dict[str, Any]:
     """Return one summary row per batch element, instead of collapsing
     to global stats. This is the tool that fixes the v0.3.0 "average
     hides the anomaly" wall.
     """
-    t = registry.get_tensor(hex)
+    t = registry.get_tensor(hex_id)
     if t is None:
-        return {"error": "tensor not cached", "hex": hex}
+        return {"error": "tensor not cached", "hex_id": hex_id}
     if t.ndim == 0:
         return {"shape": [], "value": float(t.item())}
     flat = t.reshape(t.shape[0], -1).to(torch.float64)
@@ -418,15 +501,15 @@ def tensor_per_batch_summary(
 ))
 def tensor_eigenvalues(
     registry: ProvenanceRegistry,
-    hex: str,
+    hex_id: str,
     k: int = TENSOR_SPECTRAL_DEFAULT_K,
 ) -> dict[str, Any]:
     """Top-k eigenvalues via eigvalsh. The input is symmetrized as
     `(A + A.T) / 2` for numerical stability, so non-symmetric inputs
     receive their symmetric part's eigenvalues."""
-    t = registry.get_tensor(hex)
+    t = registry.get_tensor(hex_id)
     if t is None:
-        return {"error": "tensor not cached", "hex": hex}
+        return {"error": "tensor not cached", "hex_id": hex_id}
     if t.ndim < 2 or t.shape[-1] != t.shape[-2]:
         return {
             "error": "tensor is not square in last two dims",
@@ -454,13 +537,13 @@ def tensor_eigenvalues(
 ))
 def tensor_singular_values(
     registry: ProvenanceRegistry,
-    hex: str,
+    hex_id: str,
     k: int = TENSOR_SPECTRAL_DEFAULT_K,
 ) -> dict[str, Any]:
     """Top-k singular values via SVD (reduced form)."""
-    t = registry.get_tensor(hex)
+    t = registry.get_tensor(hex_id)
     if t is None:
-        return {"error": "tensor not cached", "hex": hex}
+        return {"error": "tensor not cached", "hex_id": hex_id}
     if t.ndim < 2:
         return {
             "error": "need at least 2 dims for SVD",
@@ -484,13 +567,13 @@ def tensor_singular_values(
 ))
 def tensor_norm(
     registry: ProvenanceRegistry,
-    hex: str,
+    hex_id: str,
     order: str = "frobenius",
 ) -> dict[str, Any]:
     """Frobenius or spectral norm."""
-    t = registry.get_tensor(hex)
+    t = registry.get_tensor(hex_id)
     if t is None:
-        return {"error": "tensor not cached", "hex": hex}
+        return {"error": "tensor not cached", "hex_id": hex_id}
     t64 = t.to(torch.float64)
     if order == "frobenius":
         if t64.ndim <= 1:
