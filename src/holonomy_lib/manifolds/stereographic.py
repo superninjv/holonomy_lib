@@ -272,38 +272,58 @@ class KappaStereographicManifold:
     # ----------------------------------------------------------------
 
     def _tan_kappa_c(self, alpha: torch.Tensor) -> torch.Tensor:
-        """`tan_κ(α) / α` with the analytic limit `1` at α = 0.
+        """`tan_κ(√|κ|·α) / (√|κ|·α)` with the analytic limit `1` at
+        α = 0 OR κ = 0.
 
-        Branch-dispatched (sign fixed at construction):
-          - spherical (κ > 0): `tan(√κ · α)/(√κ · α)` → use
-            `_safe_tanc(√κ · α)`.
-          - hyperbolic (κ < 0): `tanh(√|κ| · α)/(√|κ| · α)` →
-            `_safe_tanhc(√|κ| · α)`.
-          - Euclidean (κ = 0): identically `1`.
-
-        Uses `_get_sqrt_abs_kappa()` so autograd flows back to κ when
-        κ is a learnable `torch.Tensor`. The frozen-float path returns
-        the cached scalar for free.
+        Dual-mode dispatch:
+          - **Static-float κ**: fast path using the construction-time
+            branch (`spherical` / `hyperbolic` / `Euclidean`).
+          - **Tensor κ**: dynamic dispatch on `sign(κ)` at each call,
+            so κ can cross 0 during training. Both spherical
+            (`tan/scaled`) and hyperbolic (`tanh/scaled`) formulas are
+            computed and `torch.where` picks per element. At κ ≈ 0
+            the clamped `sqrt(|κ|)` keeps `scaled` near 0, where both
+            branches' analytic limits are 1 — so the κ-sign flip is
+            continuous.
         """
-        if self._branch == "euclidean":
-            return torch.ones_like(alpha)
-        scaled = self._get_sqrt_abs_kappa() * alpha
-        if self._branch == "spherical":
-            return _safe_tanc(scaled)
-        return _safe_tanhc(scaled)
+        if not self._kappa_is_tensor:
+            # Static κ — locked branch.
+            if self._branch == "euclidean":
+                return torch.ones_like(alpha)
+            scaled = self._sqrt_abs_kappa * alpha
+            if self._branch == "spherical":
+                return _safe_tanc(scaled)
+            return _safe_tanhc(scaled)
+        # Tensor κ — dynamic dispatch so sign(κ) can change during SGD.
+        kappa = self._get_kappa()
+        abs_k = torch.abs(kappa).clamp(min=torch.finfo(alpha.dtype).tiny)
+        scaled = torch.sqrt(abs_k) * alpha
+        return torch.where(
+            kappa > 0, _safe_tanc(scaled), _safe_tanhc(scaled),
+        )
 
     def _atan_kappa_c(self, alpha: torch.Tensor) -> torch.Tensor:
-        """`tan_κ⁻¹(α) / α` with the analytic limit `1` at α = 0.
+        """`tan_κ⁻¹(√|κ|·α) / (√|κ|·α)` with the analytic limit `1` at
+        α = 0 OR κ = 0.
 
-        Uses `_get_sqrt_abs_kappa()` for live-κ autograd; see
-        `_tan_kappa_c` for the dispatch + κ-tensor handling.
+        Same dual-mode dispatch as `_tan_kappa_c`. Note: the hyperbolic
+        branch (`arctanh`) requires the scaled input < 1, i.e. caller
+        keeps points inside the Poincaré-ball domain when κ < 0.
         """
-        if self._branch == "euclidean":
-            return torch.ones_like(alpha)
-        scaled = self._get_sqrt_abs_kappa() * alpha
-        if self._branch == "spherical":
-            return _safe_atanc(scaled)
-        return _safe_atanhc(scaled)
+        if not self._kappa_is_tensor:
+            if self._branch == "euclidean":
+                return torch.ones_like(alpha)
+            scaled = self._sqrt_abs_kappa * alpha
+            if self._branch == "spherical":
+                return _safe_atanc(scaled)
+            return _safe_atanhc(scaled)
+        # Tensor κ — dynamic dispatch
+        kappa = self._get_kappa()
+        abs_k = torch.abs(kappa).clamp(min=torch.finfo(alpha.dtype).tiny)
+        scaled = torch.sqrt(abs_k) * alpha
+        return torch.where(
+            kappa > 0, _safe_atanc(scaled), _safe_atanhc(scaled),
+        )
 
     def _conformal_factor(self, x: torch.Tensor) -> torch.Tensor:
         """λ_κ(x) = 2 / (1 + κ‖x‖²). At origin = 2.
@@ -598,18 +618,15 @@ class KappaStereographicManifold:
         diff = self.mobius_add(-x, y)              # (..., n)
         diff_sq = (diff * diff).sum(dim=-1)
         diff_norm = _safe_sqrt(diff_sq)
-        if self._branch == "euclidean":
-            return 2.0 * diff_norm
-        # 2/√|κ| · tan_κ⁻¹(√|κ| · ‖diff‖). Use _get_sqrt_abs_kappa()
-        # so the autograd graph reaches κ when κ is a learnable
-        # Tensor parameter (otherwise the float self._sqrt_abs_kappa
-        # is a frozen scalar and grad to κ is zero).
-        sqrt_abs_k = self._get_sqrt_abs_kappa()
-        scaled = sqrt_abs_k * diff_norm
-        if self._branch == "spherical":
-            return (2.0 / sqrt_abs_k) * torch.atan(scaled)
-        # hyperbolic
-        return (2.0 / sqrt_abs_k) * torch.atanh(scaled)
+        # Unified κ-trig form: distance = 2·d·(arctan_κ(√|κ|·d)/(√|κ|·d))
+        # = 2·d · _atan_kappa_c(d). Works for any κ ∈ R:
+        #   - κ > 0: 2·d · arctan(√κ·d)/(√κ·d)  = (2/√κ)·arctan(√κ·d)
+        #   - κ < 0: 2·d · arctanh(√|κ|·d)/(√|κ|·d) = (2/√|κ|)·arctanh(√|κ|·d)
+        #   - κ = 0: 2·d · 1 = 2d
+        # The `_atan_kappa_c` helper does the sign-dispatch (dynamic
+        # for Tensor κ, static fast-path for float κ), so κ can flip
+        # signs during training without breakdown.
+        return 2.0 * diff_norm * self._atan_kappa_c(diff_norm)
 
     @with_provenance(
         "holonomy_lib.manifolds.KappaStereographicManifold.exp",

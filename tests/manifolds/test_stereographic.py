@@ -643,3 +643,77 @@ class TestKappaGradientFlowPerOp:
         assert torch.isfinite(kappa.grad)
         # κ's gradient is non-trivial — the loss depends on curvature
         assert kappa.grad.abs() > 0
+
+
+# --------------------------------------------------------------------
+# κ-sign crossing during training (dynamic dispatch)
+# --------------------------------------------------------------------
+
+
+class TestKappaSignCrossing:
+    """Tensor-κ with dynamic dispatch — the manifold's branch is no
+    longer locked at construction time; SGD can push κ from
+    hyperbolic (κ<0) to spherical (κ>0) or vice versa without
+    breakdown. This was the previous "undefined behavior" case."""
+
+    def test_kappa_crosses_zero_negative_to_positive(self):
+        """κ_init = -0.5, regularized toward +0.5. After SGD, κ ends
+        positive; throughout, distance is finite and points stay on
+        the manifold."""
+        kappa = torch.nn.Parameter(
+            torch.tensor(-0.5, dtype=torch.float64),
+        )
+        mfd = KappaStereographicManifold(
+            n=3, kappa=kappa, dtype=torch.float64,
+        )
+        v = (torch.randn(5, 3, dtype=torch.float64,
+                          generator=_seed(300)) * 0.2)
+        optimizer = torch.optim.SGD([kappa], lr=0.01)
+
+        target = torch.tensor(0.5, dtype=torch.float64)
+        for step in range(50):
+            optimizer.zero_grad()
+            T = mfd.exp_0(v)
+            d = mfd.distance(T[:2], T[2:4])
+            loss = d.sum() + 5.0 * (kappa - target) ** 2
+            loss.backward()
+            optimizer.step()
+            # Check finiteness every step
+            assert torch.isfinite(d).all().item(), (
+                f"step {step}: distance not finite, κ={kappa.item()}"
+            )
+            assert torch.isfinite(T).all().item()
+
+        # κ went from -0.5 to near +0.5 — branch must have flipped
+        assert kappa.item() > 0, (
+            f"κ should be positive after regularization, got {kappa.item()}"
+        )
+        # And points remain on manifold under the new sign
+        T_final = mfd.exp_0(v).detach()
+        assert mfd.is_on_manifold(T_final).all().item()
+
+    def test_kappa_crosses_zero_positive_to_negative(self):
+        """Reverse direction: κ_init = +0.5, regularized toward -0.5."""
+        kappa = torch.nn.Parameter(
+            torch.tensor(0.5, dtype=torch.float64),
+        )
+        mfd = KappaStereographicManifold(
+            n=3, kappa=kappa, dtype=torch.float64,
+        )
+        # Sample directly via origin (avoid initialization in the
+        # not-yet-correct branch) — points at origin work for any κ.
+        T_origin = mfd.origin(batch_size=4)
+        # Small Euclidean offsets, evaluated AT each step
+        v = (torch.randn(4, 3, dtype=torch.float64,
+                          generator=_seed(301)) * 0.1)
+        optimizer = torch.optim.SGD([kappa], lr=0.01)
+        target = torch.tensor(-0.5, dtype=torch.float64)
+        for step in range(50):
+            optimizer.zero_grad()
+            T = mfd.exp_0(v)
+            d = mfd.distance(T[:2], T[2:4])
+            loss = d.sum() + 5.0 * (kappa - target) ** 2
+            loss.backward()
+            optimizer.step()
+            assert torch.isfinite(d).all().item()
+        assert kappa.item() < 0

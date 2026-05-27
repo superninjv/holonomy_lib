@@ -211,11 +211,11 @@ for step in range(n_steps):
     optimizer.step()
 ```
 
-Constraint: the branch (`spherical` / `hyperbolic` / `Euclidean`)
-is fixed at construction from κ's initial sign; SGD updates that
-push κ across 0 produce undefined behavior (the static branch
-keeps dispatching to the original sign's formulas). Keep κ in one
-sign half during training.
+**κ can change sign during training.** Dynamic dispatch (for Tensor κ)
+re-evaluates `sign(κ)` at every operation, so SGD is free to push κ
+from hyperbolic (κ<0) to spherical (κ>0) and back. For static (float)
+κ the branch is locked at construction as a fast path — same numerical
+behavior, no per-call sign check.
 
 | Method | Signature | Returns |
 |---|---|---|
@@ -823,11 +823,8 @@ Open frontiers the library does not yet cover:
 - Sparse-input shift-and-invert via iterative solver (CG/MINRES) for
   sparse SA Lanczos.
 - Further manifolds: sphere, Stiefel, Grassmann, product.
-- Smooth-κ-across-zero extension of `KappaStereographicManifold`:
-  v1 supports learnable κ (as `nn.Parameter`) but the
-  spherical/hyperbolic/Euclidean branch is fixed at construction
-  from `sign(κ_init)`. Crossing 0 during training is undefined.
-  A full κ ∈ R Taylor-blended implementation would close this.
+(`KappaStereographicManifold` now supports κ-sign crossing
+during training — the previous static-branch limitation is closed.)
 - Higher-dimensional cellular sheaves on simplicial complexes (with
   2-cells / faces and the corresponding chain identity ∂_1 ∘ ∂_2 = 0).
 - SE(3) / SU(2) / SL(n) Lie group primitives.

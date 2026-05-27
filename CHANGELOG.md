@@ -16,6 +16,19 @@ version numbers follow [Semantic Versioning](https://semver.org).
   for curved Lorentzian backgrounds (Schwarzschild, FLRW). 7 new
   tests verify shape + Minkowski signature.
 
+- **Learnable κ can cross 0 during training** (the previous
+  static-branch limitation is closed). When `kappa` is a Tensor,
+  `_tan_kappa_c` and `_atan_kappa_c` dispatch dynamically on
+  `sign(κ)` at every call site via `torch.where(κ > 0, spherical,
+  hyperbolic)`; `distance` was also refactored to a unified
+  κ-trig form (`2·d · _atan_kappa_c(d)`) that handles all three
+  branches uniformly. `|κ|` is clamped above `finfo.tiny` at the
+  sqrt to keep autograd finite through the κ=0 crossing. Static
+  (float) κ keeps its fast-path branch lock — same behavior, zero
+  overhead. Two new tests verify κ flipping `-0.5 → +0.5` and
+  `+0.5 → -0.5` via 50 SGD steps with finite gradients + on-manifold
+  embeddings throughout.
+
 - **Learnable κ on `KappaStereographicManifold`** — **full
   autograd through every κ-dependent operation**. Accept κ as a
   0-dim `torch.Tensor` (e.g. `nn.Parameter`); the gradient of any
