@@ -8,6 +8,36 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
 ### Added
 
+- **`holonomy_lib.hyperbolic`** — new module: manifold-aware graph
+  operations. Each primitive takes a manifold (e.g. `LorentzManifold`)
+  as an explicit dependency, so the algorithms generalize naturally
+  to other constant-curvature manifolds (`KappaStereographicManifold`,
+  planned). Four primitives:
+  - `manifold_aware_inner(x, y, manifold)` — Riemannian inner via the
+    tangent at the manifold origin; Euclidean dot of `log_0` for
+    `LorentzManifold`. Refs: Pennec (2006) §3.
+  - `frechet_mean(points, manifold, weights, max_iter, tol)` —
+    Karcher (1977) intrinsic mean via iterated weighted tangent
+    averaging. Unique and well-defined on Hadamard manifolds (Afsari
+    2011), including all `LorentzManifold` curvatures.
+  - `hyperbolic_laplacian_eigenmaps(adjacency, manifold, max_steps,
+    lr, init, generator)` — embeds graph nodes on `manifold` by
+    minimizing `Σ A_ij d_M(Y_i, Y_j)²` via `RiemannianSGD`. Refs:
+    Belkin-Niyogi (2003), Nickel-Kiela (2017) *Poincaré Embeddings*,
+    Liu et al. (2019) *Hyperbolic GNN*.
+  - `hyperbolic_heat_kernel(t, distances, manifold, n_quad,
+    tail_budget)` — heat kernel `k^n_t(d)` with dimension dispatch:
+    Gaussian for n=1, Davies-Mandouvalos closed form for n=3,
+    Gauss-Legendre quadrature on the Davies-Mandouvalos integral for
+    n=2, Grigor'yan-Noguchi recursion via `torch.autograd.grad` for
+    higher odd/even n. Curvature scales out cleanly via
+    `k^n_{-|k|, t}(d) = |k|^{n/2} · k^n_{-1, |k|·t}(√|k|·d)`. Refs:
+    Davies-Mandouvalos (1988); Grigor'yan (2009) *Heat Kernel and
+    Analysis on Manifolds* Thm 8.21; Grigor'yan-Noguchi (1998).
+  Test count now 822 (was 788). New cataloged constants:
+  `_N_DAVIES_MANDOUVALOS`, `_N_GRIGORYAN_INTEGRAL`,
+  `HEAT_KERNEL_QUADRATURE_NODES`, `HEAT_KERNEL_QUADRATURE_TAIL_BUDGET`.
+
 - **`manifolds.LorentzManifold`** — hyperboloid model of hyperbolic
   space at configurable sectional curvature `k < 0` (default `k = -1`,
   the canonical unit hyperboloid). Full closed-form API: Minkowski

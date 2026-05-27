@@ -1,0 +1,75 @@
+"""Tests for holonomy_lib.hyperbolic.manifold_aware_inner."""
+
+from __future__ import annotations
+
+import pytest
+import torch
+
+from holonomy_lib.hyperbolic import manifold_aware_inner
+from holonomy_lib.manifolds import LorentzManifold
+
+
+def _seed(s: int) -> torch.Generator:
+    g = torch.Generator()
+    g.manual_seed(s)
+    return g
+
+
+@pytest.mark.parametrize("batch", [1, 4])
+def test_shape(batch):
+    mfd = LorentzManifold(n=3)
+    x = mfd.random_point(batch_size=batch, generator=_seed(0))
+    y = mfd.random_point(batch_size=batch, generator=_seed(1))
+    out = manifold_aware_inner(x, y, mfd)
+    assert out.shape == (batch,)
+
+
+def test_symmetric():
+    """⟨x, y⟩ = ⟨y, x⟩."""
+    mfd = LorentzManifold(n=3)
+    x = mfd.random_point(batch_size=4, generator=_seed(2))
+    y = mfd.random_point(batch_size=4, generator=_seed(3))
+    torch.testing.assert_close(
+        manifold_aware_inner(x, y, mfd),
+        manifold_aware_inner(y, x, mfd),
+        atol=1e-12, rtol=0,
+    )
+
+
+def test_self_inner_is_distance_to_origin_squared():
+    """⟨x, x⟩ = ‖log_o(x)‖² = d(o, x)² ≥ 0 with equality iff x = o."""
+    mfd = LorentzManifold(n=3)
+    x = mfd.random_point(batch_size=4, generator=_seed(4))
+    self_ip = manifold_aware_inner(x, x, mfd)
+    # All positive (and equal to d(o, x)²)
+    assert (self_ip >= 0).all()
+    # Check against direct distance computation
+    origin = mfd.origin(batch_size=4)
+    d = mfd.distance(origin, x)
+    torch.testing.assert_close(
+        self_ip, d * d, atol=1e-10, rtol=1e-10,
+    )
+
+
+def test_origin_inner_is_zero():
+    """⟨o, x⟩ = ⟨log_o(o), log_o(x)⟩ = ⟨0, log_o(x)⟩ = 0."""
+    mfd = LorentzManifold(n=3)
+    x = mfd.random_point(batch_size=4, generator=_seed(5))
+    o = mfd.origin(batch_size=4)
+    out = manifold_aware_inner(o, x, mfd)
+    torch.testing.assert_close(
+        out, torch.zeros_like(out), atol=1e-12, rtol=0,
+    )
+
+
+def test_matches_euclidean_for_origin_neighborhood():
+    """For x = exp_0(v) with small v, log_0(x) ≈ v, so the manifold-
+    aware inner matches the Euclidean inner of the tangent v."""
+    mfd = LorentzManifold(n=3)
+    v_x = torch.randn(3, mfd.n, dtype=mfd.dtype, generator=_seed(6)) * 0.05
+    v_y = torch.randn(3, mfd.n, dtype=mfd.dtype, generator=_seed(7)) * 0.05
+    x = mfd.exp_0(v_x)
+    y = mfd.exp_0(v_y)
+    out = manifold_aware_inner(x, y, mfd)
+    expected = (v_x * v_y).sum(dim=-1)
+    torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)

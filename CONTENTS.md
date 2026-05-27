@@ -61,6 +61,10 @@ from holonomy_lib.sheaf import (
     GraphSheaf, sheaf_coboundary, sheaf_laplacian, sheaf_dirichlet_energy,
 )
 from holonomy_lib.lie import so3, real_spherical_harmonics
+from holonomy_lib.hyperbolic import (
+    frechet_mean, hyperbolic_heat_kernel,
+    hyperbolic_laplacian_eigenmaps, manifold_aware_inner,
+)
 from holonomy_lib import provenance
 ```
 
@@ -591,6 +595,55 @@ Edmonds (1957) *Angular Momentum in Quantum Mechanics*; Cohen et al.
 
 ---
 
+## §Hyperbolic: `holonomy_lib.hyperbolic`
+
+Manifold-aware graph operations. Each primitive takes a manifold
+object (e.g. `LorentzManifold`) as an explicit dependency, so the
+algorithms generalize to other constant-curvature manifolds
+(`KappaStereographicManifold`, etc.) without rewrites. This is the
+layer where graph algorithms meet differential geometry: intrinsic
+means, manifold-valued Laplacian eigenmaps, and the manifold heat
+kernel.
+
+### `manifold_aware_inner(x, y, manifold) → (B,)`
+Riemannian inner product of `x` and `y` via the tangent at the
+manifold origin: `⟨log_o(x), log_o(y)⟩_o`. For `LorentzManifold`
+this reduces to the Euclidean dot product of the spatial parts of
+`log_0(x)` and `log_0(y)`. Symmetric, non-negative on the diagonal
+(equals `d(o, x)²` for x = y). Refs: Pennec (2006) §3.
+
+### `frechet_mean(points, manifold, weights=None, max_iter=100, tol=1e-9) → (B, n+1)`
+Weighted Karcher (1977) iteration for the Fréchet mean — the
+geodesically-convex minimizer of `Σ_i w_i · d_M(μ, p_i)²` on a
+Hadamard manifold. Iterates
+`μ_{t+1} = exp_{μ_t}(Σ w_i log_{μ_t}(p_i) / Σ w_i)` until the update
+tangent's Riemannian norm falls below `tol`. Refs: Karcher (1977),
+Pennec (2006) §4, Afsari (2011) on uniqueness.
+
+### `hyperbolic_laplacian_eigenmaps(adjacency, manifold, max_steps=200, lr=0.05, init=None, generator=None) → (B, N, n+1)`
+Embed graph nodes on `manifold` by minimizing `Σ_{ij} A_{ij} ·
+d_M(Y_i, Y_j)²` via `RiemannianSGD`. Output shape `(B, N,
+ambient_dim)`. Cost per step is `O(B · N² · ambient_dim)` from the
+pairwise `log` evaluation; suited to graphs with `N ≤ a few hundred`.
+Refs: Belkin-Niyogi (2003), Nickel-Kiela (2017) *Poincaré Embeddings*,
+Liu et al. (2019) *Hyperbolic GNN*.
+
+### `hyperbolic_heat_kernel(t, distances, manifold, n_quad=32, tail_budget=20.0) → tensor`
+Heat kernel `k^n_t(d)` on the hyperbolic manifold. Dimension dispatch:
+- `n=1`: Gaussian on R (degenerate boundary case).
+- `n=3`: Davies–Mandouvalos (1988) closed form
+  `(4πt)^{-3/2} · exp(-t - d²/4t) · d/sinh d`.
+- `n=2`: Gauss–Legendre quadrature on the Davies–Mandouvalos integral
+  representation (32 nodes by default).
+- Higher odd / even `n`: Grigor'yan–Noguchi recursion
+  `k^{n+2}(t, d) = -(2π sinh d)^{-1} · ∂_d k^n(t, d)` via
+  `torch.autograd.grad`, seeded at n=3 (odd) or n=2 (even).
+Curvature scales out: `k^n_{−|k|, t}(d) = |k|^{n/2} · k^n_{−1, |k|·t}(√|k| · d)`.
+Refs: Davies–Mandouvalos (1988), Grigor'yan (2009) *Heat Kernel and
+Analysis on Manifolds* Theorem 8.21, Grigor'yan–Noguchi (1998).
+
+---
+
 ## Planned primitives
 
 Open frontiers the library does not yet cover:
@@ -607,9 +660,6 @@ Open frontiers the library does not yet cover:
   sparse SA Lanczos.
 - Further manifolds: sphere, Stiefel, Grassmann, κ-stereographic
   (parametric curvature interpolating spherical/Euclidean/hyperbolic).
-- Manifold-aware graph operations module `holonomy_lib.hyperbolic`:
-  Fréchet mean on a manifold, hyperbolic Laplacian eigenmaps,
-  manifold-aware inner product, hyperbolic heat kernel.
 - Higher-dimensional cellular sheaves on simplicial complexes (with
   2-cells / faces and the corresponding chain identity ∂_1 ∘ ∂_2 = 0).
 - SE(3) / SU(2) / SL(n) Lie group primitives.

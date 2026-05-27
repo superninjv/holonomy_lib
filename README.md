@@ -11,7 +11,7 @@
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
-[![tests: 788 passing](https://img.shields.io/badge/tests-788%20passing-brightgreen.svg)](#testing)
+[![tests: 822 passing](https://img.shields.io/badge/tests-822%20passing-brightgreen.svg)](#testing)
 [![audit: clean](https://img.shields.io/badge/audit-clean-brightgreen.svg)](#audit-discipline)
 
 ---
@@ -21,7 +21,7 @@
 A consolidated PyTorch math library for research at the intersection of
 **differential geometry**, **spectral graph theory**, **computational
 topology**, and **mechanistic interpretability**: the mathematics that
-modern ML keeps reinventing project by project. Twelve modules, 788
+modern ML keeps reinventing project by project. Twelve modules, 822
 tests, every numerical constant derived or cataloged with a
 scale-of-validity, every primitive cited to the paper that defines it.
 
@@ -45,6 +45,7 @@ its inputs through a content-addressable provenance DAG.
 | **`sheaf`** | **`GraphSheaf`**, **`sheaf_coboundary`**, **`sheaf_laplacian`**, **`sheaf_dirichlet_energy`** | Cellular sheaves on graphs and their Laplacians (Hansen-Ghrist 2019); reduces to the standard graph Laplacian under trivial stalks; the spectral foundation behind Neural Sheaf Diffusion (Bodnar et al. 2022) |
 | **`lie`** | **`so3.{exp,log,axis_angle,random_so3,compose}`**, **`real_spherical_harmonics`** | SO(3) primitives: Rodrigues / matrix log with empirically-calibrated near-π branch, Haar-uniform sampling (Shoemake 1992), composition; real spherical harmonics Y_lm for l ≤ 4 (Edmonds 1957), the natural basis for SO(3)-equivariant functions on the sphere |
 | `provenance` | `@with_provenance`, `record()`, `ProvenanceRegistry` | Content-addressable Merkle DAG of math primitives; substitution / replay / SAELens emission for mech interp |
+| **`hyperbolic`** | **`frechet_mean`**, **`hyperbolic_laplacian_eigenmaps`**, **`manifold_aware_inner`**, **`hyperbolic_heat_kernel`** | Manifold-aware graph operations: Karcher (1977) intrinsic mean, RSGD-based hyperbolic Laplacian eigenmaps (Belkin-Niyogi + Nickel-Kiela 2017), tangent-at-origin inner product (Pennec 2006), and the dimension-dispatched H^n heat kernel (Davies-Mandouvalos 1988 closed form n=3, Grigor'yan-Noguchi recursion higher) |
 
 ---
 
