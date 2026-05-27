@@ -1207,3 +1207,126 @@ class TestLoadDrift:
                     provenance.ProvenanceRegistry.load(path)
             finally:
                 provenance.OP_REGISTRY[op_id] = original
+
+
+# --------------------------------------------------------------------
+# Visualization + diff renderer (phase 3a)
+# --------------------------------------------------------------------
+
+
+class TestMermaidExport:
+    def test_mermaid_contains_flowchart_header(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(100))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg:
+            laplacian.combinatorial(A)
+        out = reg.to_mermaid()
+        assert out.startswith("flowchart TD")
+
+    def test_mermaid_lists_nodes_and_edges(self):
+        """A 2-op chain produces one node line per op and one edge
+        line connecting them."""
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(101))
+        A = (A + A.mT).abs() + torch.eye(5, dtype=torch.float64).unsqueeze(dim=0)
+        with provenance.record() as reg:
+            L = laplacian.combinatorial(A)
+            truncated_svd(L, r=2, mode="exact")
+        out = reg.to_mermaid()
+        lap = reg.where(op_id="holonomy_lib.spectral.laplacian.combinatorial")[0]
+        svd = reg.where(op_id="holonomy_lib.algebra.linear.truncated_svd")[0]
+        # Both nodes appear with their hex IDs.
+        assert lap.hex in out
+        assert svd.hex in out
+        # Edge from laplacian to svd is present.
+        assert f"{lap.hex} --> {svd.hex}" in out
+
+    def test_mermaid_safe_on_empty_registry(self):
+        with provenance.record() as reg:
+            pass
+        out = reg.to_mermaid()
+        # Returns valid (if empty) Mermaid source.
+        assert "flowchart TD" in out
+
+
+class TestGraphvizExport:
+    def test_dot_contains_digraph_header(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(102))
+        A = (A + A.mT).abs()
+        with provenance.record() as reg:
+            laplacian.combinatorial(A)
+        out = reg.to_graphviz()
+        assert out.startswith("digraph provenance {")
+        assert out.endswith("}")
+
+    def test_dot_lists_nodes_and_edges(self):
+        A = torch.randn(1, 5, 5, dtype=torch.float64, generator=_seeded(103))
+        A = (A + A.mT).abs() + torch.eye(5, dtype=torch.float64).unsqueeze(dim=0)
+        with provenance.record() as reg:
+            L = laplacian.combinatorial(A)
+            truncated_svd(L, r=2, mode="exact")
+        out = reg.to_graphviz()
+        lap = reg.where(op_id="holonomy_lib.spectral.laplacian.combinatorial")[0]
+        svd = reg.where(op_id="holonomy_lib.algebra.linear.truncated_svd")[0]
+        assert f'"{lap.hex}"' in out
+        assert f'"{svd.hex}"' in out
+        assert f'"{lap.hex}" -> "{svd.hex}";' in out
+
+
+class TestDiffSummary:
+    def test_identical_registries_report_no_differences(self):
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(110))
+        A = (A + A.mT).abs()
+        with provenance.record() as r1:
+            laplacian.combinatorial(A)
+        with provenance.record() as r2:
+            laplacian.combinatorial(A.clone())
+        out = r1.diff_summary(r2)
+        # Same content, identical hexes → all shared, no drift.
+        assert "Cache hits" in out
+        # Empty drift / new / gone sections shouldn't appear.
+        assert "Drift" not in out
+        assert "Only in self" not in out
+        assert "Only in other" not in out
+
+    def test_truly_identical_registries(self):
+        """An empty self vs empty other returns the no-diff sentinel."""
+        with provenance.record() as r1:
+            pass
+        with provenance.record() as r2:
+            pass
+        assert r1.diff_summary(r2) == "(No differences.)"
+
+    def test_drift_categorizes_same_op_different_hex(self):
+        """Same op_id called on different inputs → categorized as drift,
+        not as new/gone.
+        """
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(111))
+        A = (A + A.mT).abs()
+        B = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(112))
+        B = (B + B.mT).abs()
+        with provenance.record() as r1:
+            laplacian.combinatorial(A)
+        with provenance.record() as r2:
+            laplacian.combinatorial(B)
+        out = r1.diff_summary(r2)
+        assert "Drift" in out
+        assert "holonomy_lib.spectral.laplacian.combinatorial" in out
+        # Not classified as Only-in-self or Only-in-other (which would
+        # mean the op_id was unique to one side).
+        assert "Only in self" not in out
+        assert "Only in other" not in out
+
+    def test_only_in_self_categorizes_unique_op_id(self):
+        """An op that only ran on the self side appears in
+        'Only in self'.
+        """
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(113))
+        A = (A + A.mT).abs() + torch.eye(4, dtype=torch.float64).unsqueeze(dim=0)
+        with provenance.record() as r1:
+            L = laplacian.combinatorial(A)
+            truncated_svd(L, r=2, mode="exact")
+        with provenance.record() as r2:
+            laplacian.combinatorial(A.clone())
+        out = r1.diff_summary(r2)
+        assert "Only in self" in out
+        assert "holonomy_lib.algebra.linear.truncated_svd" in out

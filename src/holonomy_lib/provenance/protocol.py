@@ -557,6 +557,55 @@ class ProvenanceRegistry:
             "nodes": [n.to_dict() for n in self],
         }
 
+    def to_mermaid(self) -> str:
+        """Render the DAG as a Mermaid flowchart string.
+
+        Output is suitable for inline GitHub Markdown or any Mermaid
+        renderer (mermaid.live, IPython display, etc.). Each node
+        carries its hex + the last segment of its op_id; edges point
+        from parents to children.
+
+        Hexes are already 16 hex chars (no special characters) so they
+        serve as Mermaid node IDs directly with no escaping.
+        """
+        lines = ["flowchart TD"]
+        for n in self:
+            short_op = n.op_id.rsplit(".", 1)[-1]
+            # Escape any quote chars in case op_id ever contains one.
+            label = f"{short_op}<br/>{n.hex}".replace('"', '&quot;')
+            lines.append(f'    {n.hex}["{label}"]')
+        for n in self:
+            for input_hex in n.input_hexes:
+                _, _, hex_part = input_hex.partition("=")
+                base = hex_part.split(":")[0]
+                if base in self._nodes:
+                    lines.append(f"    {base} --> {n.hex}")
+        return "\n".join(lines)
+
+    def to_graphviz(self) -> str:
+        """Render the DAG as Graphviz DOT source.
+
+        Returns a string suitable for `graphviz`/`dot` rendering. We
+        don't import the optional `graphviz` Python package; users
+        pipe the string to `dot -Tpng` (or similar) themselves. This
+        keeps the dependency surface zero for inspection-only use.
+        """
+        lines = ["digraph provenance {"]
+        lines.append("    rankdir=TB;")
+        lines.append('    node [shape=box, style=rounded];')
+        for n in self:
+            short_op = n.op_id.rsplit(".", 1)[-1]
+            label = f"{short_op}\\n{n.hex}".replace('"', r'\"')
+            lines.append(f'    "{n.hex}" [label="{label}"];')
+        for n in self:
+            for input_hex in n.input_hexes:
+                _, _, hex_part = input_hex.partition("=")
+                base = hex_part.split(":")[0]
+                if base in self._nodes:
+                    lines.append(f'    "{base}" -> "{n.hex}";')
+        lines.append("}")
+        return "\n".join(lines)
+
     def to_sae_dataset(
         self, op_id: Optional[str] = None,
     ) -> Iterator[tuple[torch.Tensor, dict[str, Any]]]:
@@ -648,6 +697,75 @@ class ProvenanceRegistry:
                 set(other_hexes_by_op) - set(self_hexes_by_op),
             ),
         }
+
+    def diff_summary(self, other: "ProvenanceRegistry") -> str:
+        """Human-readable rendering of `diff()`.
+
+        Buckets the result into four categories:
+          - **Cache hits**: nodes with matching hexes (same op + same
+            params + same input chain produced the same hex).
+          - **Drift**: same op_id appears in both, but with different
+            hexes — same operation called with different parameters
+            or upstream tensors.
+          - **Only in self / Only in other**: ops that ran only on one
+            side.
+
+        Returns a multi-line string; if the registries are identical,
+        returns a single-line "(No differences.)" message.
+        """
+        d = self.diff(other)
+        in_self_ops = set(d["only_in_self"])
+        in_other_ops = set(d["only_in_other"])
+        drifted = in_self_ops & in_other_ops
+        new_ops = in_self_ops - in_other_ops
+        gone_ops = in_other_ops - in_self_ops
+
+        lines: list[str] = ["Diff: self vs other"]
+        if d["shared"]:
+            total = sum(len(v) for v in d["shared"].values())
+            lines.append(
+                f"\nCache hits ({total} call(s) with matching hexes):"
+            )
+            for op_id, hexes in sorted(d["shared"].items()):
+                lines.append(f"  {op_id} x {len(hexes)}")
+
+        if drifted:
+            drift_total = sum(
+                len(d["only_in_self"][op]) + len(d["only_in_other"][op])
+                for op in drifted
+            )
+            lines.append(
+                f"\nDrift ({len(drifted)} op(s), {drift_total} divergent call(s)):"
+            )
+            for op_id in sorted(drifted):
+                self_h = d["only_in_self"][op_id]
+                other_h = d["only_in_other"][op_id]
+                lines.append(
+                    f"  {op_id}: self has {self_h[:3]}"
+                    f"{'...' if len(self_h) > 3 else ''}, "
+                    f"other has {other_h[:3]}"
+                    f"{'...' if len(other_h) > 3 else ''}"
+                )
+
+        if new_ops:
+            new_total = sum(len(d["only_in_self"][op]) for op in new_ops)
+            lines.append(
+                f"\nOnly in self ({len(new_ops)} op(s), {new_total} call(s)):"
+            )
+            for op_id in sorted(new_ops):
+                lines.append(f"  {op_id} x {len(d['only_in_self'][op_id])}")
+
+        if gone_ops:
+            gone_total = sum(len(d["only_in_other"][op]) for op in gone_ops)
+            lines.append(
+                f"\nOnly in other ({len(gone_ops)} op(s), {gone_total} call(s)):"
+            )
+            for op_id in sorted(gone_ops):
+                lines.append(f"  {op_id} x {len(d['only_in_other'][op_id])}")
+
+        if not d["shared"] and not drifted and not new_ops and not gone_ops:
+            return "(No differences.)"
+        return "\n".join(lines)
 
     # ----- causal replay: downstream DAG re-execution -----
 
