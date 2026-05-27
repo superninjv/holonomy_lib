@@ -909,3 +909,112 @@ class TestHashAlgorithm:
         h1 = next(iter(r1)).hex
         h2 = next(iter(r2)).hex
         assert h1 != h2, "different hash algos must produce different hexes"
+
+
+# --------------------------------------------------------------------
+# Sketch hash mode (phase 1b)
+# --------------------------------------------------------------------
+
+
+class TestSketchHash:
+    """`hash_mode='sketch'` trades crypto-grade content hashing for an
+    O(SKETCH_SAMPLES)-bytes digest. Must be deterministic and must
+    distinguish typical-research-scale perturbations.
+    """
+
+    def _record_sketch(self, A: torch.Tensor) -> str:
+        with provenance.record(hash_mode="sketch") as reg:
+            laplacian.combinatorial(A)
+        return next(iter(reg)).hex
+
+    def test_default_mode_is_full(self):
+        """Default behavior must NOT change — sketch is opt-in."""
+        with provenance.record() as reg:
+            assert reg.hash_mode == "full"
+
+    def test_sketch_is_deterministic(self):
+        """Same tensor → same hex under sketch mode."""
+        A = torch.randn(1, 16, 16, dtype=torch.float64, generator=_seeded(70))
+        A = (A + A.mT).abs()
+        h1 = self._record_sketch(A.clone())
+        h2 = self._record_sketch(A.clone())
+        assert h1 == h2
+
+    def test_sketch_distinguishes_different_tensors(self):
+        """Two unrelated tensors get different sketch hexes."""
+        A = torch.randn(1, 16, 16, dtype=torch.float64, generator=_seeded(71))
+        A = (A + A.mT).abs()
+        B = torch.randn(1, 16, 16, dtype=torch.float64, generator=_seeded(72))
+        B = (B + B.mT).abs()
+        assert self._record_sketch(A) != self._record_sketch(B)
+
+    def test_sketch_detects_perturbation(self):
+        """A small additive perturbation changes the sum + std discriminators,
+        so the sketch hex changes even if the strided samples happen to
+        land on positions that didn't move. This is the empirical edge
+        the sum/std discriminators protect.
+        """
+        A = torch.randn(1, 32, 32, dtype=torch.float64, generator=_seeded(73))
+        A = (A + A.mT).abs()
+        A_perturbed = A.clone()
+        A_perturbed[0, 5, 7] += 0.01  # tiny single-element change
+        assert self._record_sketch(A) != self._record_sketch(A_perturbed)
+
+    def test_sketch_versus_full_produce_different_hexes(self):
+        """A registry in sketch mode and one in full mode hash the same
+        tensor to different hexes (different paths through the hasher).
+        Recordings are not interchangeable.
+        """
+        A = torch.randn(1, 8, 8, dtype=torch.float64, generator=_seeded(74))
+        A = (A + A.mT).abs()
+        with provenance.record(hash_mode="full") as r_full:
+            laplacian.combinatorial(A.clone())
+        with provenance.record(hash_mode="sketch") as r_sketch:
+            laplacian.combinatorial(A.clone())
+        assert next(iter(r_full)).hex != next(iter(r_sketch)).hex
+
+    def test_invalid_mode_rejected(self):
+        with pytest.raises(ValueError, match="hash_mode"):
+            with provenance.record(hash_mode="bogus") as _:  # type: ignore[arg-type]
+                pass
+
+    def test_sketch_mode_round_trips_through_save_load(self):
+        """Saved sketch registries reload in sketch mode."""
+        A = torch.randn(1, 4, 4, dtype=torch.float64, generator=_seeded(75))
+        A = (A + A.mT).abs()
+        with provenance.record(hash_mode="sketch") as reg:
+            laplacian.combinatorial(A)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "reg.json"
+            reg.save(path)
+            reloaded = provenance.ProvenanceRegistry.load(path)
+        assert reloaded.hash_mode == "sketch"
+
+    def test_sketch_collision_rate_on_random_tensors(self):
+        """Empirical collision check on N=200 random tensors. We don't
+        need 10⁴ here — that's research-scale, takes too long in CI.
+        200 distinct tensors should give 200 distinct hexes; if they
+        don't, the sketch is structurally broken.
+        """
+        hexes: set[str] = set()
+        for seed in range(200):
+            t = torch.randn(16, 16, dtype=torch.float64, generator=_seeded(seed + 1000))
+            with provenance.record(hash_mode="sketch") as reg:
+                laplacian.combinatorial(t.abs())
+            hexes.add(next(iter(reg)).hex)
+        assert len(hexes) == 200, (
+            f"sketch hash collision: {200 - len(hexes)} collisions in 200 tensors"
+        )
+
+    def test_sketch_handles_tiny_tensors(self):
+        """SKETCH_SAMPLES=64 vs a 4-element tensor: stride=1, all 4 elements
+        sampled. Must not raise and must distinguish two different tiny
+        tensors.
+        """
+        a = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64)
+        b = torch.tensor([[1.0, 2.0], [3.0, 5.0]], dtype=torch.float64)
+        with provenance.record(hash_mode="sketch") as ra:
+            laplacian.combinatorial(a.unsqueeze(0))
+        with provenance.record(hash_mode="sketch") as rb:
+            laplacian.combinatorial(b.unsqueeze(0))
+        assert next(iter(ra)).hex != next(iter(rb)).hex

@@ -67,6 +67,7 @@ ALLOWED_LITERALS set:
 | Name | Status | Value | Justification |
 |---|---|---|---|
 | `HEX_PREFIX_LEN` | 🔬 | `16` | Length (in hex chars) of the truncated sha256 prefix used as provenance IDs. 16 chars = 64 bits ≈ collision-free up to ~2³² operations by the birthday bound. **Scale of validity**: fine for interactive mech-interp sessions and most batch runs. Bump to 32 chars (128 bits) for million-op production traces. Used in `src/holonomy_lib/provenance/protocol.py`. |
+| `SKETCH_SAMPLES` | 🔬 | `64` | Number of evenly-strided samples drawn from a tensor's flattened content when `hash_mode="sketch"` is active. Combined with shape, dtype, sum, and std, gives an O(1)-bytes digest regardless of tensor size. **Scale of validity**: empirically tested for zero collisions on 200 random `(16, 16)` float64 Laplacian inputs (`tests/provenance/test_protocol.py::TestSketchHash::test_sketch_collision_rate_on_random_tensors`). Structural-collision risk (two tensors that share the strided positions + sum + std but differ elsewhere) is bounded but non-zero — full mode remains the library default. Bump if you see collisions in tensors larger than ~10⁶ elements where 64 strided samples leaves the unsampled regions too sparsely covered. Used in `src/holonomy_lib/provenance/protocol.py`. |
 
 ### discrete_geometry
 
