@@ -4,6 +4,55 @@ All notable changes to `holonomy_lib` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org).
 
+## [0.4.1] - 2026-05-27
+
+End-to-end MCP transport fixes. v0.4.0's MCP server worked when
+called through unit tests that bypassed the protocol (`server._tool_manager._tools[name].fn(...)`),
+but failed in two ways when driven via a real stdio MCP client:
+
+### Fixed
+
+- **`replay_with` failed with "op_id ... not in OP_REGISTRY"**. The
+  MCP server process loaded the saved registry but never imported
+  the modules whose `@with_provenance`-decorated ops it might need
+  to re-execute. `mcp.py` now eagerly imports the known op-defining
+  modules at server startup (algebra, spectral, discrete_geometry,
+  info_geometry, manifolds, optimization, simplicial, topology,
+  sheaf, lie). Optional / not-yet-installed modules are skipped
+  silently.
+
+- **`op_docstring` failed with "multiple values for argument
+  'op_id'"**. The `_bind_registry` wrapper unconditionally pre-bound
+  the registry as the first positional argument, but `op_docstring`
+  doesn't have a `registry` parameter (it queries the global
+  OP_REGISTRY directly). The wrapper now inspects the function's
+  signature and only pre-binds the registry when the function
+  actually takes one.
+
+### Changed
+
+- **List-returning tools wrap their return in `{"results": [...]}`
+  for MCP transport.** FastMCP serializes Python lists by emitting
+  one `content[i]` item per list element, producing a non-uniform
+  shape between "returned one item" and "returned many." Wrapping
+  guarantees a single JSON content item with a known structure.
+  Python callers (direct invocation, native LLM tool-use schemas)
+  see the underlying list via the unwrapped function; this
+  normalization is transport-only.
+- The wrapper declares `dict[str, Any]` as the uniform return type
+  for all wrapped tools so pydantic's return-value validation
+  matches the wrapped shape.
+
+Driven by a real end-to-end MCP test (`/tmp/mcp_e2e_drive.py`,
+not committed): spawns the server as a subprocess, connects via
+the official mcp client SDK, exercises every tool through the
+protocol. With these fixes, a 9-step interpretability question
+("find the anomalous batch in this recording") completes
+end-to-end without hitting a transport bug.
+
+Tests: 707 passing (same count; `test_list_ops_returns_distinct_op_ids`
+updated to expect the `{"results": [...]}` wrapping).
+
 ## [0.4.0] - 2026-05-27
 
 Provenance agent-API redesign. The v0.3.0 MCP server was structurally
@@ -418,6 +467,7 @@ Initial public release. Six seed modules:
   every numerical literal must be derived, a universal invariant, or
   cataloged in `notes/magic_numbers.md` with scale-of-validity.
 
+[0.4.1]: https://github.com/superninjv/holonomy_lib/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/superninjv/holonomy_lib/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/superninjv/holonomy_lib/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/superninjv/holonomy_lib/compare/v0.2.0...v0.2.1

@@ -94,6 +94,9 @@ class TestBuildServer:
         assert "std" in result
 
     def test_list_ops_returns_distinct_op_ids(self):
+        """Through the MCP wrapper, list-returning tools are wrapped
+        in {"results": [...]} so FastMCP serializes a single JSON
+        content item rather than one per element."""
         from holonomy_lib.provenance.mcp import build_server
         reg = _build_fixture_registry()
         server = build_server(reg)
@@ -101,7 +104,11 @@ class TestBuildServer:
             pytest.skip("MCP SDK version doesn't expose tool internals")
         tool = server._tool_manager._tools["list_ops"]
         fn = tool.fn if hasattr(tool, "fn") else tool.callable
-        ops = fn()
+        result = fn()
+        assert isinstance(result, dict) and "results" in result, (
+            f"expected dict with 'results' key, got {result!r}"
+        )
+        ops = result["results"]
         assert "holonomy_lib.spectral.laplacian.combinatorial" in ops
         assert "holonomy_lib.algebra.linear.truncated_svd" in ops
 

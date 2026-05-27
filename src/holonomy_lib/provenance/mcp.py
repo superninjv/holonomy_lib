@@ -28,6 +28,7 @@ Limitations (v0.4):
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import os
 from functools import wraps
@@ -36,6 +37,44 @@ from typing import Any
 
 from holonomy_lib.provenance import agent
 from holonomy_lib.provenance.protocol import ProvenanceRegistry
+
+# Eagerly import every holonomy_lib submodule that defines decorated
+# ops so OP_REGISTRY is populated before any tool gets called. Without
+# this, a saved registry referencing e.g. `truncated_svd` would fail
+# replay because the @with_provenance decoration only fires at import
+# time and the server process doesn't otherwise touch those modules.
+_OP_MODULES = (
+    "holonomy_lib.algebra.linear",
+    "holonomy_lib.algebra.lanczos",
+    "holonomy_lib.spectral.laplacian",
+    "holonomy_lib.spectral.magnetic",
+    "holonomy_lib.spectral.heat_kernel",
+    "holonomy_lib.spectral.eigenmaps",
+    "holonomy_lib.spectral.resistance",
+    "holonomy_lib.spectral.diffusion_map",
+    "holonomy_lib.tensor_calculus.hosvd",
+    "holonomy_lib.discrete_geometry.ricci",
+    "holonomy_lib.discrete_geometry.forman",
+    "holonomy_lib.discrete_geometry.flow",
+    "holonomy_lib.info_geometry.bregman",
+    "holonomy_lib.info_geometry.fisher",
+    "holonomy_lib.manifolds.fixed_rank",
+    "holonomy_lib.manifolds.spd",
+    "holonomy_lib.optimization.sgd",
+    "holonomy_lib.simplicial.complex",
+    "holonomy_lib.topology.hodge",
+    "holonomy_lib.topology.persistent_homology",
+    "holonomy_lib.sheaf.laplacian",
+    "holonomy_lib.lie.so3",
+    "holonomy_lib.lie.spherical_harmonics",
+)
+for _mod in _OP_MODULES:
+    try:
+        importlib.import_module(_mod)
+    except ImportError:
+        # Optional / not-yet-installed modules — skip silently so the
+        # server still starts on partial installs.
+        pass
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -57,35 +96,57 @@ def _bind_registry(spec: agent.ToolSpec, registry: ProvenanceRegistry):
     under the hood — can build models from `from __future__ import
     annotations` modules without trying to eval string annotations
     in the wrong scope.
+
+    Only pre-binds the registry when the wrapped function actually
+    declares a `registry` parameter. Some tools (op_docstring) query
+    global state and don't take a registry; pre-binding would cause
+    a "multiple values for argument" collision.
+
+    Also wraps list-returning tools in a `{"results": [...]}` dict so
+    FastMCP serializes them as a single JSON content item instead of
+    splitting into one content[i] per element — the LLM-facing shape
+    is more consistent that way.
     """
     fn = spec.fn
     sig = inspect.signature(fn)
-    # Drop the `registry` parameter and replace stringified annotations
-    # with resolved types.
+    takes_registry = "registry" in sig.parameters
+    # Drop the `registry` parameter (if present) and replace stringified
+    # annotations with resolved types.
     params = []
     for name, p in sig.parameters.items():
         if name == "registry":
             continue
         resolved = spec.type_hints.get(name, p.annotation)
         params.append(p.replace(annotation=resolved))
-    # Resolve the return annotation too.
-    return_annotation = spec.type_hints.get("return", sig.return_annotation)
+    # All wrapped tools return dict[str, Any] from the transport's
+    # point of view: list returns are wrapped into {"results": [...]},
+    # dict returns pass through. Declaring a uniform return type
+    # avoids pydantic-validation failures when we wrap a list-typed
+    # function's output.
+    return_annotation = dict
     bound_sig = sig.replace(
         parameters=params, return_annotation=return_annotation,
     )
 
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        return fn(registry, *args, **kwargs)
+        if takes_registry:
+            result = fn(registry, *args, **kwargs)
+        else:
+            result = fn(*args, **kwargs)
+        # Wrap bare list returns in a results-keyed dict so FastMCP
+        # serializes a single JSON content item instead of one per
+        # list element. Python callers (test_agent.py, native tool-use)
+        # still see the underlying list via the unwrapped function;
+        # this normalization is transport-only.
+        if isinstance(result, list):
+            return {"results": result}
+        return result
     wrapper.__signature__ = bound_sig  # type: ignore[attr-defined]
-    # Also overwrite __annotations__ so pydantic's introspection paths
-    # see the resolved types directly (some paths use __annotations__,
-    # not signature).
     wrapper.__annotations__ = {
         p.name: p.annotation for p in params
     }
-    if return_annotation is not inspect.Signature.empty:
-        wrapper.__annotations__["return"] = return_annotation
+    wrapper.__annotations__["return"] = return_annotation
     wrapper.__doc__ = spec.docstring or spec.description
     wrapper.__name__ = spec.name
     return wrapper
