@@ -6,6 +6,36 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed (second pass)
+
+- **`hyperbolic_laplacian_eigenmaps` silent NaN on dense graphs.**
+  Reported by the substrate team: any graph with `n_edges > ~500`
+  produced all-NaN output with the default `lr=0.05` + `max_steps=200`.
+  Root cause: per-node gradient magnitude scales with degree, so hub
+  nodes overshoot the manifold's `cosh`/`tan` range. Fix: normalize
+  the gradient by per-node degree (the random-walk-normalized
+  Laplacian's gradient — `L_rw = I − D⁻¹A`), making `lr`
+  scale-invariant w.r.t. graph size. Defaults now work for graphs
+  up to N=500+ with edge probability 0.5. Plus: fail-loud
+  RuntimeError when the output is non-finite (rather than silently
+  returning NaN). 3 new tests: dense-graph regression, star-graph
+  (extreme degree variance), and explicit fail-loud assertion.
+
+- **Autograd-finite stress tests.** 11 new tests across Lorentz +
+  Stereographic stressing aggressive chains (10-step exp/log
+  walk-and-backward, parallel_transport near identity, log_0 ∘
+  exp_0 at zero, Möbius inverse, exp∘log round-trip across all κ
+  branches). Confirms the manifold primitives are fully autograd-
+  clean under deeper composition, not just at single-call boundary
+  inputs.
+
+- **Benchmarks.** `tests/benchmarks/bench_hyperbolic.py` covers
+  `hyperbolic_laplacian_eigenmaps` (N ∈ {50, 200, 500} dense
+  random graph) and `frechet_mean` (N ∈ {50, 500, 5000} points).
+  Wired into the existing benchmark harness.
+
+  Test count now 1028 (was 1001).
+
 ### Added
 
 - **`manifolds.KappaStereographicManifold`** — Stage 3 of the

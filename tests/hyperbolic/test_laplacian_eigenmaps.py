@@ -117,3 +117,69 @@ def test_works_on_kappa_stereographic(k):
                                          lr=0.05, generator=_seed(40))
     assert Y.shape == (1, 7, mfd.ambient_dim)
     assert mfd.is_on_manifold(Y.reshape(-1, mfd.ambient_dim)).all()
+
+
+# --------------------------------------------------------------------
+# Scale invariance — the bug that motivated the degree normalization
+# --------------------------------------------------------------------
+
+
+def test_dense_graph_does_not_nan():
+    """Dense random graph (N=50, n_edges ≳ 700) used to silently
+    produce all-NaN output with default lr=0.05 + max_steps=200. The
+    degree normalization makes lr scale-invariant so this works."""
+    from holonomy_lib.manifolds import LorentzManifold
+
+    torch.manual_seed(0)
+    N = 50
+    A = (torch.rand(1, N, N) > 0.6).double()
+    A = (A + A.mT) * 0.5
+    A.diagonal(dim1=-2, dim2=-1).zero_()
+    n_edges = ((A > 0).sum().item() // 2)
+    assert n_edges > 500, f"test fixture has only {n_edges} edges"
+
+    mfd = LorentzManifold(n=4, k=-1.0)
+    Y = hyperbolic_laplacian_eigenmaps(A, mfd, max_steps=200, lr=0.05,
+                                         generator=_seed(50))
+    assert torch.isfinite(Y).all(), (
+        f"NaN={torch.isnan(Y).sum().item()}, "
+        f"Inf={torch.isinf(Y).sum().item()}"
+    )
+    assert mfd.is_on_manifold(Y.reshape(-1, mfd.ambient_dim)).all()
+
+
+def test_diverging_lr_fails_loud():
+    """If lr is set absurdly high so divergence is unavoidable, the
+    function should RAISE a RuntimeError rather than silently return
+    NaN output."""
+    import pytest
+    from holonomy_lib.manifolds import LorentzManifold
+
+    torch.manual_seed(1)
+    N = 30
+    A = (torch.rand(1, N, N) > 0.5).double()
+    A = (A + A.mT) * 0.5
+    A.diagonal(dim1=-2, dim2=-1).zero_()
+    mfd = LorentzManifold(n=4, k=-1.0)
+    # lr = 1e3 will overflow cosh/sinh in exp regardless of normalization
+    with pytest.raises(RuntimeError, match="diverged"):
+        hyperbolic_laplacian_eigenmaps(A, mfd, max_steps=20, lr=1e3,
+                                          generator=_seed(51))
+
+
+def test_degree_variance_does_not_break_convergence():
+    """Star graph (one hub of degree N-1, leaves of degree 1) — the
+    classic worst case for non-normalized gradient SGD. Normalization
+    should keep the hub from overshooting."""
+    from holonomy_lib.manifolds import LorentzManifold
+
+    N = 20
+    A = torch.zeros(1, N, N, dtype=torch.float64)
+    # Hub is node 0; all others connect only to it
+    A[0, 0, 1:] = 1.0
+    A[0, 1:, 0] = 1.0
+    mfd = LorentzManifold(n=3, k=-1.0)
+    Y = hyperbolic_laplacian_eigenmaps(A, mfd, max_steps=100, lr=0.05,
+                                         generator=_seed(52))
+    assert torch.isfinite(Y).all()
+    assert mfd.is_on_manifold(Y.reshape(-1, mfd.ambient_dim)).all()

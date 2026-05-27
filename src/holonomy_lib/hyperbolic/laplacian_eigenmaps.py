@@ -18,7 +18,15 @@ per-edge term `d_M(Y_i, Y_j)²` with respect to `Y_i` is
 `−2 · log_{Y_i}(Y_j)` (the steepest direction to move `Y_i` toward
 `Y_j`). For symmetric adjacency `A`, the total gradient on `Y_i` is
 
-    grad_{Y_i}  =  −2 · Σ_j A_{ij} · log_{Y_i}(Y_j).
+    grad_{Y_i}  =  −2 · (1 / deg(i)) · Σ_j A_{ij} · log_{Y_i}(Y_j).
+
+The `1/deg(i)` factor is the random-walk normalization (the
+gradient of the *normalized* Laplacian energy, equivalent to using
+`L_rw = I − D⁻¹A`). Without it, hub nodes receive steps ~ deg(i)
+times larger than leaf nodes, and dense graphs (n_edges ≳ 500)
+overflow the manifold's `cosh`/`tan` factors well before
+convergence. The normalized form is degree-invariant, so the same
+`lr` works for graphs of any size and density.
 
 We push this through `RiemannianSGD`, which handles the
 `projection → retraction` cycle.
@@ -147,7 +155,21 @@ def hyperbolic_laplacian_eigenmaps(
 
     opt = RiemannianSGD(manifold, lr=lr)
 
-    for _ in range(max_steps):
+    # Per-node degree, used to make the gradient scale-invariant w.r.t.
+    # graph size. Without this, a node of degree 100 receives a step
+    # ~50× larger than a node of degree 2 at the same lr, and dense
+    # graphs (n_edges ≳ 500) blow up the manifold operations
+    # (cosh(α) overflows at α ≈ 700 on float64). Equivalent to using
+    # the random-walk normalized Laplacian L_rw = I − D⁻¹A — the
+    # canonical normalization for spectral embedding (von Luxburg 2007).
+    #
+    # For isolated nodes (deg = 0), the gradient is zero anyway (no
+    # edges contribute), so the clamp's exact floor doesn't affect
+    # correctness — only prevents a divide-by-zero on the kept-zero row.
+    degree = adjacency.sum(dim=-1, keepdim=True)              # (B, N, 1)
+    degree_safe = degree.clamp(min=torch.finfo(adjacency.dtype).tiny)
+
+    for step in range(max_steps):
         # Pairwise log_Y_i(Y_j) — broadcast `embedding` along the i and
         # j axes. Shapes:
         #   emb_i (B, N, 1, D) → expand → (B, N, N, D)
@@ -161,13 +183,12 @@ def hyperbolic_laplacian_eigenmaps(
             emb_j.reshape(B * N * N, D),
         ).reshape(B, N, N, D)
 
-        # Ambient gradient on each node i: −2 Σ_j A_{ij} · log_{Y_i}(Y_j).
-        # The RSGD step then projects this onto the tangent space and
-        # retracts. Sum over the j axis collapses the (B, N, N, D) to
-        # (B, N, D).
+        # Ambient gradient on each node i: −2 Σ_j A_{ij} · log_{Y_i}(Y_j),
+        # normalized by deg(i) so the per-step magnitude is the
+        # *average* log-direction toward neighbors (degree-invariant).
         ambient_grad = -2.0 * (
             adjacency.unsqueeze(-1) * log_ij
-        ).sum(dim=2)  # (B, N, D)
+        ).sum(dim=2) / degree_safe   # (B, N, D)
 
         # RSGD treats the leading axis as the batch axis; we flatten
         # (B, N) → BN so each node is an independent optimization
@@ -176,5 +197,23 @@ def hyperbolic_laplacian_eigenmaps(
             embedding.reshape(B * N, D),
             ambient_grad.reshape(B * N, D),
         ).reshape(B, N, D)
+
+    # Fail-loud: silent NaN is the failure mode we just fixed; refuse
+    # to return a degenerate result. Diagnostic includes the hyper-
+    # parameters and graph stats so the caller can adjust.
+    if not torch.isfinite(embedding).all():
+        max_deg = adjacency.sum(dim=-1).max().item()
+        n_nan = torch.isnan(embedding).sum().item()
+        n_inf = torch.isinf(embedding).sum().item()
+        raise RuntimeError(
+            f"hyperbolic_laplacian_eigenmaps diverged after {max_steps} "
+            f"steps: {n_nan} NaN, {n_inf} inf out of {embedding.numel()} "
+            f"output elements. Graph stats: N={N}, max degree={max_deg:.0f}. "
+            f"This usually means `lr={lr}` is too large for the graph "
+            f"structure — retry with a smaller `lr` (an order of magnitude "
+            f"smaller is usually enough). Inputs are normalized by "
+            f"per-node degree already, but extreme degree variance or "
+            f"heavy adjacency weights can still trigger overflow."
+        )
 
     return embedding

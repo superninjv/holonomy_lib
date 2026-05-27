@@ -24,6 +24,7 @@ from tests.benchmarks.harness import (
 MODULES = [
     "bench_algebra",
     "bench_manifolds",
+    "bench_hyperbolic",
     "bench_spectral",
     "bench_tensor_calculus",
     "bench_discrete_geometry",

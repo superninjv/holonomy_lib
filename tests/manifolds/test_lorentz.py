@@ -894,3 +894,66 @@ class TestAutogradFinite:
             f"{v.grad.numel()}; inf count: "
             f"{torch.isinf(v.grad).sum().item()}"
         )
+
+
+# --------------------------------------------------------------------
+# Autograd stress tests — aggressive chains beyond the boundary
+# tests, modeling real training-loop patterns. Added after the
+# substrate team reported that the boundary fixes weren't enough for
+# their use case — these confirm the manifold primitives are also
+# clean under deeper composition.
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("k", [-1.0, -0.5, -2.0])
+class TestAutogradStress:
+    def test_long_chained_exp_backward(self, k):
+        """v → exp_0 → [exp, exp, ...] 10× → distance.sum.backward must
+        produce finite gradient regardless of k."""
+        mfd = LorentzManifold(n=5, k=k)
+        v = (torch.randn(3, 5, dtype=torch.float64,
+                          generator=_seeded_generator(300 + int(-k * 10))) * 0.3)
+        v.requires_grad_(True)
+        x = mfd.exp_0(v)
+        for step in range(10):
+            v_step_seed = torch.zeros(3, mfd.n + 1, dtype=torch.float64)
+            v_step_seed[..., 1:] = (torch.randn(
+                3, 5, dtype=torch.float64,
+                generator=_seeded_generator(310 + step),
+            ) * 0.01)
+            v_step = mfd.projection(x, v_step_seed)
+            x = mfd.exp(x, v_step)
+        loss = mfd.distance(x, x[0:1].expand_as(x)).sum()
+        loss.backward()
+        assert torch.isfinite(v.grad).all()
+
+    def test_parallel_transport_near_identity_backward(self, k):
+        """parallel_transport at x ≈ y (distance ≈ 1e-8) — autograd
+        must not blow up despite the near-singular log."""
+        mfd = LorentzManifold(n=5, k=k)
+        v = (torch.randn(3, 5, dtype=torch.float64,
+                          generator=_seeded_generator(320)) * 0.3)
+        v.requires_grad_(True)
+        x = mfd.exp_0(v)
+        eps_tan = torch.zeros(3, mfd.n + 1, dtype=torch.float64)
+        eps_tan[..., 1:] = (torch.randn(3, 5, dtype=torch.float64,
+                                          generator=_seeded_generator(321))
+                            * 1e-8)
+        eps_tan = mfd.projection(x, eps_tan)
+        y_close = mfd.exp(x, eps_tan)
+        v_test = mfd.projection(
+            x, torch.randn(3, mfd.n + 1, dtype=torch.float64,
+                            generator=_seeded_generator(322)),
+        )
+        pt = mfd.parallel_transport(x, y_close, v_test)
+        pt.sum().backward()
+        assert torch.isfinite(v.grad).all()
+
+    def test_log_0_exp_0_round_trip_backward(self, k):
+        """log_0(exp_0(0)) = 0 chain — both ends at origin, gradient
+        must remain finite (no 0/0 collapse)."""
+        mfd = LorentzManifold(n=5, k=k)
+        v = torch.zeros(3, 5, dtype=torch.float64, requires_grad=True)
+        out = mfd.log_0(mfd.exp_0(v))
+        out.sum().backward()
+        assert torch.isfinite(v.grad).all()

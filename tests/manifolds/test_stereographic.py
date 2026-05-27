@@ -375,3 +375,54 @@ class TestAgainstGeoopt:
         out_geoopt = gmfd.logmap0(y)
         torch.testing.assert_close(out_ours, out_geoopt,
                                     atol=1e-7, rtol=1e-7)
+
+
+# --------------------------------------------------------------------
+# Autograd stress — chained operations beyond simple boundary cases.
+# Same suite as `LorentzManifold` to confirm the κ-stereographic
+# branches are equally autograd-clean.
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("k", KAPPA_VALUES)
+class TestAutogradStress:
+    def test_long_chained_exp_backward(self, k):
+        mfd = _make_manifold(kappa=k, n=4)
+        v = (torch.randn(3, 4, dtype=torch.float64,
+                          generator=_seed(100)) * 0.2)
+        v.requires_grad_(True)
+        x = mfd.exp_0(v)
+        for step in range(5):
+            v_step = mfd.projection(
+                x, torch.randn(3, 4, dtype=torch.float64,
+                                generator=_seed(110 + step)) * 0.01,
+            )
+            x = mfd.exp(x, v_step)
+        loss = mfd.distance(x, x[0:1].expand_as(x)).sum()
+        loss.backward()
+        assert torch.isfinite(v.grad).all()
+
+    def test_mobius_inverse_backward(self, k):
+        """mobius_add(x, -x) = 0; backward must be finite."""
+        mfd = _make_manifold(kappa=k, n=4)
+        v = (torch.randn(3, 4, dtype=torch.float64,
+                          generator=_seed(120)) * 0.2)
+        v.requires_grad_(True)
+        x = mfd.exp_0(v)
+        out = mfd.mobius_add(x, -x)
+        out.sum().backward()
+        assert torch.isfinite(v.grad).all()
+
+    def test_exp_log_round_trip_backward(self, k):
+        """exp_x(log_x(y)) = y; backward of the round-trip identity."""
+        mfd = _make_manifold(kappa=k, n=4)
+        v = (torch.randn(3, 4, dtype=torch.float64,
+                          generator=_seed(121)) * 0.2)
+        v.requires_grad_(True)
+        x = mfd.exp_0(v)
+        y = mfd.exp_0(torch.randn(3, 4, dtype=torch.float64,
+                                    generator=_seed(122)) * 0.2)
+        out = mfd.exp(x, mfd.log(x, y))
+        loss = (out - y).pow(2).sum()
+        loss.backward()
+        assert torch.isfinite(v.grad).all()
