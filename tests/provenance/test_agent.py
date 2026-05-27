@@ -196,6 +196,19 @@ class TestIndexExprParser:
         with pytest.raises(ValueError, match="disallowed"):
             agent._parse_index_expr("__import__")
 
+    def test_tolerates_trailing_comma(self) -> None:
+        """`t[0,]` is valid Python; LLMs often emit a trailing comma
+        when constructing multi-dim slices. The parser should not
+        treat `"0,"` or `":, 0,"` as malformed."""
+        assert agent._parse_index_expr("0,") == 0
+        result = agent._parse_index_expr(":, 0,")
+        assert result == (slice(None, None, None), 0)
+
+    def test_rejects_interior_empty_component(self) -> None:
+        """`"0,,1"` is still malformed."""
+        with pytest.raises(ValueError, match="empty component"):
+            agent._parse_index_expr("0,,1")
+
 
 class TestTensorSlice:
     def test_returns_inline_values_for_small_slice(self) -> None:
@@ -370,6 +383,22 @@ class TestTensorCompare:
         # Cosine of a non-zero vector with itself is 1.
         assert abs(out["value"] - 1.0) < 1e-6
 
+    def test_cosine_on_zero_vectors_returns_error(self) -> None:
+        """cosine(zeros, zeros) is mathematically undefined. v0.3-style
+        graceful return of 0.0 misleads an LLM agent into thinking the
+        vectors are orthogonal. Surface the degeneracy explicitly."""
+        from holonomy_lib import provenance
+        # combinatorial Laplacian of an identity matrix IS the zero
+        # matrix (D = I, so L = D - A = 0). Convenient zero tensor source.
+        A = torch.eye(4, dtype=torch.float64).unsqueeze(0)
+        with provenance.record(cache_tensors=True) as reg:
+            laplacian.combinatorial(A)
+        zero_hex = next(iter(reg)).hex
+        out = agent.tensor_compare(reg, zero_hex, zero_hex, metric="cosine")
+        assert "error" in out
+        assert "cosine undefined" in out["error"]
+        assert "value" not in out
+
 
 class TestOpDocstring:
     def test_returns_signature_and_docstring(self) -> None:
@@ -449,6 +478,19 @@ class TestRecipeBuilder:
         torch.testing.assert_close(sub[1], original[1])
         torch.testing.assert_close(sub[3], original[3])
 
+    def test_swap_batch_identity_is_safe_clone(self) -> None:
+        """swap_batch with i==j returns a clone of the original (no
+        redundant double-write)."""
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        original = reg.get_tensor(lap_hex)
+        sub = agent._build_substitute(
+            reg, lap_hex, {"kind": "swap_batch", "i": 1, "j": 1},
+        )
+        torch.testing.assert_close(sub, original)
+        # And it's a clone (not the same object).
+        assert sub is not original
+
     def test_literal(self) -> None:
         reg, by_op = _build_registry()
         # Use the eigenvalue output (small enough to literal)
@@ -507,6 +549,23 @@ class TestReplayWith:
         out = agent.replay_with(reg, lap_hex, {"kind": "what"})
         assert "error" in out
         assert "unknown recipe kind" in out["error"]
+
+    def test_shape_mismatch_returns_clean_error(self) -> None:
+        """Replaying with a substitute that has the wrong shape returns
+        a recipe-aware error from replay_with, not a confusing downstream
+        torch error."""
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        # Build a recipe that produces a wrong-shape substitute via
+        # the literal kind.
+        out = agent.replay_with(
+            reg, lap_hex,
+            {"kind": "literal", "values": [[1.0, 2.0]]},  # (1, 2), not (4, 5, 5)
+        )
+        assert "error" in out
+        assert "shape" in out["error"]
+        # Recipe is echoed back for the agent to see what failed.
+        assert out["recipe"]["kind"] == "literal"
 
     def test_perturb_changes_downstream(self) -> None:
         """Perturbing the laplacian by small noise should produce

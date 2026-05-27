@@ -371,6 +371,11 @@ def _parse_index_expr(expr: str) -> Union[int, slice, tuple]:
             f"{sorted(bad)!r}; only digits, '-', ':', ',', and spaces "
             f"are accepted"
         )
+    # Tolerate a single trailing comma — `t[0,]` is valid Python and
+    # LLM-generated multi-dim expressions often carry one. The interior-
+    # empty-component check still fires for `"0,,1"`.
+    if cleaned.endswith(","):
+        cleaned = cleaned[:-1]
     parts = cleaned.split(",")
     result: list[Union[int, slice]] = []
     for p in parts:
@@ -627,6 +632,14 @@ def tensor_compare(
             "error": "shape mismatch",
             "a_shape": list(a.shape), "b_shape": list(b.shape),
         }
+    if a.device != b.device:
+        # Cross-device subtraction would raise from torch.linalg; we
+        # prefer an error dict that fits the rest of the tool surface.
+        return {
+            "error": "device mismatch",
+            "a_device": str(a.device),
+            "b_device": str(b.device),
+        }
     a64 = a.to(torch.float64)
     b64 = b.to(torch.float64)
     if metric == "max_abs":
@@ -639,10 +652,18 @@ def tensor_compare(
     if metric == "cosine":
         af = a64.flatten()
         bf = b64.flatten()
-        denom = torch.linalg.norm(af) * torch.linalg.norm(bf)
-        # The standard numerical-floor convention (cataloged) avoids
-        # divide-by-zero when one of the inputs is exactly zero.
-        cos = torch.dot(af, bf) / (denom + 1e-9)
+        norm_a = torch.linalg.norm(af)
+        norm_b = torch.linalg.norm(bf)
+        # cosine is undefined when either vector is exactly zero. The
+        # 1e-9 numerical-floor convention guards against rounding noise,
+        # but for exact zeros we'd silently return 0.0 (which an LLM
+        # could misread as "orthogonal"). Surface the degeneracy.
+        if float(norm_a.item()) == 0.0 or float(norm_b.item()) == 0.0:
+            return {
+                "metric": metric,
+                "error": "cosine undefined: one or both input tensors are zero",
+            }
+        cos = torch.dot(af, bf) / (norm_a * norm_b + 1e-9)
         return {"metric": metric, "value": float(cos.item())}
     return {"error": f"unknown metric {metric!r}; use 'max_abs', 'frobenius', or 'cosine'"}
 
@@ -717,6 +738,10 @@ def _build_substitute(
             raise ValueError(
                 f"swap_batch indices out of range: i={i}, j={j}, B={B}"
             )
+        # Identity swap: return a clone (avoids the redundant double-write
+        # while keeping the "always returns a fresh tensor" contract).
+        if i == j:
+            return original.clone()
         result = original.clone()
         result[i] = original[j].clone()
         result[j] = original[i].clone()
@@ -765,6 +790,23 @@ def replay_with(
         substitute = _build_substitute(registry, target_hex, recipe)
     except ValueError as e:
         return {"error": str(e), "recipe": recipe}
+    # Pre-check substitute shape against the recorded node's output
+    # shape. Single-output ops only — multi-output ops have a tuple of
+    # output_shapes and we'd need the `:i` suffix to disambiguate;
+    # skip the check there and let registry.replay surface any error.
+    if target_hex in registry:
+        recorded_shapes = registry[target_hex].output_shape
+        if len(recorded_shapes) == 1:
+            recorded_shape = tuple(recorded_shapes[0])
+            if tuple(substitute.shape) != recorded_shape:
+                return {
+                    "error": (
+                        f"substitute shape {list(substitute.shape)} does "
+                        f"not match recorded shape {list(recorded_shape)} "
+                        f"for {target_hex!r}"
+                    ),
+                    "recipe": recipe,
+                }
     try:
         new_outputs = registry.replay({target_hex: substitute})
     except Exception as e:
