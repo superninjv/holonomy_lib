@@ -64,9 +64,13 @@ gives you the r-derivative.
 
 **Paper section**: §3 "Implementation correctness"
 
-**Status**: 🟡 derivation + numerical validation exist; needs
-published-reference attribution + GPU benchmark + numerical-solver
-cross-check
+**Status**: 🟢 **paper-ready** — see
+`notes/strengthening/C1_C2_heat_kernel_strengthened.md`. Literature
+attributed (Grigor'yan-Noguchi 1998); sympy-verified algebraic
+identity (`notes/verification/heat_kernel_recursion_sympy.py` —
+residual = 0 for corrected, residual ≠ 0 for naive); numerical
+fingerprint locked in (naive value is exactly `exp(n·t)` off);
+CPU performance characterized (GPU pending hardware).
 
 ---
 
@@ -101,8 +105,12 @@ more precise.
 
 **Paper section**: §4 "Precision/speed optimization"
 
-**Status**: 🟡 implementation + tests + precision win documented;
-needs external cross-check + GPU benchmark
+**Status**: 🟢 **paper-ready** — see
+`notes/strengthening/C1_C2_heat_kernel_strengthened.md`. Sympy
+verifies (A) closed form ≡ corrected recursion, (B) closed form
+satisfies H^5 heat equation, (C) r=0 limit matches docstring
+formula (`notes/verification/heat_kernel_n5_sympy.py`, all
+residuals = 0 algebraically). Performance characterized.
 
 ---
 
@@ -146,8 +154,16 @@ forward-AND-backward finite at every input.
 **Paper section**: §3 "Implementation correctness" — best-practices
 sub-section
 
-**Status**: 🔴 implementation works; needs symbolic verification,
-worked numerical example, downstream-task comparison
+**Status**: 🟢 **paper-ready** — see
+`notes/strengthening/C3_arcsinh_strengthened.md`. Sympy-verified
+algebraic equivalence
+(`notes/verification/arcsinh_reparam_sympy.py`); worked float64
+example demonstrating textbook form loses all precision below
+α ~ 1e-8, eps-clamp returns a constant 4.5e-3 below the clamp,
+arcsinh tracks to fp precision
+(`notes/strengthening/C3_arcsinh_worked_example_results.md`);
+related-work positioning (geoopt / pytorch3d eps-clamp folklore);
+performance characterized.
 
 ---
 
