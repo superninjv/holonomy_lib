@@ -136,3 +136,46 @@ def test_provenance_signature():
         _ = frechet_mean(P, mfd, max_iter=5)
     ops = {n.op_id for n in reg}
     assert "holonomy_lib.hyperbolic.frechet_mean" in ops
+
+
+# --------------------------------------------------------------------
+# Autograd-finite — Fréchet mean backward through a parameterized
+# tangent-at-origin embedding chain.
+# --------------------------------------------------------------------
+
+
+def test_frechet_mean_backward_finite():
+    """frechet_mean of points parameterized by tangents at origin
+    must produce finite gradients on the tangent params."""
+    from holonomy_lib.manifolds import LorentzManifold
+
+    mfd = LorentzManifold(n=4, k=-1.0)
+    # 8 points parameterized by Euclidean tangent at origin
+    v = (torch.randn(8, 4, dtype=torch.float64,
+                     generator=_seed(20)) * 0.3)
+    v.requires_grad_(True)
+    points = mfd.exp_0(v).unsqueeze(0)            # (1, 8, 5)
+    mu = frechet_mean(points, mfd, max_iter=20, tol=1e-12)
+    loss = mu.sum()
+    loss.backward()
+    assert torch.isfinite(v.grad).all(), (
+        f"v.grad NaN: {torch.isnan(v.grad).sum().item()}"
+    )
+
+
+def test_frechet_mean_backward_at_collapsed_points():
+    """Edge case: all points coincide → mean is that point;
+    gradient through the converged iteration should stay finite."""
+    from holonomy_lib.manifolds import LorentzManifold
+
+    mfd = LorentzManifold(n=3, k=-1.0)
+    # All 5 points = exp_0(v0); the mean is exactly that point.
+    v0 = torch.tensor([0.2, 0.1, -0.3], dtype=torch.float64,
+                      requires_grad=True)
+    point = mfd.exp_0(v0.unsqueeze(0))             # (1, 4)
+    P = point.expand(1, 5, 4)                       # (1, 5, 4)
+    mu = frechet_mean(P, mfd, max_iter=5, tol=1e-12)
+    mu.sum().backward()
+    assert torch.isfinite(v0.grad).all(), (
+        f"v0.grad NaN: {torch.isnan(v0.grad).sum().item()}"
+    )

@@ -73,3 +73,31 @@ def test_matches_euclidean_for_origin_neighborhood():
     out = manifold_aware_inner(x, y, mfd)
     expected = (v_x * v_y).sum(dim=-1)
     torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
+
+
+# --------------------------------------------------------------------
+# Autograd-finite
+# --------------------------------------------------------------------
+
+
+def test_manifold_aware_inner_backward_at_origin():
+    """⟨origin, x⟩ backward must be finite — log_0(origin) is the
+    boundary case where the old vector_norm path would NaN."""
+    mfd = LorentzManifold(n=4)
+    v = (torch.randn(3, 4, generator=_seed(20)) * 0.3)
+    v.requires_grad_(True)
+    x = mfd.exp_0(v)
+    origin = mfd.origin(batch_size=3)
+    out = manifold_aware_inner(origin, x, mfd)
+    out.sum().backward()
+    assert torch.isfinite(v.grad).all()
+
+
+def test_manifold_aware_inner_backward_self():
+    """⟨x, x⟩ backward finite — would NaN through log_0 if not safe."""
+    mfd = LorentzManifold(n=4)
+    v = torch.zeros(3, 4, requires_grad=True)
+    x = mfd.exp_0(v)
+    out = manifold_aware_inner(x, x, mfd)
+    out.sum().backward()
+    assert torch.isfinite(v.grad).all()

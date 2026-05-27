@@ -689,3 +689,208 @@ class TestAgainstGeoopt:
         d_ours = mfd.distance(x, y)
         d_geoopt = gmfd.dist(x, y)
         torch.testing.assert_close(d_ours, d_geoopt, atol=1e-6, rtol=1e-6)
+
+
+# --------------------------------------------------------------------
+# Autograd-finite: gradients must be finite at boundary inputs.
+# --------------------------------------------------------------------
+#
+# The classic PyTorch gotcha: `torch.where(cond, formula, default)`
+# evaluates BOTH branches in backward, even when one is masked. If the
+# masked-out branch contains an op that produces NaN at the boundary
+# (e.g. sqrt(0) → grad ∞, then 0·∞ = NaN through a clamp), the NaN
+# propagates into v.grad even when forward is finite.
+#
+# These tests pin down that exp / log / exp_0 / log_0 / distance /
+# norm / parallel_transport all produce finite gradients at the
+# boundary inputs that arise in real training loops: tangent-at-origin
+# embeddings where some v rows are tiny or zero, target points equal
+# to the source, etc.
+
+
+class TestAutogradFinite:
+    """Backward through every manifold primitive must produce finite
+    gradients at the boundary inputs (v=0 tangent, x=y endpoints,
+    distance(x,x)=0 etc.) that arise in tangent-at-origin training."""
+
+    def test_exp_0_backward_typical(self):
+        """exp_0(v) backward is finite for random small v."""
+        mfd = LorentzManifold(n=5, k=-1.0)
+        v = (torch.randn(10, 5, dtype=torch.float64,
+                         generator=_seeded_generator(200)) * 0.1)
+        v.requires_grad_(True)
+        T = mfd.exp_0(v)
+        T.sum().backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}, "
+            f"inf count: {torch.isinf(v.grad).sum().item()}"
+        )
+
+    def test_exp_0_backward_with_exact_zero_row(self):
+        """exp_0(v) backward is finite even when one row of v is
+        exactly zero (origin in tangent space)."""
+        mfd = LorentzManifold(n=4, k=-1.0)
+        v = torch.zeros(3, 4, dtype=torch.float64, requires_grad=True)
+        with torch.no_grad():
+            v[1] = torch.tensor([0.1, 0.2, 0.3, 0.4], dtype=torch.float64)
+            v[2] = torch.tensor([0.5, -0.5, 0.5, -0.5], dtype=torch.float64)
+        v.requires_grad_(True)
+        T = mfd.exp_0(v)
+        T.sum().backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}"
+        )
+
+    def test_distance_backward_typical(self):
+        """distance(x, y) backward for x ≠ y is finite."""
+        mfd = LorentzManifold(n=5, k=-1.0)
+        v = (torch.randn(10, 5, dtype=torch.float64,
+                         generator=_seeded_generator(201)) * 0.3)
+        v.requires_grad_(True)
+        T = mfd.exp_0(v)
+        d = mfd.distance(T[:5], T[5:])
+        d.sum().backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}"
+        )
+
+    def test_distance_backward_at_same_point(self):
+        """distance(x, x) backward is finite — the classic clamp+sqrt
+        NaN pattern (0·∞ in backward at d=0). This is the bug reported
+        by the substrate training loop."""
+        mfd = LorentzManifold(n=5, k=-1.0)
+        v = (torch.randn(5, 5, dtype=torch.float64,
+                         generator=_seeded_generator(202)) * 0.3)
+        v.requires_grad_(True)
+        T = mfd.exp_0(v)
+        # distance(T, T) — every distance is identically zero
+        d = mfd.distance(T, T)
+        d.sum().backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}/"
+            f"{v.grad.numel()}"
+        )
+
+    def test_distance_backward_includes_self_pairs(self):
+        """A loss that mixes d(x, y) with d(x, x) (e.g. NLL with the
+        anchor's own embedding in the partition function) must produce
+        finite gradients on all entries."""
+        mfd = LorentzManifold(n=5, k=-1.0)
+        v = (torch.randn(8, 5, dtype=torch.float64,
+                         generator=_seeded_generator(203)) * 0.3)
+        v.requires_grad_(True)
+        T = mfd.exp_0(v)
+        # All-pairs distance including diagonal — the diagonal is 0.
+        N = T.shape[0]
+        Ti = T.unsqueeze(1).expand(N, N, T.shape[-1]).reshape(N * N, -1)
+        Tj = T.unsqueeze(0).expand(N, N, T.shape[-1]).reshape(N * N, -1)
+        d = mfd.distance(Ti, Tj).reshape(N, N)
+        # Mock NLL-style aggregation: softmax over distances per row
+        weights = torch.softmax(-d, dim=-1)
+        loss = (weights * d).sum()
+        loss.backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}/"
+            f"{v.grad.numel()}"
+        )
+
+    def test_log_backward_at_same_point(self):
+        """log(x, x) backward is finite — the zero-tangent boundary."""
+        mfd = LorentzManifold(n=5, k=-1.0)
+        v = (torch.randn(5, 5, dtype=torch.float64,
+                         generator=_seeded_generator(204)) * 0.3)
+        v.requires_grad_(True)
+        T = mfd.exp_0(v)
+        out = mfd.log(T, T)
+        out.sum().backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}"
+        )
+
+    def test_log_0_backward_at_origin(self):
+        """log_0(origin) backward is finite — vector_norm at 0 is 0/0."""
+        mfd = LorentzManifold(n=4, k=-1.0)
+        # T starts at origin via exp_0 of zero tangent
+        v = torch.zeros(3, 4, dtype=torch.float64, requires_grad=True)
+        T = mfd.exp_0(v)
+        out = mfd.log_0(T)
+        out.sum().backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}"
+        )
+
+    def test_exp_backward_at_zero_tangent(self):
+        """exp_x(0) backward is finite — sinhc analytic-limit branch."""
+        mfd = LorentzManifold(n=5, k=-1.0)
+        v_init = (torch.randn(5, 5, dtype=torch.float64,
+                              generator=_seeded_generator(205)) * 0.3)
+        v_init.requires_grad_(True)
+        x = mfd.exp_0(v_init)
+        # Tangent vector that's exactly zero
+        zero_tangent = torch.zeros_like(x)
+        out = mfd.exp(x, zero_tangent)
+        out.sum().backward()
+        assert torch.isfinite(v_init.grad).all(), (
+            f"v_init.grad NaN count: {torch.isnan(v_init.grad).sum().item()}"
+        )
+
+    def test_norm_backward_at_zero(self):
+        """norm(x, 0) backward is finite — clamp(min=0)+sqrt boundary.
+
+        The Lorentz induced metric is point-independent in ambient
+        form, so we put `requires_grad` on the tangent (not the base
+        point) to trace the chain that reaches `sqrt(<v,v>_M)` — the
+        path that would NaN without the `_safe_sqrt` fix.
+        """
+        mfd = LorentzManifold(n=5, k=-1.0)
+        x = mfd.origin(batch_size=5)
+        v = torch.zeros(5, mfd.n + 1, dtype=torch.float64,
+                        requires_grad=True)
+        n = mfd.norm(x, v)
+        n.sum().backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}"
+        )
+
+    def test_parallel_transport_backward_at_same_point(self):
+        """parallel_transport(x, x, v) = v; backward must be finite."""
+        mfd = LorentzManifold(n=5, k=-1.0)
+        v_init = (torch.randn(4, 5, dtype=torch.float64,
+                              generator=_seeded_generator(207)) * 0.3)
+        v_init.requires_grad_(True)
+        x = mfd.exp_0(v_init)
+        # Use a finite tangent (projected ambient noise)
+        v_seed = torch.randn(4, mfd.n + 1, dtype=torch.float64,
+                              generator=_seeded_generator(208)) * 0.1
+        v = mfd.projection(x, v_seed)
+        pt = mfd.parallel_transport(x, x, v)
+        pt.sum().backward()
+        assert torch.isfinite(v_init.grad).all()
+
+    def test_full_substrate_chain(self):
+        """End-to-end: tangent-at-origin parameterization → exp_0 →
+        all-pairs distance with NLL-like loss → backward. This is the
+        chain reported in the substrate-training bug repro."""
+        mfd = LorentzManifold(n=8, k=-1.0)
+        v = (torch.randn(16, 8, dtype=torch.float64,
+                         generator=_seeded_generator(209)) * 0.4)
+        v.requires_grad_(True)
+        T = mfd.exp_0(v)
+        # NLL-style loss: for each anchor, target ~ random other index,
+        # noise samples ~ all others. The partition function over
+        # ALL distances (including d(x, x) = 0) is the standard form.
+        N = T.shape[0]
+        Ti = T.unsqueeze(1).expand(N, N, -1).reshape(N * N, -1)
+        Tj = T.unsqueeze(0).expand(N, N, -1).reshape(N * N, -1)
+        d_all = mfd.distance(Ti, Tj).reshape(N, N)
+        log_partition = torch.logsumexp(-d_all, dim=-1)  # (N,)
+        # Pretend target is offset-1 cyclic permutation
+        target_idx = (torch.arange(N) + 1) % N
+        target_d = d_all[torch.arange(N), target_idx]
+        nll = (target_d + log_partition).sum()
+        nll.backward()
+        assert torch.isfinite(v.grad).all(), (
+            f"v.grad NaN count: {torch.isnan(v.grad).sum().item()}/"
+            f"{v.grad.numel()}; inf count: "
+            f"{torch.isinf(v.grad).sum().item()}"
+        )

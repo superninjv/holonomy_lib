@@ -6,6 +6,35 @@ version numbers follow [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`LorentzManifold` autograd produces finite gradients at boundary
+  inputs.** Reported by the substrate-training loop: NLL losses on
+  embeddings parameterized as `T = exp_0(v)` produced
+  all-NaN `v.grad` on the first batch even with finite forward.
+  Root cause: classic `clamp(min=0) + sqrt` and `torch.where(cond,
+  sinh(α)/α_safe, ones)` patterns leak `0·∞ = NaN` through the
+  masked-out branch of `torch.where` because PyTorch evaluates both
+  branches' gradients. Also: `acosh(z)` at `z = 1` has derivative ∞,
+  and `torch.linalg.vector_norm(0) = 0` has backward `0/0 = NaN`.
+
+  Fix: three new module-level helpers (`_safe_sqrt`, `_safe_sinhc`,
+  `_safe_arcsinhc`) that compute the formula on a where-substituted
+  input (never 0) and mask the output. Applied throughout `norm`,
+  `exp`, `exp_0`, `log`, `log_0`, `distance`. `log` and `log_0`
+  reparameterized to use the `arcsinh(arg) / (arg · sqrt(arg²+1))`
+  form for `α/sinh(α)` where `arg = √|k|·‖y-x‖_M/2`, avoiding
+  `arccosh`'s boundary singularity entirely. `_reproject_to_hyperboloid`
+  now uses `torch.cat` instead of in-place subscript assignment.
+
+  15 new `TestAutogradFinite` tests across Lorentz + the Stage 2
+  hyperbolic ops cover `distance(x,x)`, `log(x,x)`, `log_0(origin)`,
+  `exp(x, 0)`, `norm(x, 0)`, `parallel_transport(x,x,v)`, the full
+  NLL-style all-pairs distance chain, plus `frechet_mean` and
+  `manifold_aware_inner` backward at boundary inputs. Test count
+  837 (was 822). Documented tangent-at-origin training recipe in
+  `CONTENTS.md`.
+
 ### Added
 
 - **`holonomy_lib.hyperbolic`** — new module: manifold-aware graph

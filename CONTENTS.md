@@ -133,13 +133,52 @@ ambient tensors. Intrinsic manifold dim `n`.
 | `exp_0` | `(v_spatial)` | `(B, n+1)` (origin shortcut) |
 | `log_0` | `(y)` | `(B, n)` (origin shortcut) |
 
-Numerical notes: `log` uses the `(α/sinh α)·u` form rather than `β·u/‖u‖`
-to avoid catastrophic cancellation at x ≈ y. `distance` uses the
-`2·arcsinh(√|k|·‖y-x‖_M/2)` identity rather than `arccosh(z)` directly
-for the same reason. `exp` re-projects onto the hyperboloid after each
-call to suppress drift. Refs: Nickel-Kiela (2018), Chen et al. (2022)
-HyboNet, Lee (2018) *Introduction to Riemannian Manifolds*, Cannon et
-al. (1997), Pennec (2006).
+Numerical notes:
+
+- `log` uses `(α/sinh α)·u` rather than the textbook `β·u/‖u‖` to
+  avoid catastrophic cancellation at x ≈ y, and internally
+  reparameterizes via `α = 2·arcsinh(arg)` where `arg = √|k|·‖y-x‖_M/2`
+  so `arccosh`'s derivative singularity at z=1 never enters the
+  autograd graph.
+- `distance` uses the same `2·arcsinh(√|k|·‖y-x‖_M/2)` identity for
+  `d(x,x) = 0` exactness AND autograd-finite gradient (the naive
+  `sqrt(clamp(…, min=0))` pattern would propagate `0·∞ = NaN` through
+  backward at the boundary).
+- `exp` re-projects onto the hyperboloid after each call to suppress
+  drift; uses `_safe_sinhc` so backward is finite at v = 0.
+- `log_0`, `exp_0`, `norm` use `_safe_sqrt` / `_safe_sinhc` /
+  `_safe_arcsinhc` helpers that confine boundary-singular ops to the
+  masked-out branch of `torch.where`. **All Lorentz primitives have
+  finite gradients at every boundary input** (x=y, v=0, y=origin),
+  which is essential for tangent-at-origin training loops where
+  `T = exp_0(v)` then loss involves `distance(T_i, T_j)` including
+  self-pairs.
+
+**Recommended training pattern** — parameterize the substrate as a
+Euclidean tangent at origin and convert to manifold points
+on-the-fly per forward pass:
+
+```python
+mfd = LorentzManifold(n=K)
+v = torch.randn(N, K, requires_grad=True)  # trainable Euclidean param
+optimizer = torch.optim.Adam([v], lr=1e-2)
+
+for step in range(n_steps):
+    optimizer.zero_grad()
+    T = mfd.exp_0(v)                          # (N, K+1) on hyperboloid
+    loss = your_loss(T, ...)                  # e.g. NLL on distances
+    loss.backward()                           # v.grad stays finite even
+                                              #   at boundary inputs
+    optimizer.step()
+```
+
+Storing `v` (not `T`) avoids manifold-drift accumulation — each
+`exp_0` puts `T` exactly on the hyperboloid, and the standard
+Euclidean optimizer step on `v` is well-defined.
+
+Refs: Nickel-Kiela (2018), Chen et al. (2022) HyboNet, Lee (2018)
+*Introduction to Riemannian Manifolds*, Cannon et al. (1997),
+Pennec (2006).
 
 ---
 

@@ -58,6 +58,64 @@ import torch
 from holonomy_lib.provenance import register_provenance_class, with_provenance
 
 
+def _safe_sqrt(x: torch.Tensor) -> torch.Tensor:
+    """sqrt(x) with autograd-safe handling at x = 0.
+
+    The classic PyTorch trap: `sqrt(clamp(x, min=0))` produces NaN in
+    backward at the boundary (`clamp`'s gradient is 0 there, `sqrt`'s
+    is ∞, product is `0·∞ = NaN`). This helper computes sqrt only on a
+    where-substituted input and masks the output back, so the masked
+    branch never touches the singular operation:
+
+      - forward: `sqrt(x)` for `x > 0`, `0` for `x ≤ 0`
+      - backward: `1/(2·sqrt(x))` for `x > 0`, `0` for `x ≤ 0`
+        (the 0-subgradient choice at the boundary; the analytic
+        derivative is undefined there).
+
+    Used pervasively in `norm`, `distance`, `log_0` etc. wherever the
+    inner quantity vanishes at a natural limit (x = y, v = 0, etc.).
+    """
+    is_positive = x > 0
+    x_safe = torch.where(is_positive, x, torch.ones_like(x))
+    return torch.where(is_positive, torch.sqrt(x_safe), torch.zeros_like(x))
+
+
+def _safe_sinhc(alpha: torch.Tensor) -> torch.Tensor:
+    """sinh(α)/α with autograd-safe handling at α = 0.
+
+    Without care, `sinh(α)/α_safe` (where α_safe = where(α > 0, α, 1))
+    produces NaN in backward because the FORMULA branch still
+    references the raw α (which may be 0), and the gradient flow
+    couples through both `where`s. Using `sinh(α_safe)/α_safe`
+    confines unsafe values to the masked-out branch:
+
+      - forward: `sinh(α)/α` for `α > 0`, `1` for `α = 0`
+      - backward: `(α·cosh α − sinh α)/α²` for `α > 0`, `0` for α = 0
+    """
+    is_positive = alpha > 0
+    alpha_safe = torch.where(is_positive, alpha, torch.ones_like(alpha))
+    return torch.where(
+        is_positive,
+        torch.sinh(alpha_safe) / alpha_safe,
+        torch.ones_like(alpha),
+    )
+
+
+def _safe_arcsinhc(arg: torch.Tensor) -> torch.Tensor:
+    """arcsinh(x)/x with autograd-safe handling at x = 0.
+
+    Analytic limit at 0 is 1. Same idiom as `_safe_sinhc`: the formula
+    branch evaluates at a where-substituted input that's never 0.
+    """
+    is_positive = arg > 0
+    arg_safe = torch.where(is_positive, arg, torch.ones_like(arg))
+    return torch.where(
+        is_positive,
+        torch.asinh(arg_safe) / arg_safe,
+        torch.ones_like(arg),
+    )
+
+
 @register_provenance_class("LorentzManifold")
 class LorentzManifold:
     """Lorentz (hyperboloid) model of hyperbolic space H^n_k.
@@ -287,18 +345,19 @@ class LorentzManifold:
     def norm(
         self, x: torch.Tensor, v: torch.Tensor,
     ) -> torch.Tensor:
-        """Riemannian norm √⟨v, v⟩_x. Clamped against floor-noise.
+        """Riemannian norm √⟨v, v⟩_x.
 
         For a true tangent at `x`, ⟨v, v⟩_M ≥ 0. Float drift can push
-        this slightly negative (~ machine eps × ‖v‖²); we clamp at 0
-        before sqrt, which preserves all genuine positive values and
-        maps roundoff-negative to 0 (the analytic limit at the boundary).
+        this slightly negative (~ machine eps × ‖v‖²); we use
+        `_safe_sqrt` which both clamps non-positive entries to 0 in
+        the forward pass AND produces a finite (zero) gradient at the
+        boundary — the naive `sqrt(clamp(x, min=0))` pattern would
+        propagate `0·∞ = NaN` through backward at v = 0.
 
         Returns:
           (B,) non-negative norms.
         """
-        sq = self.inner(x, v, v).clamp(min=0)
-        return torch.sqrt(sq)
+        return _safe_sqrt(self.inner(x, v, v))
 
     # ----------------------------------------------------------------
     # Exponential / logarithmic maps, geodesic distance
@@ -336,19 +395,11 @@ class LorentzManifold:
         norm_v = self.norm(x, v)                  # (B,)
         alpha = self._sqrt_abs_k * norm_v         # (B,)
 
-        # sinh(α)/α with the analytic limit 1 at α = 0. Use a where on
-        # the denominator first so the divide never touches zero (matters
-        # for autograd: torch.where evaluates BOTH branches and would
-        # propagate NaN gradients through a 0/0). Then where on the result
-        # to install the limit.
-        alpha_safe = torch.where(
-            alpha > 0, alpha, torch.ones_like(alpha),
-        )
-        sinhc = torch.where(
-            alpha > 0,
-            torch.sinh(alpha) / alpha_safe,
-            torch.ones_like(alpha),
-        )
+        # sinh(α)/α with the analytic limit 1 at α = 0. Use the
+        # autograd-safe helper which keeps unsafe (0) values inside
+        # the masked-out branch only — the formula branch evaluates at
+        # `alpha_safe`, never the raw 0.
+        sinhc = _safe_sinhc(alpha)
         cosh_alpha = torch.cosh(alpha)             # cosh(0) = 1, safe
 
         out = cosh_alpha.unsqueeze(-1) * x + sinhc.unsqueeze(-1) * v
@@ -393,22 +444,30 @@ class LorentzManifold:
         """
         ip = self.minkowski_inner(x, y)
         u = y - (self.k * ip).unsqueeze(-1) * x        # (B, n+1)
-        # Clamp at the arccosh domain boundary (float noise at x ≈ y can
-        # push k·⟨x,y⟩_M minutely below 1).
-        z = (self.k * ip).clamp(min=1.0)
-        alpha = torch.acosh(z)                          # (B,)
-        # α / sinh α with the analytic limit 1 at α=0. Same `where`-on-
-        # denominator-and-result idiom as `exp`'s `sinhc`.
-        sinh_alpha = torch.sinh(alpha)
-        sinh_alpha_safe = torch.where(
-            alpha > 0, sinh_alpha, torch.ones_like(alpha),
-        )
-        inv_sinhc = torch.where(
-            alpha > 0,
-            alpha / sinh_alpha_safe,
-            torch.ones_like(alpha),
-        )
-        return inv_sinhc.unsqueeze(-1) * u
+        # We need α/sinh(α) where α = arccosh(z), z = k·⟨x,y⟩_M.
+        # Both arccosh (derivative ∞ at z=1) and sinh(arccosh(z)) =
+        # sqrt(z²-1) have boundary singularities that NaN backward at
+        # x ≈ y. Reparameterize via `arg = sqrt((z-1)/2)`:
+        #
+        #   α = 2·arcsinh(arg)       (half-angle identity)
+        #   sinh(α) = 2·arg·sqrt(arg²+1)
+        #   ⇒  α/sinh(α) = arcsinh(arg) / (arg · sqrt(arg²+1))
+        #
+        # Both `arcsinh(arg)/arg` and `1/sqrt(arg²+1)` are smooth at
+        # arg = 0 (limits 1 and 1 respectively).
+        #
+        # Compute `arg` via the Minkowski norm of `y − x`, which we
+        # showed in `distance` is exact for x, y on H^n_k:
+        #     arg² = (z-1)/2 = |k|·‖y-x‖_M² / 4.
+        diff = y - x
+        diff_sq = ((diff[..., 1:] ** 2).sum(dim=-1) - diff[..., 0] ** 2)
+        arg = self._sqrt_abs_k * _safe_sqrt(diff_sq) * 0.5
+        # arcsinh(arg)/arg — autograd-safe at arg = 0
+        inv_sinhc = _safe_arcsinhc(arg)
+        # 1/sqrt(arg² + 1) — always finite, no boundary
+        inv_cosh_factor = torch.rsqrt(arg * arg + 1.0)
+        scale = inv_sinhc * inv_cosh_factor
+        return scale.unsqueeze(-1) * u
 
     @with_provenance(
         "holonomy_lib.manifolds.LorentzManifold.distance", op_version="0.1",
@@ -446,12 +505,14 @@ class LorentzManifold:
           (B,) non-negative distances.
         """
         diff = y - x
-        # ‖y - x‖_M² = -(diff_0)² + Σ diff_i². For x, y on H^n_k this is
-        # ≥ 0 in exact arithmetic; clamp against tiny-negative float noise.
-        diff_sq = ((diff[..., 1:] ** 2).sum(dim=-1)
-                    - diff[..., 0] ** 2).clamp(min=0)
-        # arg = √|k| · ‖y - x‖_M / 2
-        arg = self._sqrt_abs_k * torch.sqrt(diff_sq) * 0.5
+        # ‖y - x‖_M² = -(diff_0)² + Σ diff_i². For x, y on H^n_k this
+        # is ≥ 0 in exact arithmetic; `_safe_sqrt` clamps tiny-negative
+        # float noise to 0 in forward AND keeps backward finite at the
+        # boundary diff_sq = 0 (the d(x,x) = 0 case). The naive
+        # `sqrt(clamp(diff_sq, min=0))` pattern propagates `0 · ∞ =
+        # NaN` through backward at diff_sq = 0.
+        diff_sq = (diff[..., 1:] ** 2).sum(dim=-1) - diff[..., 0] ** 2
+        arg = self._sqrt_abs_k * _safe_sqrt(diff_sq) * 0.5
         return (2.0 * self._inv_sqrt_abs_k) * torch.asinh(arg)
 
     @with_provenance(
@@ -553,21 +614,23 @@ class LorentzManifold:
                 f"v_spatial last dim must be n={self.n}, "
                 f"got {v_spatial.shape[-1]}"
             )
-        norm_v = torch.linalg.vector_norm(v_spatial, dim=-1)   # (B,)
+        # `_safe_sqrt(Σ v²)` instead of `torch.linalg.vector_norm` so
+        # the gradient is finite at v_spatial = 0 (vector_norm's
+        # backward there is 0/0 = NaN). Forward is identical when
+        # v_spatial ≠ 0.
+        norm_v_sq = (v_spatial * v_spatial).sum(dim=-1)
+        norm_v = _safe_sqrt(norm_v_sq)
         alpha = self._sqrt_abs_k * norm_v
         cosh_a = torch.cosh(alpha)
-        # sinhc with the analytic limit 1 at α = 0; same guard as in `exp`.
-        alpha_safe = torch.where(alpha > 0, alpha, torch.ones_like(alpha))
-        sinhc = torch.where(
-            alpha > 0,
-            torch.sinh(alpha) / alpha_safe,
-            torch.ones_like(alpha),
-        )
+        sinhc = _safe_sinhc(alpha)
 
-        out = torch.empty(*v_spatial.shape[:-1], self.n + 1,
-                          device=v_spatial.device, dtype=v_spatial.dtype)
-        out[..., 0] = cosh_a * self._inv_sqrt_abs_k
-        out[..., 1:] = sinhc.unsqueeze(-1) * v_spatial
+        # `torch.cat` rather than in-place `out[..., 0] = …` so that
+        # autograd doesn't break (in-place assignment into a freshly-
+        # allocated `torch.empty` would not be a problem in principle,
+        # but `torch.cat` is the more idiomatic differentiable form).
+        time = (cosh_a * self._inv_sqrt_abs_k).unsqueeze(-1)
+        space = sinhc.unsqueeze(-1) * v_spatial
+        out = torch.cat([time, space], dim=-1)
         return self._reproject_to_hyperboloid(out)
 
     @with_provenance(
@@ -591,20 +654,21 @@ class LorentzManifold:
             raise ValueError(
                 f"y last dim must be n+1={self.n + 1}, got {y.shape[-1]}"
             )
+        # Reuse the arcsinh reparameterization from `distance` / `log`:
+        # both arccosh's derivative at z=1 and `vector_norm`'s 0/0
+        # gradient at y_spatial=0 would NaN the backward at y = origin.
+        # log_0(y) = (α/sinh α) · y_spatial, derived via:
+        #   diff_sq = ‖y − origin‖_M² = -(y_0 − 1/√|k|)² + Σ y_i²
+        #   arg² = |k|·diff_sq/4 = (z-1)/2   with z = √|k|·y_0
+        #   α = 2·arcsinh(arg), sinh(α) = 2·arg·sqrt(arg²+1)
+        #   ⇒  α/sinh(α) = arcsinh(arg)/(arg · sqrt(arg² + 1))
         y_spatial = y[..., 1:]
-        spatial_norm = torch.linalg.vector_norm(y_spatial, dim=-1)
-        # ⟨o, y⟩_M = -y_0 / √|k|, so k · ⟨o, y⟩_M = √|k| · y_0 since k<0.
-        z = (self._sqrt_abs_k * y[..., 0]).clamp(min=1.0)
-        beta = self._inv_sqrt_abs_k * torch.acosh(z)
-        # β · y_spatial / ‖y_spatial‖, with the 0/0 guard for y = origin
-        norm_safe = torch.where(
-            spatial_norm > 0, spatial_norm, torch.ones_like(spatial_norm),
-        )
-        scale = torch.where(
-            spatial_norm > 0,
-            beta / norm_safe,
-            torch.zeros_like(spatial_norm),
-        )
+        diff_temporal = y[..., 0] - self._inv_sqrt_abs_k
+        diff_sq = (y_spatial * y_spatial).sum(dim=-1) - diff_temporal ** 2
+        arg = self._sqrt_abs_k * _safe_sqrt(diff_sq) * 0.5
+        inv_sinhc = _safe_arcsinhc(arg)
+        inv_cosh_factor = torch.rsqrt(arg * arg + 1.0)
+        scale = inv_sinhc * inv_cosh_factor
         return scale.unsqueeze(-1) * y_spatial
 
     # ----------------------------------------------------------------
@@ -623,11 +687,16 @@ class LorentzManifold:
         is the standard "renormalize after exp" trick (Nickel-Kiela
         2018 §3) and follows the same drift-correction doctrine as
         `SPDManifold.exp`'s symmetrization step.
+
+        Implementation: `torch.cat` rather than in-place subscript
+        assignment on a `clone`, so autograd treats the operation as
+        an out-of-place tensor construction. The argument of sqrt is
+        always strictly positive (`spatial_sq + |1/k| ≥ |1/k| > 0`),
+        so sqrt's backward is finite without a `_safe_sqrt` wrapper.
         """
-        spatial_sq = (x[..., 1:] * x[..., 1:]).sum(dim=-1)   # (B,)
+        spatial = x[..., 1:]
+        spatial_sq = (spatial * spatial).sum(dim=-1)
         # For k<0, ⟨x,x⟩_M = -x_0² + ‖x_{1:}‖² = 1/k ⇒ x_0² = ‖x_{1:}‖² - 1/k
         # = ‖x_{1:}‖² + |1/k|. Always ≥ |1/k| > 0; sqrt is safe.
         x0_new = torch.sqrt(spatial_sq + (-1.0 / self.k))
-        out = x.clone()
-        out[..., 0] = x0_new
-        return out
+        return torch.cat([x0_new.unsqueeze(-1), spatial], dim=-1)
