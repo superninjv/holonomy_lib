@@ -373,3 +373,152 @@ class TestOpDocstring:
     def test_unknown_op_id_errors(self) -> None:
         out = agent.op_docstring("not.an.op")
         assert "error" in out
+
+
+# --------------------------------------------------------------------
+# replay_with recipe DSL (Phase 3)
+# --------------------------------------------------------------------
+
+
+class TestRecipeBuilder:
+    """The _build_substitute helper is the recipe parser; verify each
+    kind builds the expected tensor in isolation."""
+
+    def test_zeros_like(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        original = reg.get_tensor(lap_hex)
+        sub = agent._build_substitute(reg, lap_hex, {"kind": "zeros_like"})
+        assert sub.shape == original.shape
+        assert (sub == 0).all()
+
+    def test_from_hex_returns_other_cached_tensor(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        svd_u_hex = f"{by_op['holonomy_lib.algebra.linear.truncated_svd']}:0"
+        sub = agent._build_substitute(
+            reg, lap_hex, {"kind": "from_hex", "hex": svd_u_hex},
+        )
+        torch.testing.assert_close(sub, reg.get_tensor(svd_u_hex))
+
+    def test_perturb_adds_seeded_gaussian(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        original = reg.get_tensor(lap_hex)
+        sub = agent._build_substitute(
+            reg, lap_hex,
+            {"kind": "perturb", "noise_std": 0.1, "seed": 42},
+        )
+        # Should differ from the original but have the same shape.
+        assert sub.shape == original.shape
+        assert not torch.equal(sub, original)
+        # Same seed → reproducible.
+        sub2 = agent._build_substitute(
+            reg, lap_hex,
+            {"kind": "perturb", "noise_std": 0.1, "seed": 42},
+        )
+        torch.testing.assert_close(sub, sub2)
+
+    def test_scale_multiplies(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        original = reg.get_tensor(lap_hex)
+        sub = agent._build_substitute(reg, lap_hex, {"kind": "scale", "factor": 2.0})
+        torch.testing.assert_close(sub, original * 2.0)
+
+    def test_swap_batch_swaps_elements(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        original = reg.get_tensor(lap_hex)
+        sub = agent._build_substitute(
+            reg, lap_hex, {"kind": "swap_batch", "i": 0, "j": 2},
+        )
+        # Element 0 and 2 swapped; the rest unchanged.
+        torch.testing.assert_close(sub[0], original[2])
+        torch.testing.assert_close(sub[2], original[0])
+        torch.testing.assert_close(sub[1], original[1])
+        torch.testing.assert_close(sub[3], original[3])
+
+    def test_literal(self) -> None:
+        reg, by_op = _build_registry()
+        # Use the eigenvalue output (small enough to literal)
+        # but that's not in the fixture; use svd_S which is (4, 3).
+        s_hex = f"{by_op['holonomy_lib.algebra.linear.truncated_svd']}:1"
+        sub = agent._build_substitute(
+            reg, s_hex,
+            {"kind": "literal", "values": [[1.0, 0.5, 0.1]] * 4},
+        )
+        assert sub.shape == (4, 3)
+        torch.testing.assert_close(sub[0], torch.tensor([1.0, 0.5, 0.1], dtype=torch.float64))
+
+    def test_unknown_kind_raises(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        with pytest.raises(ValueError, match="unknown recipe kind"):
+            agent._build_substitute(reg, lap_hex, {"kind": "bogus"})
+
+    def test_missing_kind_raises(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        with pytest.raises(ValueError, match="'kind' field"):
+            agent._build_substitute(reg, lap_hex, {})
+
+    def test_perturb_requires_seed(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        with pytest.raises(ValueError, match="'seed'"):
+            agent._build_substitute(
+                reg, lap_hex,
+                {"kind": "perturb", "noise_std": 0.1},
+            )
+
+
+class TestReplayWith:
+    """End-to-end: build a recipe, apply it, verify the downstream
+    re-execution produces the expected new outputs."""
+
+    def test_zero_substitution_propagates(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        out = agent.replay_with(reg, lap_hex, {"kind": "zeros_like"})
+        # SVD downstream should be in new_outputs.
+        new_hexes = {entry["hex"].split(":")[0] for entry in out["new_outputs"]}
+        svd_base = by_op["holonomy_lib.algebra.linear.truncated_svd"]
+        assert svd_base in new_hexes
+        # With zero Laplacian, singular values should be ~0.
+        for entry in out["new_outputs"]:
+            if entry["hex"].endswith(":1"):  # SVD's S output
+                # Mean of singular values of zero matrix is 0.
+                assert abs(entry["mean"]) < 1e-9
+
+    def test_bad_recipe_returns_error(self) -> None:
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        out = agent.replay_with(reg, lap_hex, {"kind": "what"})
+        assert "error" in out
+        assert "unknown recipe kind" in out["error"]
+
+    def test_perturb_changes_downstream(self) -> None:
+        """Perturbing the laplacian by small noise should produce
+        downstream outputs that differ from the original cache.
+        """
+        reg, by_op = _build_registry()
+        lap_hex = by_op["holonomy_lib.spectral.laplacian.combinatorial"]
+        svd_hex = by_op["holonomy_lib.algebra.linear.truncated_svd"]
+        original_S = reg.get_tensor(f"{svd_hex}:1")
+        out = agent.replay_with(
+            reg, lap_hex,
+            {"kind": "perturb", "noise_std": 0.1, "seed": 7},
+        )
+        # Find the new S in the output summaries.
+        for entry in out["new_outputs"]:
+            if entry["hex"] == f"{svd_hex}:1":
+                # The mean of S will differ from the original after
+                # perturbation; not asserting magnitude, just non-equality.
+                original_mean = float(original_S.mean().item())
+                assert abs(entry["mean"] - original_mean) > 1e-9
+                break
+        else:
+            raise AssertionError(
+                f"SVD S output {svd_hex}:1 not found in new_outputs"
+            )

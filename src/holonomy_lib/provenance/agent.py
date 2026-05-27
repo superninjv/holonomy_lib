@@ -564,6 +564,145 @@ def tensor_compare(
     return {"error": f"unknown metric {metric!r}; use 'max_abs', 'frobenius', or 'cosine'"}
 
 
+def _build_substitute(
+    registry: ProvenanceRegistry, target_hex: str, recipe: dict[str, Any],
+) -> torch.Tensor:
+    """Construct a substitute tensor from a recipe dict.
+
+    Separated from `replay_with` so the recipe parsing is testable in
+    isolation. Raises ValueError on bad recipes.
+    """
+    kind = recipe.get("kind")
+    if kind is None:
+        raise ValueError("recipe must have a 'kind' field")
+
+    if kind == "zeros_like":
+        original = registry.get_tensor(target_hex)
+        if original is None:
+            raise ValueError(
+                f"target {target_hex!r} not cached; can't infer shape"
+            )
+        return torch.zeros_like(original)
+
+    if kind == "from_hex":
+        src_hex = recipe.get("hex")
+        if not src_hex:
+            raise ValueError("from_hex recipe requires 'hex' field")
+        src = registry.get_tensor(src_hex)
+        if src is None:
+            raise ValueError(f"source tensor {src_hex!r} not cached")
+        return src
+
+    if kind == "perturb":
+        original = registry.get_tensor(target_hex)
+        if original is None:
+            raise ValueError(f"target {target_hex!r} not cached")
+        if "noise_std" not in recipe:
+            raise ValueError("perturb recipe requires 'noise_std' field")
+        if "seed" not in recipe:
+            raise ValueError("perturb recipe requires 'seed' field (for reproducibility)")
+        std = float(recipe["noise_std"])
+        seed = int(recipe["seed"])
+        g = torch.Generator(device=original.device)
+        g.manual_seed(seed)
+        noise = torch.randn(
+            original.shape, generator=g,
+            dtype=original.dtype, device=original.device,
+        ) * std
+        return original + noise
+
+    if kind == "scale":
+        original = registry.get_tensor(target_hex)
+        if original is None:
+            raise ValueError(f"target {target_hex!r} not cached")
+        if "factor" not in recipe:
+            raise ValueError("scale recipe requires 'factor' field")
+        return original * float(recipe["factor"])
+
+    if kind == "swap_batch":
+        original = registry.get_tensor(target_hex)
+        if original is None:
+            raise ValueError(f"target {target_hex!r} not cached")
+        if original.ndim == 0:
+            raise ValueError("swap_batch requires at least 1 dim")
+        if "i" not in recipe or "j" not in recipe:
+            raise ValueError("swap_batch recipe requires 'i' and 'j' fields")
+        i = int(recipe["i"])
+        j = int(recipe["j"])
+        B = original.shape[0]
+        if not (0 <= i < B and 0 <= j < B):
+            raise ValueError(
+                f"swap_batch indices out of range: i={i}, j={j}, B={B}"
+            )
+        result = original.clone()
+        result[i] = original[j].clone()
+        result[j] = original[i].clone()
+        return result
+
+    if kind == "literal":
+        values = recipe.get("values")
+        if values is None:
+            raise ValueError("literal recipe requires 'values' field")
+        # Match dtype to target when cached; default to float64 otherwise.
+        original = registry.get_tensor(target_hex)
+        dtype = original.dtype if original is not None else torch.float64
+        device = original.device if original is not None else torch.device("cpu")
+        return torch.tensor(values, dtype=dtype, device=device)
+
+    raise ValueError(
+        f"unknown recipe kind {kind!r}; valid: zeros_like, from_hex, "
+        f"perturb, scale, swap_batch, literal"
+    )
+
+
+@agent_tool(description=(
+    "Substitute a cached tensor and re-execute the downstream DAG. "
+    "The recipe describes how to build the substitute. Available "
+    "recipe kinds: "
+    "{'kind': 'zeros_like'} — fill with zeros, same shape/dtype as "
+    "the target. "
+    "{'kind': 'from_hex', 'hex': '<other_hex>'} — substitute with "
+    "another cached tensor. "
+    "{'kind': 'perturb', 'noise_std': float, 'seed': int} — original + "
+    "Gaussian noise N(0, noise_std). "
+    "{'kind': 'scale', 'factor': float} — multiply the original by a "
+    "scalar. "
+    "{'kind': 'swap_batch', 'i': int, 'j': int} — swap two batch "
+    "elements (dim 0). "
+    "{'kind': 'literal', 'values': [...]} — explicit nested list of "
+    "values; small tensors only."
+))
+def replay_with(
+    registry: ProvenanceRegistry,
+    target_hex: str,
+    recipe: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a substitute via the recipe DSL, then call registry.replay."""
+    try:
+        substitute = _build_substitute(registry, target_hex, recipe)
+    except ValueError as e:
+        return {"error": str(e), "recipe": recipe}
+    try:
+        new_outputs = registry.replay({target_hex: substitute})
+    except Exception as e:
+        return {"error": f"replay failed: {type(e).__name__}: {e}"}
+    summary_entries = []
+    for h, t in new_outputs.items():
+        promoted = t.to(torch.float64)
+        summary_entries.append({
+            "hex": h,
+            "shape": list(t.shape),
+            "mean": float(promoted.mean().item()),
+            "std": (
+                float(promoted.std().item()) if t.numel() > 1 else 0.0
+            ),
+        })
+    return {
+        "replayed_count": len(new_outputs),
+        "new_outputs": summary_entries,
+    }
+
+
 @agent_tool(description=(
     "Return the docstring and signature of a registered op. Use this "
     "for discovery — e.g., to understand what 'holonomy_lib.spectral."
