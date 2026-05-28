@@ -330,10 +330,22 @@ misses. Demonstrated by finding the spectral-shift bug (C1).
    any future manifold-PDE primitive.
 
 **Paper section**: §3 "Implementation correctness" — methodology
-sub-section
+sub-section (§3.3)
 
-**Status**: 🟡 demonstrated once (with the bug catch); needs
-generalization
+**Status**: 🟢 **paper-ready** — see
+`notes/strengthening/C7_validation_methodology_strengthened.md`.
+Abstracted into a reference-free dual check (operator-equation
+residual + conserved-quantity check) and generalized to a second,
+structurally different primitive: the graph heat kernel
+`exp(−t·L)` (`notes/validation/graph_heat_kernel_validation.py` +
+`_results.md`), crossing the continuous→discrete divide (PDE→ODE,
+probability mass→row mass). Key new result: the two checks are
+**complementary** — a constant rescale `K→c·K` is invisible to the
+residual (a scaled solution still solves the homogeneous ODE) but
+caught by mass; a mass-preserving perturbation `K→K+ε·L'` is
+invisible to mass but caught by the residual. Neither check alone
+suffices; the C1 spectral-shift bug was caught by both only by
+luck.
 
 ---
 
