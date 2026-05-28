@@ -264,6 +264,7 @@ The interesting structure isn't the geodesics (trivial) but the
 | `origin` | `(batch_size=1)` | `(B, n)` zero |
 | `is_on_manifold` | `(x, atol=1e-9)` | `(B,)` all True (flat space) |
 | `minkowski_inner` | `(u, v)` | `(B,)` signed ⟨u,v⟩_M |
+| `inner` | `(x, u, v)` | `(B,)` signed ⟨u,v⟩_M (= `minkowski_inner`; API parity for manifold-generic callers like `ProductManifold` / `manifold_aware_inner`) |
 | `norm_sq` | `(v)` | `(B,)` signed ⟨v,v⟩_M (no `norm` — would be complex) |
 | `interval_sq` | `(x, y)` | `(B,)` signed `⟨y-x, y-x⟩_M` |
 | `causal_type` | `(x, y, null_atol=1e-9)` | `(B,)` int64 — SPACELIKE / FUTURE_TIMELIKE / PAST_TIMELIKE / FUTURE_NULL / PAST_NULL |
@@ -273,6 +274,17 @@ The interesting structure isn't the geodesics (trivial) but the
 | `exp` | `(x, v)` | `x + v` |
 | `log` | `(x, y)` | `y - x` |
 | `retraction` | `(x, v)` | = `exp(x, v)` |
+| `metric_tensor` | `(x)` | `(B, n, n)` η = diag(−1, +1, …, +1) |
+| `christoffel_symbols` | `(x)` | `(B, n, n, n)` — all zero (flat) |
+| `riemann_tensor` | `(x)` | `(B, n, n, n, n)` — all zero (flat) |
+| `ricci_tensor` | `(x)` | `(B, n, n)` — all zero (flat) |
+| `scalar_curvature` | `(x)` | `(B,)` — zero (flat) |
+
+The curvature-tensor methods are all identically zero on flat
+Minkowski — the manifold is the canonical Ricci-flat vacuum solution
+to Einstein's equations — and exist as the override surface for
+subclasses representing curved Lorentzian backgrounds (Schwarzschild,
+FLRW). `metric_tensor` returns the constant η regardless of `x`.
 
 Use cases:
 - **Spacetime substrate**: model embeddings as events in `R^{1, n-1}`;
@@ -351,6 +363,7 @@ attach any architecture on top.
 | Method | Signature | Returns |
 |---|---|---|
 | `origin` | `(batch_size=1)` | `(B, n)` zero vector |
+| `random_point` | `(batch_size=1, kappa=None, generator=None)` | `(B, n)` — draws `v ~ N(0, σ²I)` then `exp_0(v, κ)`; κ defaults to small per-point N(0, 1) |
 | `is_on_manifold` | `(x, kappa, atol=1e-9)` | `(B,)` bool |
 | `exp_0` | `(v, kappa)` | `(B, n)` per-point exp at origin |
 | `log_0` | `(y, kappa)` | `(B, n)` per-point log at origin |
@@ -918,9 +931,10 @@ Open frontiers the library does not yet cover:
   ~21× slower than CPython sets at n=80; the win is a future kernel).
 - Sparse-input shift-and-invert via iterative solver (CG/MINRES) for
   sparse SA Lanczos.
-- Further manifolds: sphere, Stiefel, Grassmann, product.
-(`KappaStereographicManifold` now supports κ-sign crossing
-during training — the previous static-branch limitation is closed.)
+- Further manifolds: sphere, Stiefel, Grassmann.
+(`ProductManifold` and `HeterogeneousKappaManifold` now ship;
+`KappaStereographicManifold` supports κ-sign crossing during
+training — the previous static-branch limitation is closed.)
 - Higher-dimensional cellular sheaves on simplicial complexes (with
   2-cells / faces and the corresponding chain identity ∂_1 ∘ ∂_2 = 0).
 - SE(3) / SU(2) / SL(n) Lie group primitives.

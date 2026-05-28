@@ -435,7 +435,8 @@ silently if a comparison library isn't installed.
 ```
 holonomy_lib/
 ├── src/holonomy_lib/          # the library
-│   ├── manifolds/             # FixedRankManifold, SPDManifold
+│   ├── manifolds/             # FixedRank, SPD, Lorentz, κ-stereographic, Lorentzian, Product, heterogeneous-κ
+│   ├── hyperbolic/            # manifold-aware graph ops: Fréchet mean, eigenmaps, heat kernel
 │   ├── algebra/               # truncated_svd, lanczos_eigsh (LA + shift-invert SA)
 │   ├── tensor_calculus/       # hosvd, mode_product, mode_unfolding
 │   ├── spectral/              # 4 Laplacians (incl. magnetic + sign-magnetic), eigenmaps, heat kernel, resistance, diffusion maps
@@ -448,7 +449,7 @@ holonomy_lib/
 │   ├── lie/                   # SO(3) primitives, real spherical harmonics (l ≤ 4)
 │   ├── provenance/            # content-addressable hex protocol
 │   └── audit.py               # audit gate: no magic numbers
-├── tests/                     # 707 tests across all modules
+├── tests/                     # 1143 tests across all modules
 │   └── benchmarks/            # device-agnostic timing harness
 ├── notes/
 │   ├── magic_numbers.md       # cataloged constants with scale-of-validity
@@ -465,7 +466,30 @@ holonomy_lib/
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full release history.
 
-**v0.4.1** (current): end-to-end MCP transport fixes.
+**v0.5.0** (current): hyperbolic / pseudo-Riemannian / mixed-curvature
+manifold pass.
+
+- Five new manifold classes: `LorentzManifold` (hyperboloid model of
+  `H^n_k`), `KappaStereographicManifold` (parametric κ interpolating
+  spherical / Euclidean / hyperbolic, with learnable κ that can cross
+  0 mid-training via dynamic sign dispatch), `LorentzianManifold`
+  (pseudo-Riemannian `(1, n-1)` Minkowski spacetime with causal
+  structure + flat-background curvature tensors), `ProductManifold`
+  (mixed-curvature direct product), and `HeterogeneousKappaManifold`
+  (per-point κ with a configurable pair-κ combiner).
+- New `holonomy_lib.hyperbolic` module of manifold-agnostic graph
+  operations: `manifold_aware_inner`, `frechet_mean` (Karcher
+  iteration), `hyperbolic_laplacian_eigenmaps` (RSGD embedding), and
+  `hyperbolic_heat_kernel` (dimension-dispatched H^n heat kernel).
+- Correctness: found and fixed a missing spectral-shift factor in the
+  heat-kernel dimension recursion that appears in some references;
+  added a closed-form n=5 kernel (~3 orders of magnitude tighter PDE
+  residual); even-n now works via the corrected recursion seeded from
+  the n=2 integral form; autograd-finite gradients at every boundary
+  input, established across all new manifolds.
+- Test count 707 → 1143; audit clean.
+
+**v0.4.1**: end-to-end MCP transport fixes.
 
 - `mcp.py` eagerly imports all op-defining submodules at server
   startup so `OP_REGISTRY` is populated before `replay_with` runs
@@ -541,7 +565,7 @@ the v0.1.0 seed.
 `tensor_calculus`, `spectral` (4 Laplacians + eigenmaps),
 `discrete_geometry` (Ollivier-Ricci + flow + surgery), `provenance`.
 
-**Frontiers** (v0.4+): Wigner-D matrices (real basis) to complete the
+**Frontiers** (v0.6+): Wigner-D matrices (real basis) to complete the
 SO(3) equivariance story so spherical-harmonic features mix
 correctly under rotation; optimal transport extensions
 (Gromov-Wasserstein for metric-measure-space comparison, Sinkhorn
@@ -549,8 +573,8 @@ divergences for de-biased OT); GPU-resident custom CUDA kernel for
 the Z/2 PH reduction (current torch path is sequential with a
 per-column CPU sync); sparse-input shift-and-invert via iterative
 solver (CG/MINRES); higher-dim cellular sheaves on simplicial
-complexes; further manifolds (sphere, Stiefel, Grassmann,
-hyperbolic); SE(3) / SU(2) / SL(n) Lie group primitives.
+complexes; further manifolds (sphere, Stiefel, Grassmann);
+SE(3) / SU(2) / SL(n) Lie group primitives.
 Contributions welcome via PR.
 
 ---
