@@ -19,6 +19,9 @@ Currently implemented:
   magnetic.sign_magnetic_symmetric_normalized(A, q)
                                       : normalized signed-directed form
   laplacian_eigenmaps(A, k, ...)      : bottom-k spectral embedding
+  spectral_dimension(eigenvalues, t)  : d_s = -2 d log p / d log t from the
+                                          heat-kernel return decay
+                                          (Rammal-Toulouse 1983)
 """
 
 from holonomy_lib.spectral import laplacian, magnetic
@@ -29,6 +32,7 @@ from holonomy_lib.spectral.effective_resistance import (
 )
 from holonomy_lib.spectral.embedding import laplacian_eigenmaps
 from holonomy_lib.spectral.heat_kernel import heat_kernel_chebyshev
+from holonomy_lib.spectral.spectral_dimension import spectral_dimension
 
 __all__ = [
     "commute_time",
@@ -38,4 +42,5 @@ __all__ = [
     "laplacian",
     "laplacian_eigenmaps",
     "magnetic",
+    "spectral_dimension",
 ]

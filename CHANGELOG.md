@@ -4,6 +4,48 @@ All notable changes to `holonomy_lib` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org).
 
+## [0.5.2] - 2026-05-28
+
+### Added
+
+- `manifolds.comparison.model_sphere_area(kappa, N, r)` and
+  `manifolds.comparison.model_ball_volume(kappa, N, r)`: model-space
+  (constant-curvature space form `M_κ^N`) geodesic sphere area and ball volume,
+  for real (non-integer) effective dimension `N` and signed curvature `κ`, via
+  the Bishop-Gromov `sn_κ` volume element. Area is closed-form; the volume
+  integral uses Gauss-Legendre quadrature (exact for `κ = 0`). These are the
+  comparison reference for curvature- and dimension-dependent volume / flux
+  laws. New cataloged constant `COMPARISON_BALL_VOLUME_QUADRATURE_NODES = 64`.
+- `spectral.spectral_dimension(eigenvalues, t)`: spectral dimension `d_s` of a
+  Laplacian spectrum via the heat-kernel return-probability decay exponent
+  (`p(t) ~ t^(-d_s/2)`), fit as the log-log slope over a caller-supplied time
+  window. Non-integer (fractal / continuum) dimensions supported; no new
+  constants. Rammal-Toulouse (1983); Durhuus-Jonsson-Wheater (2007).
+- `sheaf.HeterogeneousGraphSheaf`: cellular sheaf with per-node (heterogeneous)
+  stalk dimensions, i.e. each node's stalk dim is its own; edges carry ragged
+  `(d_e, d_v[u])` restriction maps. `sheaf_coboundary` / `sheaf_laplacian` /
+  `sheaf_dirichlet_energy` dispatch to it; the uniform `GraphSheaf` path is
+  unchanged (reduction verified: uniform dims + identity maps reproduce
+  `GraphSheaf.trivial`'s Laplacian exactly). The v2 the module docstring
+  anticipated. Hansen-Ghrist (2019).
+- Closed-form `H^7` heat kernel (`hyperbolic.heat_kernel._heat_kernel_unit_n7`):
+  `k^7_t(r) = (4πt)^{-7/2} exp(-9t - r²/4t) · [r³ sinh²r + 6r²t sinh r cosh r +
+  (8t² − 6t) r sinh²r + 12t²(r − sinh r cosh r)] / sinh⁵ r`, one corrected
+  operator-chain step beyond the `H^5` form. Replaces the autograd recursion at
+  n=7 (faster, more precise) and seeds the odd-n recursion at n ≥ 9 (cascade
+  precision gain). Verified in `notes/verification/heat_kernel_n7_sympy.py`
+  (closed form = recursion = operator chain to ~1e-13; heat-equation residual
+  ~1e-12; r→0 limit `1 + 2t + 16t²/15`). New cataloged dim constant
+  `_N_OPERATOR_CHAIN_N7_CLOSED = 7`; 5 new tests (closed-form/limit/backward,
+  n7-vs-recursion unit check, and the n=9 reseeded-recursion residual).
+
+### Changed
+
+- Odd-n hyperbolic heat-kernel recursion now seeds from the `H^7` closed form
+  (was `H^5`), so n ≥ 9 takes one fewer `torch.autograd.grad` step.
+
+Test count: 1143 (v0.5.0) to 1187.
+
 ## [0.5.0] - 2026-05-28
 
 The hyperbolic / pseudo-Riemannian / mixed-curvature manifold pass.

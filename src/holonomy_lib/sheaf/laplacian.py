@@ -28,7 +28,7 @@ from __future__ import annotations
 import torch
 
 from holonomy_lib.provenance import with_provenance
-from holonomy_lib.sheaf.graph_sheaf import GraphSheaf
+from holonomy_lib.sheaf.graph_sheaf import GraphSheaf, HeterogeneousGraphSheaf
 
 
 # Dense-coboundary allocation guard: refuse to allocate beyond this
@@ -40,10 +40,55 @@ from holonomy_lib.sheaf.graph_sheaf import GraphSheaf
 SHEAF_DENSE_BYTES_CAP: int = 2 * 2**30
 
 
+def _heterogeneous_coboundary(sheaf: HeterogeneousGraphSheaf) -> torch.Tensor:
+    """Dense coboundary `δ` for a heterogeneous (per-node-stalk) sheaf.
+
+    Built block-wise: edge `e = (u, v)` contributes `+F_left[e]` at u's node
+    columns and `−F_right[e]` at v's, in a `(Σ d_e, Σ d_v)` dense tensor. v1 is a
+    Python loop over edges (the dims are ragged, so the uniform scatter path does
+    not apply); a vectorized / sparse path is a natural follow-on.
+    """
+    device, dtype = sheaf.device, sheaf.dtype
+    node_dims = sheaf.node_stalk_dims.tolist()
+    edge_dims = sheaf.edge_stalk_dims.tolist()
+    uv = sheaf.edges.tolist()
+    total_v, total_e = sum(node_dims), sum(edge_dims)
+
+    bytes_per_elem = torch.empty((), dtype=dtype).element_size()
+    dense_bytes = 2 * total_e * total_v * bytes_per_elem
+    if dense_bytes > SHEAF_DENSE_BYTES_CAP:
+        raise RuntimeError(
+            f"sheaf_coboundary would allocate {dense_bytes:,} bytes for the dense "
+            f"δ tensor (Σd_e={total_e}, Σd_v={total_v}); the v1 dense path is "
+            f"capped at {SHEAF_DENSE_BYTES_CAP:,} bytes. Restrict to smaller "
+            f"sheaves or contribute a sparse implementation."
+        )
+
+    delta = torch.zeros(total_e, total_v, device=device, dtype=dtype)
+    if sheaf.n_edges == 0:
+        return delta
+
+    node_off, acc = [], 0
+    for d in node_dims:
+        node_off.append(acc)
+        acc += d
+
+    row = 0
+    for e in range(sheaf.n_edges):
+        u, v = uv[e]
+        d_e = edge_dims[e]
+        cu, du = node_off[u], node_dims[u]
+        cv, dv = node_off[v], node_dims[v]
+        delta[row:row + d_e, cu:cu + du] = sheaf.F_left[e]
+        delta[row:row + d_e, cv:cv + dv] = -sheaf.F_right[e]
+        row += d_e
+    return delta
+
+
 @with_provenance(
     "holonomy_lib.sheaf.sheaf_coboundary", op_version="0.1",
 )
-def sheaf_coboundary(sheaf: GraphSheaf) -> torch.Tensor:
+def sheaf_coboundary(sheaf: GraphSheaf | HeterogeneousGraphSheaf) -> torch.Tensor:
     """Build the sheaf coboundary `δ` as a dense `(n_e·d_e, n_v·d_v)`
     tensor.
 
@@ -60,6 +105,8 @@ def sheaf_coboundary(sheaf: GraphSheaf) -> torch.Tensor:
     References:
       Hansen-Ghrist (2019), eq. 2.
     """
+    if isinstance(sheaf, HeterogeneousGraphSheaf):
+        return _heterogeneous_coboundary(sheaf)
     n_e = sheaf.n_edges
     n_v = sheaf.n_nodes
     d_e = sheaf.edge_stalk_dim
@@ -124,7 +171,7 @@ def sheaf_coboundary(sheaf: GraphSheaf) -> torch.Tensor:
 @with_provenance(
     "holonomy_lib.sheaf.sheaf_laplacian", op_version="0.1",
 )
-def sheaf_laplacian(sheaf: GraphSheaf) -> torch.Tensor:
+def sheaf_laplacian(sheaf: GraphSheaf | HeterogeneousGraphSheaf) -> torch.Tensor:
     """Sheaf Laplacian `L_F = δ^T δ`, a symmetric PSD operator of
     shape `(n_v · d_v, n_v · d_v)`.
 
@@ -158,7 +205,7 @@ def sheaf_laplacian(sheaf: GraphSheaf) -> torch.Tensor:
     "holonomy_lib.sheaf.sheaf_dirichlet_energy", op_version="0.1",
 )
 def sheaf_dirichlet_energy(
-    sheaf: GraphSheaf, x: torch.Tensor,
+    sheaf: GraphSheaf | HeterogeneousGraphSheaf, x: torch.Tensor,
 ) -> torch.Tensor:
     """Per-batch Dirichlet energy `E(x) = x^T L_F x` for sheaf-valued
     signals.
@@ -177,11 +224,11 @@ def sheaf_dirichlet_energy(
     References:
       Hansen-Ghrist (2019), §3.2.
     """
-    n_v, d_v = sheaf.n_nodes, sheaf.node_stalk_dim
-    if x.shape[-1] != n_v * d_v:
+    total = sheaf.total_node_dim
+    if x.shape[-1] != total:
         raise ValueError(
-            f"x last dim must equal n_nodes·node_stalk_dim = {n_v * d_v}; "
-            f"got x.shape={tuple(x.shape)}"
+            f"x last dim must equal the total node-stalk dim (sum of d_v over "
+            f"n_nodes) = {total}; got x.shape={tuple(x.shape)}"
         )
     delta = sheaf_coboundary(sheaf)                  # (n_e·d_e, n_v·d_v)
     # x: (..., n_v·d_v); δ x: (..., n_e·d_e); energy: (..., )

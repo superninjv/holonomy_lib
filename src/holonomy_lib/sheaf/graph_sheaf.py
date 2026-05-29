@@ -127,6 +127,11 @@ class GraphSheaf:
         return int(self.edges.shape[0])
 
     @property
+    def total_node_dim(self) -> int:
+        """Length of the stacked node-stalk vector, `n_nodes · d_v`."""
+        return self.n_nodes * self.node_stalk_dim
+
+    @property
     def device(self) -> torch.device:
         return self.F_left.device
 
@@ -199,3 +204,141 @@ class GraphSheaf:
             F_left=F.clone(),
             F_right=F.clone(),
         )
+
+
+@dataclass(frozen=True)
+class HeterogeneousGraphSheaf:
+    """A cellular sheaf with PER-NODE (heterogeneous) stalk dimensions.
+
+    The v2 generalization of `GraphSheaf`: node `i` carries a `d_v[i]`-dim stalk
+    and edge `e` a `d_e[e]`-dim stalk, all free to differ. For edge `e = (u, v)`:
+
+      F_left[e]  : R^{d_v[u]} -> R^{d_e[e]}   shape (d_e[e], d_v[u])
+      F_right[e] : R^{d_v[v]} -> R^{d_e[e]}   shape (d_e[e], d_v[v])
+
+    Coboundary, Laplacian, and Dirichlet energy mean exactly what they do in the
+    uniform case (each edge block of `δ` is `F_left[e]·x_u − F_right[e]·x_v`,
+    `L_F = δ^T δ`); only the per-node/per-edge dims and the ragged restriction
+    maps differ. The maps are stored as a tuple of tensors (ragged), since the
+    dims vary, rather than one dense `(n_e, d_e, d_v)` block.
+
+    This is the structure needed when a node's stalk dimension IS a per-node
+    quantity (e.g. each concept's relational rank) rather than a single global K.
+
+    Attributes:
+      n_nodes:         number of nodes.
+      edges:           `(n_edges, 2)` int64 `(u, v)` pairs.
+      node_stalk_dims: `(n_nodes,)` int64, per-node stalk dim `d_v[i] > 0`.
+      edge_stalk_dims: `(n_edges,)` int64, per-edge stalk dim `d_e[e] > 0`.
+      F_left:          length-`n_edges` tuple; `F_left[e]` is `(d_e[e], d_v[u])`.
+      F_right:         length-`n_edges` tuple; `F_right[e]` is `(d_e[e], d_v[v])`.
+
+    References:
+      Hansen-Ghrist (2019): cellular sheaves carry per-cell stalks of arbitrary
+        finite dimension; the uniform `GraphSheaf` is the special case.
+    """
+
+    n_nodes: int
+    edges: torch.Tensor
+    node_stalk_dims: torch.Tensor
+    edge_stalk_dims: torch.Tensor
+    F_left: tuple[torch.Tensor, ...]
+    F_right: tuple[torch.Tensor, ...]
+
+    def __post_init__(self) -> None:
+        if self.n_nodes <= 0:
+            raise ValueError(f"n_nodes must be > 0; got {self.n_nodes}")
+        if self.edges.ndim != 2 or self.edges.shape[-1] != 2:
+            raise ValueError(
+                f"edges must be (n_edges, 2); got shape={tuple(self.edges.shape)}"
+            )
+        n_e = int(self.edges.shape[0])
+        if tuple(self.node_stalk_dims.shape) != (self.n_nodes,):
+            raise ValueError(
+                f"node_stalk_dims must be (n_nodes={self.n_nodes},); got "
+                f"shape={tuple(self.node_stalk_dims.shape)}"
+            )
+        if tuple(self.edge_stalk_dims.shape) != (n_e,):
+            raise ValueError(
+                f"edge_stalk_dims must be (n_edges={n_e},); got "
+                f"shape={tuple(self.edge_stalk_dims.shape)}"
+            )
+        if (self.node_stalk_dims <= 0).any() or (self.edge_stalk_dims <= 0).any():
+            raise ValueError("all stalk dims must be > 0")
+        if len(self.F_left) != n_e or len(self.F_right) != n_e:
+            raise ValueError(
+                f"F_left and F_right must each have n_edges={n_e} maps; got "
+                f"{len(self.F_left)} and {len(self.F_right)}"
+            )
+        if (self.edges < 0).any() or (self.edges >= self.n_nodes).any():
+            raise ValueError(
+                f"edges entries must be in [0, n_nodes={self.n_nodes})"
+            )
+        if (self.edges[:, 0] == self.edges[:, 1]).any():
+            raise ValueError(
+                "self-loops (u == v in edges) are not supported; drop them first"
+            )
+        if torch.unique(self.edges, dim=0).shape[0] != n_e:
+            raise ValueError("duplicate edges are not supported")
+        # Per-edge restriction-map shapes must match the incident stalk dims.
+        node_dims = self.node_stalk_dims.tolist()
+        edge_dims = self.edge_stalk_dims.tolist()
+        uv = self.edges.tolist()
+        for e in range(n_e):
+            u, v = uv[e]
+            want_left = (edge_dims[e], node_dims[u])
+            want_right = (edge_dims[e], node_dims[v])
+            if tuple(self.F_left[e].shape) != want_left:
+                raise ValueError(
+                    f"F_left[{e}] must be (d_e[e], d_v[u])={want_left}; got "
+                    f"{tuple(self.F_left[e].shape)}"
+                )
+            if tuple(self.F_right[e].shape) != want_right:
+                raise ValueError(
+                    f"F_right[{e}] must be (d_e[e], d_v[v])={want_right}; got "
+                    f"{tuple(self.F_right[e].shape)}"
+                )
+        if n_e > 0:
+            dev, dt = self.F_left[0].device, self.F_left[0].dtype
+            for t in (*self.F_left, *self.F_right):
+                if t.device != dev or t.dtype != dt:
+                    raise ValueError(
+                        "all restriction maps must share device and dtype"
+                    )
+
+    @property
+    def n_edges(self) -> int:
+        return int(self.edges.shape[0])
+
+    @property
+    def total_node_dim(self) -> int:
+        """Length of the stacked node-stalk vector, `Σ_i d_v[i]`."""
+        return int(self.node_stalk_dims.sum())
+
+    @property
+    def device(self) -> torch.device:
+        return (self.F_left[0].device if self.n_edges
+                else self.node_stalk_dims.device)
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.F_left[0].dtype if self.n_edges else torch.float64
+
+    def _provenance_signature(self) -> dict:
+        """Deterministic canonical form for `@with_provenance` hashing: topology
+        (n_nodes + edges) + the per-node/per-edge stalk dims + device/dtype. As
+        in `GraphSheaf`, the restriction-map tensors are not put in the dict."""
+        edges_bytes = self.edges.cpu().contiguous().numpy().tobytes()
+        dims_bytes = (
+            self.node_stalk_dims.cpu().contiguous().numpy().tobytes()
+            + self.edge_stalk_dims.cpu().contiguous().numpy().tobytes()
+        )
+        return {
+            "class": "HeterogeneousGraphSheaf",
+            "n_nodes": self.n_nodes,
+            "n_edges": self.n_edges,
+            "edges_sha256_prefix": hashlib.sha256(edges_bytes).hexdigest()[:HEX_PREFIX_LEN],
+            "stalk_dims_sha256_prefix": hashlib.sha256(dims_bytes).hexdigest()[:HEX_PREFIX_LEN],
+            "device": str(self.device),
+            "dtype": str(self.dtype),
+        }

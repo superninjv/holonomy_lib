@@ -1,0 +1,163 @@
+"""Tests for holonomy_lib.manifolds.comparison (model-space volumes).
+
+Three layers:
+  1. Unit tests — shapes across B ∈ {0, 1, several}; input validation.
+  2. Property tests — closed-form known values (Euclidean / sphere /
+     hyperbolic), κ→0 continuity, and the area = dV/dr identity.
+  3. Comparison — the closed forms above are themselves the ground truth, so no
+     external library is needed.
+"""
+
+from __future__ import annotations
+
+import math
+
+import pytest
+import torch
+
+from holonomy_lib.manifolds import model_ball_volume, model_sphere_area
+
+DT = torch.float64
+
+
+def _t(x):
+    return torch.tensor(x, dtype=DT)
+
+
+# --------------------------------------------------------------------
+# Shapes across B ∈ {0, 1, several}
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("batch", [0, 1, 4])
+class TestShapes:
+    def test_sphere_area_shape(self, batch):
+        out = model_sphere_area(
+            torch.zeros(batch, dtype=DT),
+            torch.full((batch,), 3.0, dtype=DT),
+            torch.ones(batch, dtype=DT),
+        )
+        assert out.shape == (batch,)
+
+    def test_ball_volume_shape(self, batch):
+        out = model_ball_volume(
+            torch.full((batch,), -1.0, dtype=DT),
+            torch.full((batch,), 2.5, dtype=DT),
+            torch.ones(batch, dtype=DT),
+        )
+        assert out.shape == (batch,)
+
+
+# --------------------------------------------------------------------
+# Validation
+# --------------------------------------------------------------------
+
+
+class TestValidation:
+    def test_rejects_N_below_1(self):
+        with pytest.raises(ValueError, match="N"):
+            model_ball_volume(_t([0.0]), _t([0.5]), _t([1.0]))
+
+    def test_rejects_negative_r(self):
+        with pytest.raises(ValueError, match="r"):
+            model_sphere_area(_t([0.0]), _t([3.0]), _t([-1.0]))
+
+    def test_rejects_r_beyond_sphere_diameter(self):
+        with pytest.raises(ValueError, match="diameter|kappa"):
+            model_ball_volume(_t([1.0]), _t([3.0]), _t([math.pi + 0.1]))
+
+
+# --------------------------------------------------------------------
+# Closed-form known values — flat (κ = 0); quadrature is exact here
+# --------------------------------------------------------------------
+
+
+class TestEuclidean:
+    def test_sphere_area(self):
+        r = _t([2.0])
+        torch.testing.assert_close(
+            model_sphere_area(_t([0.0]), _t([2.0]), r),
+            _t([2 * math.pi * 2.0]), atol=1e-12, rtol=0)   # 2π r
+        torch.testing.assert_close(
+            model_sphere_area(_t([0.0]), _t([3.0]), r),
+            _t([4 * math.pi * 4.0]), atol=1e-12, rtol=0)   # 4π r²
+
+    def test_ball_volume(self):
+        r = _t([2.0])
+        torch.testing.assert_close(
+            model_ball_volume(_t([0.0]), _t([1.0]), r),
+            _t([2 * 2.0]), atol=1e-12, rtol=0)             # 2r
+        torch.testing.assert_close(
+            model_ball_volume(_t([0.0]), _t([2.0]), r),
+            _t([math.pi * 4.0]), atol=1e-12, rtol=0)       # π r²
+        torch.testing.assert_close(
+            model_ball_volume(_t([0.0]), _t([3.0]), r),
+            _t([4 / 3 * math.pi * 8.0]), atol=1e-12, rtol=0)  # 4/3 π r³
+
+
+# --------------------------------------------------------------------
+# Closed-form known values — sphere (κ = 1) and hyperbolic (κ = -1)
+# atol loosened on volumes: Gauss-Legendre quadrature vs analytic (64 nodes
+# give ~1e-13 for these analytic integrands; bound set conservatively).
+# --------------------------------------------------------------------
+
+
+class TestSphere:
+    def test_full_2sphere(self):
+        # κ=1, N=2: the "ball" at r=π is the whole unit 2-sphere, area 4π.
+        torch.testing.assert_close(
+            model_ball_volume(_t([1.0]), _t([2.0]), _t([math.pi])),
+            _t([4 * math.pi]), atol=1e-10, rtol=0)
+        torch.testing.assert_close(
+            model_sphere_area(_t([1.0]), _t([2.0]), _t([math.pi])),
+            _t([0.0]), atol=1e-12, rtol=0)                 # pole: area 0
+
+    def test_full_3sphere_volume(self):
+        # κ=1, N=3: full unit 3-sphere volume 2π².
+        torch.testing.assert_close(
+            model_ball_volume(_t([1.0]), _t([3.0]), _t([math.pi])),
+            _t([2 * math.pi ** 2]), atol=1e-10, rtol=0)
+
+
+class TestHyperbolic:
+    def test_n2_area_and_volume(self):
+        r = _t([1.3])
+        torch.testing.assert_close(
+            model_sphere_area(_t([-1.0]), _t([2.0]), r),
+            _t([2 * math.pi * math.sinh(1.3)]), atol=1e-12, rtol=0)
+        torch.testing.assert_close(
+            model_ball_volume(_t([-1.0]), _t([2.0]), r),
+            _t([2 * math.pi * (math.cosh(1.3) - 1)]), atol=1e-10, rtol=0)
+
+
+# --------------------------------------------------------------------
+# Property tests
+# --------------------------------------------------------------------
+
+
+class TestProperties:
+    def test_kappa_to_zero_continuity(self):
+        # No discontinuity at κ=0: V(κ→0) → V(0). The residual at κ=1e-6 is
+        # O(κ) (~8e-7), set atol well above that yet far below an O(1) jump.
+        N, r = _t([3.0]), _t([1.0])
+        v_flat = model_ball_volume(_t([0.0]), N, r)
+        v_eps = model_ball_volume(_t([1e-6]), N, r)
+        torch.testing.assert_close(v_flat, v_eps, atol=1e-5, rtol=0)
+
+    def test_area_is_derivative_of_volume(self):
+        # dV/dr = S(r); central difference, non-integer N, hyperbolic.
+        kappa, N, r, h = _t([-1.0]), _t([2.5]), _t([0.7]), _t([1e-5])
+        dV = (model_ball_volume(kappa, N, r + h)
+              - model_ball_volume(kappa, N, r - h)) / (2 * h)
+        torch.testing.assert_close(dV, model_sphere_area(kappa, N, r),
+                                   atol=1e-6, rtol=0)
+
+    def test_noninteger_N_positive(self):
+        v = model_ball_volume(_t([0.3]), _t([2.5]), _t([0.9]))
+        assert (v > 0).all()
+
+    def test_volume_monotone_in_radius(self):
+        kappa, N = _t([-1.0]), _t([3.0])
+        v1 = model_ball_volume(kappa, N, _t([0.5]))
+        v2 = model_ball_volume(kappa, N, _t([1.5]))
+        assert (v2 > v1).all()

@@ -30,6 +30,10 @@ Planned (port/wrap from geoopt, geomstats, pymanopt):
   sphere, stiefel, grassmann
 """
 
+from holonomy_lib.manifolds.comparison import (
+    model_ball_volume,
+    model_sphere_area,
+)
 from holonomy_lib.manifolds.fixed_rank import FixedRankManifold
 from holonomy_lib.manifolds.heterogeneous_kappa import (
     HeterogeneousKappaManifold,
@@ -48,4 +52,6 @@ __all__ = [
     "LorentzianManifold",
     "ProductManifold",
     "SPDManifold",
+    "model_ball_volume",
+    "model_sphere_area",
 ]

@@ -33,6 +33,7 @@ from holonomy_lib.manifolds import (
     FixedRankManifold, HeterogeneousKappaManifold,
     KappaStereographicManifold, LorentzManifold, LorentzianManifold,
     ProductManifold, SPDManifold,
+    model_ball_volume, model_sphere_area,
 )
 from holonomy_lib.algebra import truncated_svd
 from holonomy_lib.tensor_calculus import hosvd, mode_product, mode_unfolding
@@ -394,6 +395,17 @@ d_ij = mfd.distance(T[i], k_eff[i], T[j], k_eff[j])
 Refs: Bachmann-Bécigneul-Ganea (2020); Guo et al. AAAI 2025
 *GraphMoRE*; Di Giovanni et al. (2022); Yang et al. *kHGCN* (2022).
 
+### `model_sphere_area(kappa, N, r)`, `model_ball_volume(kappa, N, r)`
+Model-space (constant-curvature space form `M_κ^N`) geodesic sphere area
+`S = ω_{N-1}·sn_κ(r)^{N-1}` and ball volume `V = ω_{N-1}·∫₀^r sn_κ(t)^{N-1} dt`,
+for real (non-integer) effective dimension `N ≥ 1` and signed curvature `κ`
+(`sn_κ` is sin / identity / sinh by the sign of `κ`). Area is closed-form; the
+volume integral uses Gauss-Legendre quadrature (exact for `κ = 0`). Inputs
+`(B,)` or scalar, output `(B,)`. The Bishop-Gromov comparison reference for
+curvature- and dimension-dependent volume / flux laws.
+
+Refs: Bishop-Crittenden (1964); Petersen (2016) §7.1; Dai-Wei (2019) §1.2.
+
 ---
 
 ## §Algebra: `holonomy_lib.algebra`
@@ -503,6 +515,14 @@ Coifman-Lafon (2006) diffusion-map embedding at time `t`. Returns
 `(B, n, k)` coordinates `Ψ_t(x_i) = (μ_j^t · φ_j(x_i))`. Drops the
 trivial null eigenvector. Pairwise Euclidean distance in the
 embedding is the diffusion distance. Ref: Coifman-Lafon (2006), §3.
+
+### `spectral_dimension(eigenvalues, t) → (B,)`
+Spectral dimension `d_s = -2 · slope of log p(t) vs log t`, where
+`p(t) = mean_i exp(-t·λ_i)` is the heat-kernel return probability of a Laplacian
+spectrum `(B, n)`. Fits the log-log slope over caller-supplied times `t` `(T,)`;
+non-integer (fractal / continuum) `d_s` supported. Pick `t` inside the power-law
+window (finite graphs flatten `p` as `t → ∞`). Refs: Rammal-Toulouse (1983);
+Durhuus-Jonsson-Wheater (2007); Hambly-Kigami-Kumagai (2002, local).
 
 ---
 
@@ -783,6 +803,14 @@ self-loops + duplicate edges at construction (call sites must
 pre-process). Trivial-sheaf factory `GraphSheaf.trivial(edges,
 n_nodes)` builds the sheaf whose Laplacian equals the standard
 combinatorial graph Laplacian.
+
+### `HeterogeneousGraphSheaf(n_nodes, edges, node_stalk_dims, edge_stalk_dims, F_left, F_right)`
+Cellular sheaf with PER-NODE stalk dimensions: node `i` carries its own
+`d_v[i]`-dim stalk; edges carry ragged `(d_e[e], d_v[u])` / `(d_e[e], d_v[v])`
+restriction maps stored as tuples. `sheaf_coboundary` / `sheaf_laplacian` /
+`sheaf_dirichlet_energy` accept it (the uniform `GraphSheaf` is the special case
+of one global `d_v`). Use when a node's stalk dim is its own quantity, e.g. a
+per-node rank, not a single global K.
 
 ### `sheaf_coboundary(sheaf) → Tensor`
 Coboundary operator `δ: C⁰ → C¹` as a `(n_e · d_e, n_v · d_v)` dense

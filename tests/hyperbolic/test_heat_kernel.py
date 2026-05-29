@@ -188,6 +188,99 @@ def test_heat_equation_residual_n5():
     )
 
 
+def test_heat_equation_residual_n7():
+    """k^7_t(d) (hand-derived closed form) satisfies the radial heat
+    equation on H^7 to finite-difference noise floor — an independent
+    check on the closed form, separate from the recursion-identity test.
+    See notes/verification/heat_kernel_n7_sympy.py."""
+    mfd = LorentzManifold(n=7)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    r = torch.tensor(1.0, dtype=torch.float64)
+    dt = 1e-5
+    dr = 1e-5
+    k_plus_t = hyperbolic_heat_kernel(t + dt, r, mfd).item()
+    k_minus_t = hyperbolic_heat_kernel(t - dt, r, mfd).item()
+    k_0 = hyperbolic_heat_kernel(t, r, mfd).item()
+    k_plus_r = hyperbolic_heat_kernel(t, r + dr, mfd).item()
+    k_minus_r = hyperbolic_heat_kernel(t, r - dr, mfd).item()
+    dk_dt = (k_plus_t - k_minus_t) / (2.0 * dt)
+    dk_dr = (k_plus_r - k_minus_r) / (2.0 * dr)
+    d2k_dr2 = (k_plus_r - 2.0 * k_0 + k_minus_r) / (dr * dr)
+    coth_r = math.cosh(r.item()) / math.sinh(r.item())
+    lap_k = d2k_dr2 + 6.0 * coth_r * dk_dr   # n - 1 = 6 for n=7
+    residual = abs(dk_dt - lap_k) / max(abs(dk_dt), abs(lap_k), 1e-300)
+    assert residual < 1e-4, (
+        f"heat-equation residual at (n=7, t=0.5, r=1.0): {residual:.4e}"
+    )
+
+
+def test_n7_closed_form_zero_distance_limit():
+    """The n=7 closed form's r → 0 analytic limit is
+    (4πt)^{-7/2} · exp(-9t) · (1 + 2t + 16t²/15) (verified to 16 digits
+    in notes/verification/heat_kernel_n7_sympy.py)."""
+    mfd = LorentzManifold(n=7)
+    t = torch.tensor([0.25, 0.5, 1.0], dtype=torch.float64)
+    d = torch.zeros(3, dtype=torch.float64)
+    k = hyperbolic_heat_kernel(t, d, mfd)
+    expected = (
+        (4.0 * math.pi * t) ** (-3.5)
+        * torch.exp(-9.0 * t)
+        * (1.0 + 2.0 * t + 16.0 * t * t / 15.0)
+    )
+    torch.testing.assert_close(k, expected, atol=1e-10, rtol=1e-10)
+    assert torch.isfinite(k).all()
+
+
+def test_n7_closed_form_backward_finite():
+    """Closed-form n=7 has finite forward + backward at boundary inputs,
+    including the d = 0 analytic-limit branch."""
+    mfd = LorentzManifold(n=7)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.tensor([0.0, 0.5, 2.0], dtype=torch.float64, requires_grad=True)
+    k = hyperbolic_heat_kernel(t, d, mfd)
+    assert torch.isfinite(k).all()
+    assert (k > 0).all()
+    k.sum().backward()
+    assert torch.isfinite(d.grad).all()
+
+
+def test_n7_closed_form_matches_recursion():
+    """The n=7 closed form equals one corrected recursion step from the n=5
+    closed form (mirrors test_recursion_identity_n5_to_n7 at the unit-function
+    level, to machine precision rather than finite-difference)."""
+    from holonomy_lib.hyperbolic.heat_kernel import (
+        _apply_one_recursion, _heat_kernel_unit_n5, _heat_kernel_unit_n7,
+    )
+    t = torch.tensor(0.5, dtype=torch.float64)
+    d = torch.linspace(0.1, 3.0, 7, dtype=torch.float64)
+    k_closed = _heat_kernel_unit_n7(t, d)
+    k_recursion = _apply_one_recursion(_heat_kernel_unit_n5, 5, t, d)
+    torch.testing.assert_close(k_closed, k_recursion, atol=1e-10, rtol=1e-10)
+
+
+def test_n9_via_recursion_from_n7():
+    """n=9 now seeds the recursion from the n=7 closed form (was n=5); verify
+    the cascaded result still satisfies the H^9 radial heat equation (n-1=8)."""
+    mfd = LorentzManifold(n=9)
+    t = torch.tensor(0.5, dtype=torch.float64)
+    r = torch.tensor(1.0, dtype=torch.float64)
+    dt = dr = 1e-5
+    k_plus_t = hyperbolic_heat_kernel(t + dt, r, mfd).item()
+    k_minus_t = hyperbolic_heat_kernel(t - dt, r, mfd).item()
+    k_0 = hyperbolic_heat_kernel(t, r, mfd).item()
+    k_plus_r = hyperbolic_heat_kernel(t, r + dr, mfd).item()
+    k_minus_r = hyperbolic_heat_kernel(t, r - dr, mfd).item()
+    dk_dt = (k_plus_t - k_minus_t) / (2.0 * dt)
+    dk_dr = (k_plus_r - k_minus_r) / (2.0 * dr)
+    d2k_dr2 = (k_plus_r - 2.0 * k_0 + k_minus_r) / (dr * dr)
+    coth_r = math.cosh(r.item()) / math.sinh(r.item())
+    lap_k = d2k_dr2 + 8.0 * coth_r * dk_dr   # n - 1 = 8 for n=9
+    residual = abs(dk_dt - lap_k) / max(abs(dk_dt), abs(lap_k), 1e-300)
+    assert residual < 1e-4, (
+        f"heat-equation residual at (n=9, t=0.5, r=1.0): {residual:.4e}"
+    )
+
+
 def test_even_n_via_recursion():
     """Even n ≥ 4 now uses the same spectral-shift-corrected recursion
     as odd n, seeded from the n=2 Davies–Mandouvalos integral form.

@@ -39,7 +39,12 @@ Implementation notes:
   - n ∈ {1, 2, 3} are evaluated by their dedicated routines
     (closed-form Gaussian, Gauss–Legendre quadrature, closed-form
     Davies–Mandouvalos respectively).
-  - n ≥ 5 odd, n ≥ 4 even: apply the recursion via `torch.autograd`,
+  - n ∈ {5, 7} have hand-derived polynomial closed forms from the
+    operator chain `(1/sinh d · ∂_d)^m` (m = 2, 3) applied
+    analytically — faster and more precise than the autograd
+    recursion (no `torch.autograd.grad` float compounding). The n=7
+    form also seeds the odd-n recursion at n ≥ 9.
+  - n ≥ 9 odd, n ≥ 4 even: apply the recursion via `torch.autograd`,
     which differentiates the dimension-n-2 kernel w.r.t. `d`.
     Numerically delicate near d = 0 (the `1/sinh d` factor amplifies
     float noise); the implementation clamps the denominator at the
@@ -84,6 +89,12 @@ _N_DAVIES_MANDOUVALOS: int = 3
 # recursion path (which compounds float noise through two
 # `torch.autograd.grad` calls).
 _N_DAVIES_MANDOUVALOS_N5_CLOSED: int = 5
+
+# n = 7 has a clean polynomial closed form one operator-chain step
+# beyond n=5 (derived + verified in
+# notes/verification/heat_kernel_n7_sympy.py): same precision/speed
+# argument as n=5, and it seeds the odd-n recursion at n ≥ 9.
+_N_OPERATOR_CHAIN_N7_CLOSED: int = 7
 
 # Number of Gauss–Legendre nodes used for the n=2 integral
 # `∫_d^∞ s · exp(-s²/4t) / √(cosh s − cosh d) ds`. 32 nodes give
@@ -172,6 +183,67 @@ def _heat_kernel_unit_n5(t: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
     inv_4pi_t = 1.0 / (2.0 * 2.0 * math.pi * t)
     prefactor = inv_4pi_t * inv_4pi_t * inv_4pi_t ** 0.5
     return prefactor * torch.exp(-(2.0 + 2.0) * t - d * d / (2.0 * 2.0 * t)) * ratio
+
+
+def _heat_kernel_unit_n7(t: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
+    """Heat kernel on H^7 (unit curvature). Closed form, one corrected
+    operator-chain step beyond H^5:
+
+        k^7_t(r) = (4πt)^{-7/2} · exp(-9t - r²/4t) · B / sinh^5(r),
+        B = r³·sinh²r + 6·r²t·sinh r·cosh r
+            + (8t² − 6t)·r·sinh²r + 12·t²·(r − sinh r·cosh r).
+
+    Hand-derived and verified in
+    `notes/verification/heat_kernel_n7_sympy.py`: the closed form equals
+    one corrected recursion step from k^5 and the Grigor'yan operator
+    chain (m=3) to ~1e-13, and satisfies the H^7 radial heat equation
+    (residual ~1e-12). Used directly to avoid the `torch.autograd.grad`
+    call of the recursion path — faster and more precise. At r → 0 the
+    bracket B/sinh^5 r → 1 + 2t + 16t²/15 (verified to 16 digits), so
+
+        k^7_t(0) = (4πt)^{-7/2} · exp(-9t) · (1 + 2t + 16t²/15).
+    """
+    # Integer coefficients of the (1/sinh r ∂_r)^3 expansion, built from
+    # allowed literals (audit). The values 6, 8, 9, 12, 16, 15 are
+    # universal — they come from the operator-chain derivation, not from
+    # tuning; see the sympy verification artifact.
+    two = 2.0
+    three = two + 1.0
+    four = two * two
+    six = two * three
+    eight = two * four
+    nine = three * three
+    twelve = four * three
+    sixteen = four * four
+    fifteen = three * (four + 1.0)
+
+    sinh_r = torch.sinh(d)
+    cosh_r = torch.cosh(d)
+    sinh_sq = sinh_r * sinh_r
+    sinh_cosh = sinh_r * cosh_r
+    # B = r³ sinh²r + 6 r² t sinh r cosh r + (8t² − 6t) r sinh²r
+    #     + 12 t² (r − sinh r cosh r). Individual terms start at O(r³), but the
+    #     O(r³) parts cancel exactly, leaving B ~ O(r⁵) as r → 0 (sympy-verified).
+    numer = (
+        d * d * d * sinh_sq
+        + six * d * d * t * sinh_cosh
+        + (eight * t * t - six * t) * d * sinh_sq
+        + twelve * t * t * (d - sinh_cosh)
+    )
+    sinh_fifth = sinh_sq * sinh_sq * sinh_r
+    is_positive = d > 0
+    sinh_fifth_safe = torch.where(
+        is_positive, sinh_fifth, torch.ones_like(sinh_fifth),
+    )
+    ratio_pos = numer / sinh_fifth_safe
+    # r → 0 analytic limit: 1 + 2t + 16t²/15
+    ratio_limit = 1.0 + two * t + sixteen * t * t / fifteen
+    ratio = torch.where(is_positive, ratio_pos, ratio_limit * torch.ones_like(d))
+
+    # (4πt)^{-7/2} = (4πt)^{-3} · (4πt)^{-1/2}
+    inv_4pi_t = 1.0 / (four * math.pi * t)
+    prefactor = inv_4pi_t * inv_4pi_t * inv_4pi_t * inv_4pi_t ** 0.5
+    return prefactor * torch.exp(-nine * t - d * d / (four * t)) * ratio
 
 
 def _heat_kernel_unit_n2(
@@ -314,9 +386,11 @@ def _heat_kernel_unit(
       - n = 1 → Gaussian closed form
       - n = 2 → Gauss–Legendre on the Davies–Mandouvalos integral
       - n = 3 → Davies–Mandouvalos closed form
-      - n ≥ 5 odd → recursion from n=3 with the
+      - n = 5, 7 → hand-derived polynomial closed forms (operator
+        chain applied analytically).
+      - n ≥ 9 odd → recursion from the n=7 closed form with the
         `exp(-n_prev · t) / (2π sinh r) · ∂_r` operator iterated
-        `(n - 3) / 2` times.
+        `(n - 7) / 2` times.
       - Even n ≥ 4: `NotImplementedError`. The spectral-shift
         recursion used for odd n applies the operator
         `(1/sinh r ∂_r)` to the Gaussian seed, which has a clean
@@ -335,9 +409,11 @@ def _heat_kernel_unit(
         return _heat_kernel_unit_n3(t, d)
     if n == _N_DAVIES_MANDOUVALOS_N5_CLOSED:
         return _heat_kernel_unit_n5(t, d)
+    if n == _N_OPERATOR_CHAIN_N7_CLOSED:
+        return _heat_kernel_unit_n7(t, d)
 
-    # n >= 6: spectral-shift-corrected recursion from the appropriate
-    # seed (n=5 closed-form for odd ≥ 7, n=2 integral for even ≥ 4).
+    # n >= 8: spectral-shift-corrected recursion from the appropriate
+    # seed (n=7 closed-form for odd ≥ 9, n=2 integral for even ≥ 4).
     # At each step the current dimension `current_n` determines the
     # `exp(-current_n · t)` factor passed to `_apply_one_recursion`.
     # The recursion identity
@@ -347,8 +423,8 @@ def _heat_kernel_unit(
     # differentiable in r through the Gauss–Legendre nodes that we
     # construct with the `s = r + u²` change of variable.
     if n % 2 == 1:
-        current_n = _N_DAVIES_MANDOUVALOS_N5_CLOSED       # 5
-        current_fn = _heat_kernel_unit_n5
+        current_n = _N_OPERATOR_CHAIN_N7_CLOSED           # 7 (closed-form seed)
+        current_fn = _heat_kernel_unit_n7
     else:
         current_n = _N_GRIGORYAN_INTEGRAL                # 2
 

@@ -21,6 +21,7 @@ Sheaf Diffusion (Bodnar et al. 2022).
 
 Currently exposed:
   GraphSheaf                  — dataclass holding edges + stalks + maps
+  HeterogeneousGraphSheaf     — per-node (heterogeneous) stalk dimensions
   sheaf_coboundary(sheaf)     — δ as a (n_e·d_e, n_v·d_v) tensor
   sheaf_laplacian(sheaf)      — L_F = δ^T δ, (n_v·d_v, n_v·d_v), PSD
   sheaf_dirichlet_energy(sheaf, x)
@@ -45,7 +46,7 @@ References:
     that all the computational work uses.
 """
 
-from holonomy_lib.sheaf.graph_sheaf import GraphSheaf
+from holonomy_lib.sheaf.graph_sheaf import GraphSheaf, HeterogeneousGraphSheaf
 from holonomy_lib.sheaf.laplacian import (
     sheaf_coboundary,
     sheaf_dirichlet_energy,
@@ -54,6 +55,7 @@ from holonomy_lib.sheaf.laplacian import (
 
 __all__ = [
     "GraphSheaf",
+    "HeterogeneousGraphSheaf",
     "sheaf_coboundary",
     "sheaf_dirichlet_energy",
     "sheaf_laplacian",
