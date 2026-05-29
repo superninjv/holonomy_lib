@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Tests for class-method provenance on FixedRankManifold + SPDManifold.
 
 The `@with_provenance` decorator was originally for top-level functions

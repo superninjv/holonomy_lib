@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Tests that pin down the library-wide conventions from CONVENTIONS.md.
 
 The self-loop convention especially: every graph primitive must give

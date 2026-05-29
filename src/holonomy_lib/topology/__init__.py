@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.topology: Hodge Laplacians + persistent homology.
 
 Built on `holonomy_lib.simplicial`. Two flavors of output:

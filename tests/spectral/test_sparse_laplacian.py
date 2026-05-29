@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Sparse-input tests for holonomy_lib.spectral.laplacian.*
 
 The Laplacian primitives gained a layout-dispatched sparse path

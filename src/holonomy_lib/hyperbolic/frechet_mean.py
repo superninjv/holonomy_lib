@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Fréchet (Karcher) mean on a Riemannian manifold.
 
 The Fréchet mean of a finite set of points `{p_1, …, p_N}` on a

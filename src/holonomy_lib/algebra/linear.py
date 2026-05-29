@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Linear algebra primitives — audit-clean wrappers + extras.
 
 This module wraps `torch.linalg` operations with documented defaults

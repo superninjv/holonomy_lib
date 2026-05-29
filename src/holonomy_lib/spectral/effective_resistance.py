@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Effective resistance and commute-time distances on graphs.
 
 For an undirected weighted graph, the **effective resistance**

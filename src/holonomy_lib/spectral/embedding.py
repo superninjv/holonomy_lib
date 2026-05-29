@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Spectral embedding via Laplacian eigenmaps, batched-first, GPU-native.
 
 The Laplacian eigenmap (Belkin-Niyogi 2003) embeds a graph into R^k by

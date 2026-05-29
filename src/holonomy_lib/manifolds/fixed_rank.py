@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Fixed-rank matrix manifold, GPU-native, batched-first.
 
 The fixed-rank matrix manifold

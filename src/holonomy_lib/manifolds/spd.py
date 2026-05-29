@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """SPD (symmetric positive definite) matrix manifold, GPU-native, batched-first.
 
 The SPD manifold

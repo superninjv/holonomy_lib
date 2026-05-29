@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Benchmarks for holonomy_lib.manifolds (FixedRank, SPD).
 
 The manifold methods are the inner-loop ops of any Riemannian

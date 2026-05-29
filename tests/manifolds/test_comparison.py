@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Tests for holonomy_lib.manifolds.comparison (model-space volumes).
 
 Three layers:
@@ -15,7 +18,12 @@ import math
 import pytest
 import torch
 
-from holonomy_lib.manifolds import model_ball_volume, model_sphere_area
+from holonomy_lib.manifolds import (
+    model_anisotropic_flux,
+    model_ball_volume,
+    model_sphere_area,
+)
+from holonomy_lib.manifolds.comparison import _unit_sphere_surface_area
 
 DT = torch.float64
 
@@ -161,3 +169,45 @@ class TestProperties:
         v1 = model_ball_volume(kappa, N, _t([0.5]))
         v2 = model_ball_volume(kappa, N, _t([1.5]))
         assert (v2 > v1).all()
+
+
+class TestAnisotropicFlux:
+    def test_reduces_to_isotropic_sphere_area(self):
+        # all kappa equal over K = N-1 directions -> Π sn_κ = sn_κ^{N-1}
+        # = model_sphere_area / ω_{N-1} (the isotropic factor recovered).
+        kappa, r, K = -1.0, 0.7, 4
+        flux = model_anisotropic_flux(_t([[kappa] * K]), _t([r]))
+        N = _t([K + 1.0])
+        torch.testing.assert_close(
+            flux * _unit_sphere_surface_area(N),
+            model_sphere_area(_t([kappa]), N, _t([r])), atol=1e-9, rtol=0)
+
+    def test_flat_is_r_to_the_K(self):
+        # κ_i = 0 -> sn_0(r) = r, so the product is r^K.
+        torch.testing.assert_close(
+            model_anisotropic_flux(_t([[0.0, 0.0, 0.0]]), _t([2.0])),
+            _t([8.0]), atol=1e-9, rtol=0)
+
+    def test_mixed_signature_product(self):
+        # one spherical, one flat, one hyperbolic: sn_1 * sn_0 * sn_{-1}.
+        expected = math.sin(0.5) * 0.5 * math.sinh(0.5)
+        torch.testing.assert_close(
+            model_anisotropic_flux(_t([[1.0, 0.0, -1.0]]), _t([0.5])),
+            _t([expected]), atol=1e-9, rtol=0)
+
+    def test_batch_shapes(self):
+        for B in (0, 1, 3):
+            out = model_anisotropic_flux(torch.zeros(B, 4, dtype=DT),
+                                         torch.ones(B, dtype=DT))
+            assert out.shape == (B,)
+
+    def test_grad_flows_to_kappas(self):
+        kappas = _t([[-0.5, -0.2, 0.1]]).requires_grad_(True)
+        model_anisotropic_flux(kappas, _t([0.8])).sum().backward()
+        assert kappas.grad is not None and torch.isfinite(kappas.grad).all()
+
+    def test_bad_shapes_raise(self):
+        with pytest.raises(ValueError):
+            model_anisotropic_flux(_t([1.0, 2.0]), _t([0.5]))        # 1-D kappas
+        with pytest.raises(ValueError):
+            model_anisotropic_flux(_t([[1.0]]), _t([0.5, 0.6]))      # r batch mismatch

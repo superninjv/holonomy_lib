@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Tests for holonomy_lib.hyperbolic.hyperbolic_heat_kernel.
 
 Layers:

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Vietoris-Rips complex from a point cloud or distance matrix.
 
 The Vietoris-Rips complex `VR(X, r)` of a metric space `X` at scale

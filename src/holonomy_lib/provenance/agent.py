@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Agent API: Python functions an LLM can call as native tools.
 
 The pattern:

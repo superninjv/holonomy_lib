@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Spectral dimension from a graph / operator Laplacian spectrum.
 
 The spectral dimension `d_s` is the exponent governing the small-time decay of

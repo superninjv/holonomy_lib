@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.discrete_geometry — combinatorial curvatures and discrete
 differential geometry on graphs / meshes.
 

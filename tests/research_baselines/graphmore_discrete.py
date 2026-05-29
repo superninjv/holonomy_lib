@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """GraphMoRE-style discrete-gating per-node curvature baseline.
 
 A minimal implementation of the "pick one κ from a discrete set via

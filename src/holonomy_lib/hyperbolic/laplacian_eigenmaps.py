@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Manifold-valued Laplacian eigenmaps via Riemannian SGD.
 
 The Euclidean Laplacian-eigenmap embedding (Belkin–Niyogi 2003)

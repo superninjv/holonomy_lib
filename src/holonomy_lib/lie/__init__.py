@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.lie — Lie group primitives for SO(3) and the 2-sphere.
 
 The Lie group `SO(3)` is the group of orientation-preserving

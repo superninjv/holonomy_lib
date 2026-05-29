@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """SO(3) rotation-group primitives — batched, GPU-native.
 
 The 3D rotation group SO(3) has a 3-dim Lie algebra so(3) ≅ R³ via the

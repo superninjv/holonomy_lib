@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Magnetic Laplacian for directed and signed-directed graphs.
 
 The standard real-valued graph Laplacians (`spectral.laplacian.*`)

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.provenance — content-addressable hex provenance for math primitives.
 
 The point of this module is to give mechanistic-interpretability researchers

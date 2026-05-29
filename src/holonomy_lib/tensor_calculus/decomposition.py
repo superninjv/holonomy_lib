@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Tensor decompositions — HOSVD and the n-mode product machinery.
 
 This module assumes the leading dimension of every tensor is a batch

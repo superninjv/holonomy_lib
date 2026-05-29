@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Diffusion-map embedding (Coifman-Lafon 2006).
 
 Given an undirected weighted graph `A`, the random walk on its nodes

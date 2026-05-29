@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Mixed-curvature product manifold M_1 × M_2 × … × M_k.
 
 A point is a tuple of per-submanifold coordinates, stored as a

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """κ-stereographic projection model — constant curvature manifold
 that interpolates spherical (κ > 0), Euclidean (κ = 0), and
 hyperbolic (κ < 0) geometry via a single parameter.

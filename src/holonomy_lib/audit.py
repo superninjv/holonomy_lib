@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.audit — find undocumented numeric constants in source.
 
 Per the "no magic numbers" rule (CLAUDE.md constraint #8, direction.md 2026-05-23),

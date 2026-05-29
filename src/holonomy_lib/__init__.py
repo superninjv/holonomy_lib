@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy-lib — research-oriented PyTorch math library.
 
 See README.md for vision; HANDOFF.md for current build state.
