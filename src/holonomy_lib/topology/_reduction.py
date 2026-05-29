@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Z/2 left-to-right boundary-matrix reduction for persistent homology.
 
 The persistent-homology algorithm (Edelsbrunner-Letscher-Zomorodian

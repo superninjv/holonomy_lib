@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.manifolds — Riemannian manifold primitives, GPU-batched.
 
 Currently implemented:
@@ -31,6 +34,7 @@ Planned (port/wrap from geoopt, geomstats, pymanopt):
 """
 
 from holonomy_lib.manifolds.comparison import (
+    model_anisotropic_flux,
     model_ball_volume,
     model_sphere_area,
 )
@@ -52,6 +56,7 @@ __all__ = [
     "LorentzianManifold",
     "ProductManifold",
     "SPDManifold",
+    "model_anisotropic_flux",
     "model_ball_volume",
     "model_sphere_area",
 ]

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Fisher information metric + natural-gradient primitives.
 
 The Fisher information matrix is the canonical Riemannian metric on a

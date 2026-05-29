@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """DenseSimplicialComplex — batched simplicial complex with padded
 dense simplex tables.
 

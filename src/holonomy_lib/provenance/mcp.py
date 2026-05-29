@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """MCP transport for the agent-tool surface.
 
 The actual tools live in `holonomy_lib.provenance.agent` — this module

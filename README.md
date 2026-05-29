@@ -639,6 +639,6 @@ approach.
 
 holonomy_lib is free software under the **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later). See [LICENSE](LICENSE). Note the AGPL's network clause (§13): anyone who runs a modified version to provide a network service must make their modified source available to that service's users.
 
-Copyright © 2026 John Vaught / Synoros.
+Copyright © 2026 Synoros.
 
-**Commercial licensing.** The AGPL is not the only option. The copyright holder offers holonomy_lib under separate commercial terms for uses the AGPL does not permit — for example, embedding it in a proprietary product or network service without the AGPL's source-disclosure obligations. For a commercial license, contact Synoros via [synoros.io](https://synoros.io).
+**Commercial licensing.** The AGPL is not the only option. The copyright holder offers holonomy_lib under separate commercial terms for uses the AGPL does not permit — for example, embedding it in a proprietary product or network service without the AGPL's source-disclosure obligations. For a commercial license, contact [contact@synoros.io](mailto:contact@synoros.io).

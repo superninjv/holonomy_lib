@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.info_geometry: information-geometric primitives.
 
 Information geometry studies probability distributions as points on a

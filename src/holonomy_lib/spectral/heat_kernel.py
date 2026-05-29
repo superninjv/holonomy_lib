@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Heat kernel exp(-t·L) on graphs via Chebyshev-polynomial expansion.
 
 The graph heat kernel `K_t = exp(-t · L)` is the diffusion operator

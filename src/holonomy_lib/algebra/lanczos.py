@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Symmetric Lanczos iteration for top-k eigenpairs of a batched matrix.
 
 For a symmetric matrix `A ∈ ℝ^{n×n}`, the Lanczos process builds an

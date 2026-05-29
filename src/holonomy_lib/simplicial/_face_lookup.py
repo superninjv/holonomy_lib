@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Shared face-enumeration + lookup helpers for the boundary operator.
 
 For a simplex σ = [v_0, v_1, ..., v_k] (vertices sorted ascending),

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.hyperbolic — manifold-aware graph operations.
 
 The primitives in this module take a manifold (e.g.

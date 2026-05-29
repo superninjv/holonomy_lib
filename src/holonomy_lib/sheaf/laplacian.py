@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Sheaf coboundary, sheaf Laplacian, and Dirichlet energy on graphs.
 
 The coboundary operator `δ: C^0 → C^1` sends a node-stalk vector

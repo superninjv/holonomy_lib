@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Ollivier-Ricci curvature on graphs, GPU-batched, Sinkhorn-based.
 
 The Ollivier (2009) discrete Ricci curvature on a metric measure space

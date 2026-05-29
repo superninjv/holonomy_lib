@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """GraphSheaf dataclass — the data of a cellular sheaf on a graph.
 
 The sheaf attaches a `d_v`-dim stalk to each node and a `d_e`-dim

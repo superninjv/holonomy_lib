@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Manifold-aware inner product — cosine-analog on a Riemannian manifold.
 
 For points x, y on a Riemannian manifold M, the natural "inner

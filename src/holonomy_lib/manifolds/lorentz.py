@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Lorentz (hyperboloid) model of hyperbolic space, GPU-native, batched-first.
 
 The Lorentz model of `n`-dimensional hyperbolic space of constant

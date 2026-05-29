@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.sheaf — cellular sheaves and sheaf Laplacians on graphs.
 
 A **cellular sheaf** on a graph attaches a finite-dimensional vector

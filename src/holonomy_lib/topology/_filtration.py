@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Vietoris-Rips filtration construction for persistent homology.
 
 A filtration is a totally-ordered sequence of simplices, each with

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Bregman + KL divergences, batched-first, GPU-native.
 
 A Bregman divergence is the asymmetric "distance" induced by a strictly

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Benchmarks for holonomy_lib.tensor_calculus (HOSVD + mode ops).
 
 HOSVD's d serial SVDs dominate for large tensors; mode_product is

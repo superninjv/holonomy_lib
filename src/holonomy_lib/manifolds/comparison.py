@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Model-space (constant-curvature) geodesic ball and sphere volumes.
 
 The simply-connected space form `M_κ^N` of constant sectional curvature `κ` and
@@ -184,3 +187,58 @@ def model_ball_volume(
     integrand = _sn_kappa(kappa.unsqueeze(-1), t) ** (N.unsqueeze(-1) - 1.0)
     integral = (weights * integrand).sum(dim=-1) * (0.5 * r)
     return _unit_sphere_surface_area(N) * integral
+
+
+@with_provenance(
+    "holonomy_lib.manifolds.comparison.model_anisotropic_flux", op_version="0.1",
+)
+def model_anisotropic_flux(
+    kappas: torch.Tensor, r: torch.Tensor,
+) -> torch.Tensor:
+    """Anisotropic geodesic flux: the volume element at radius `r` of a space whose
+    `K` principal sectional curvatures are `kappas`,
+
+        flux = Π_i sn_{κ_i}(r),
+
+    the product of the per-direction generalized sines. This is the anisotropic
+    generalization of the isotropic geodesic-sphere factor `sn_κ(r)^{N-1}` — which
+    it recovers when all `kappas` are equal (the same factor repeated) — but here
+    each principal direction contributes its OWN `sn_{κ_i}(r)`. Use as a
+    curvature-matched flux for a force-decay driven by a per-direction curvature
+    TENSOR, where a single scalar κ would collapse the directional structure.
+
+    Args:
+      kappas: `(B, K)` principal sectional curvatures (any sign), `K` directions.
+      r: `(B,)` geodesic radius, `r >= 0` (and `r <= π/√κ_i` per spherical direction).
+    Returns:
+      `(B,)` anisotropic flux `Π_i sn_{κ_i}(r)`.
+
+    References:
+      Petersen, P. (2016). Riemannian Geometry, 3rd ed. Springer, §7.1 — the
+      `sn_κ` volume element, taken here per principal direction (product over the
+      anisotropic frame).
+    """
+    kappas = torch.as_tensor(kappas)
+    dtype = kappas.dtype if kappas.is_floating_point() else torch.float64
+    kappas = kappas.to(dtype)
+    r = torch.as_tensor(r, dtype=dtype, device=kappas.device)
+    if kappas.ndim != 2:
+        raise ValueError(f"kappas must be (B, K); got {tuple(kappas.shape)}")
+    if r.ndim != 1 or r.shape[0] != kappas.shape[0]:
+        raise ValueError(
+            f"r must be (B,) matching the kappas batch B={kappas.shape[0]}; "
+            f"got {tuple(r.shape)}"
+        )
+    if (r < 0).any() or not torch.isfinite(r).all():
+        raise ValueError("r must be finite and >= 0")
+    positive = kappas > 0
+    if positive.any():
+        tiny = torch.finfo(dtype).tiny
+        sqrt_k = torch.sqrt(kappas.clamp(min=tiny))
+        if (positive & (r.unsqueeze(-1) > math.pi / sqrt_k)).any():
+            raise ValueError(
+                "for kappa > 0, r must be <= pi / sqrt(kappa) per direction "
+                "(that direction's model-sphere diameter)"
+            )
+    sn = _sn_kappa(kappas, r.unsqueeze(-1))            # (B, K)
+    return sn.prod(dim=-1)                              # (B,)

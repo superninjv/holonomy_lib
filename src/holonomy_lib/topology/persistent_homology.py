@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Persistent homology of Vietoris-Rips filtrations.
 
 For a point cloud `X`, the Vietoris-Rips filtration is the family of

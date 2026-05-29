@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Tests for holonomy_lib.discrete_geometry.ricci.ollivier_ricci_curvature.
 
 Sinkhorn introduces a small entropic bias on W_1, so closed-form

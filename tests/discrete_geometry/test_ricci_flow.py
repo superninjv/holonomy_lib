@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Tests for discrete_ricci_flow + ricci_flow_with_surgery.
 
 These exercise the Perelman-on-networks pipeline: Ollivier-Ricci

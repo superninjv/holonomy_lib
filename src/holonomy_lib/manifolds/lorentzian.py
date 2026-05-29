@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Lorentzian (pseudo-Riemannian, signature (1, n-1)) manifold —
 flat Minkowski spacetime `R^{1, n-1}`.
 

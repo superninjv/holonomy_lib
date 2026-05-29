@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """holonomy_lib.optimization: Riemannian optimizers on the library's manifolds.
 
 Currently implemented:

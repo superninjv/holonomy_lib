@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Tests for the agent-tool decorator + schema generators.
 
 These cover the foundation layer (Phase 1). The actual inspection

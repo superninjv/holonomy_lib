@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Forman-Ricci curvature on graphs, batched-first, GPU-native.
 
 Forman (2003) defined a combinatorial Ricci curvature for general CW

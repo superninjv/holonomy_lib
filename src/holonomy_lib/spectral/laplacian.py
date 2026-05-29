@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Graph Laplacians, batched-first, GPU-native.
 
 Given a weighted adjacency matrix `A` of shape `(B, n, n)`, this module

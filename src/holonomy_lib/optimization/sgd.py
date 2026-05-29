@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Riemannian steepest descent (RSGD).
 
 For a Riemannian manifold M with `projection` (ambient → tangent) and

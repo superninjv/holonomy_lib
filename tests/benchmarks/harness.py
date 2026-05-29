@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Microbenchmark harness — device-agnostic, deterministic, lightweight.
 
 Each benchmark module imports `Bench` and registers cases via

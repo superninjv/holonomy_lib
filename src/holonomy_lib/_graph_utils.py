@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Internal graph-primitive utilities shared across modules.
 
 Conventions enforced here (see `CONVENTIONS.md`):

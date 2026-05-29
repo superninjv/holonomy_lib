@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Base class for Riemannian optimizers.
 
 Subclasses implement `step(point, ambient_grad) -> new_point`. The base

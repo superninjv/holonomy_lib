@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Heat kernel on hyperbolic space H^n_k.
 
 The heat kernel `k^n_t(d)` is the fundamental solution of the heat

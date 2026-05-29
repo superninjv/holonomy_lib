@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Smoke tests for the MCP server module.
 
 Skipped when the `mcp` SDK isn't installed (the typical dev venv).

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Synoros
+
 """Smoke + behavior tests for holonomy_lib.audit.
 
 The audit is the project's CI gate (`python -m holonomy_lib.audit src/ --strict`).
