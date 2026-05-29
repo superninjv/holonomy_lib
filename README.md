@@ -130,7 +130,7 @@ pip install holonomy-lib
 ### From source (development)
 
 ```bash
-git clone https://github.com/superninjv/holonomy_lib
+git clone https://github.com/Synoros-io/holonomy_lib
 cd holonomy_lib
 uv venv
 uv pip install -e ".[dev]"
@@ -601,7 +601,7 @@ If this library helps your research, please cite it:
   title = {holonomy\_lib: GPU-native research math for differential
            geometry, spectral graph theory, and mechanistic interpretability},
   year = {2026},
-  url = {https://github.com/superninjv/holonomy_lib},
+  url = {https://github.com/Synoros-io/holonomy_lib},
 }
 ```
 

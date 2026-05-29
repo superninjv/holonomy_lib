@@ -65,9 +65,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/superninjv/holonomy_lib"
-Repository = "https://github.com/superninjv/holonomy_lib"
-Issues = "https://github.com/superninjv/holonomy_lib/issues"
+Homepage = "https://github.com/Synoros-io/holonomy_lib"
+Repository = "https://github.com/Synoros-io/holonomy_lib"
+Issues = "https://github.com/Synoros-io/holonomy_lib/issues"
 
 [project.optional-dependencies]
 # Runtime extras for the optional provenance helpers. The library
