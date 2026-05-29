@@ -4,6 +4,15 @@ All notable changes to `holonomy_lib` are documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org).
 
+## [0.6.0] - 2026-05-29
+
+### Changed
+
+- Release milestone marking the public preprint "Meaning on a Video Card:
+  Scalable, Lossless Geometric Primitives" (Vaught, 2026), which documents the
+  library's geometric and spectral primitives. No committed API changes since
+  `0.5.2`; this version tags the codebase the paper describes.
+
 ## [0.5.2] - 2026-05-28
 
 ### Added
