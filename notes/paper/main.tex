@@ -1,0 +1,842 @@
+\documentclass{article}
+
+% arXiv preprint in NeurIPS style. The [preprint] option produces a
+% non-anonymous, single-column preprint suitable for arXiv upload.
+% neurips_2024.sty is bundled alongside this file.
+\usepackage[preprint]{neurips_2024}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{amsfonts}
+\usepackage{microtype}
+\usepackage{xcolor}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Hyp}{\mathbb{H}}
+\newcommand{\kp}{\kappa}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Meaning on a Video Card:\\ Scalable, Lossless Geometric Primitives}
+
+% ORCID and contact are placeholders; fill before upload.
+\author{%
+  John Vaught \\
+  Synoros \\
+  \texttt{ORCID: <fill-in before upload>}%
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\code{holonomy\_lib} is a PyTorch library of geometric and spectral
+primitives --- Riemannian manifolds, hyperbolic graph operations,
+spectral graph theory, discrete Ricci curvature, computational topology
+--- built as a trusted substrate for learning geometric structure
+directly. Seven of its primitives surfaced results worth recording, each
+from the work of making the mathematics hold under \code{float64},
+automatic differentiation, and GPU execution: (i) an
+automatic-differentiation pitfall in the hyperbolic
+heat-kernel dimension recursion, where a multiplicative spectral-shift
+factor is silently dropped; (ii) a hand-derived closed form for the
+$\Hyp^5$ heat kernel that is faster and roughly three orders of
+magnitude more precise than the recursion; (iii) an arcsinh
+reparameterization of hyperbolic distance that removes two distinct
+backward-\code{NaN} modes without an $\varepsilon$ hyperparameter;
+(iv) a curvature-sign dispatch that lets a learnable curvature $\kp$
+cross zero during training without re-instantiation; (v) a continuous
+per-point-$\kp$ manifold that improves on discrete curvature gating in a
+controlled identifiability task; (vi) a pair-$\kp$ combiner abstraction
+with an empirical characterization of the design axis; and (vii) a
+reference-free dual-check validation method for operator-semigroup
+primitives, which caught (i). Each result lives in the gap between a
+formula correct on paper and code that holds to it in \code{float64}
+under autograd, at practical speed on commodity GPUs. Two further
+capabilities study the geometry once it is correct: a spectral-dimension
+estimator that detects representational collapse, and a
+content-addressable provenance layer that makes activation tracing and
+ablation native operations. Together they make one case --- that
+nonlinear, non-Euclidean embedding is practically viable, not only
+theoretically sound. Section~\ref{sec:intro} places the library in the
+research program it serves.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+\begin{quote}
+\itshape
+When I first heard Sutton say that large language models are bitter too,
+it crystallized a realization I had been circling in theory: that what a
+language model learns is the geometry of meaning --- the shape of how
+things relate --- and that it is made to learn this only indirectly, as
+an artifact of compressing how we communicate, rather than from the shape
+itself. \upshape\textemdash\,J.~Vaught
+\end{quote}
+
+\citet{sutton2019bitter} argued that across six decades of artificial
+intelligence, general methods that scale with computation --- search and
+learning --- have consistently overtaken systems built from
+human-encoded domain knowledge. The knowledge-engineering approach wins
+in the short run and is overtaken in the long run; this is the bitter
+lesson. In a 2025 interview \citep{sutton2025dwarkesh}, Sutton extended
+the argument to current large language models: they learn by imitating a
+finite store of human-generated text and do not learn continually from
+their own experience, so he expects systems that learn from experience
+and computation to eventually supersede them --- another turn of the
+same lesson, with the models that depend most on human-produced data
+being the ones overtaken.
+
+One reading of this is structural. Language is itself a human artifact:
+an engineered, lossy intermediate representation of the world. Models
+trained on it do acquire non-linguistic structure --- linear analogy
+geometry in word embeddings \citep{mikolov2013linguistic}, the
+Fourier-basis representation a small transformer forms to do modular
+addition \citep{nanda2023progress}, and the geometric addition circuit a
+production model uses in place of the textbook algorithm
+\citep{lindsey2025biology}. But that structure is acquired
+\emph{indirectly}: reconstructed from the statistics of text rather than
+operated on directly, and at a cost in data and compute far above what
+the structure itself requires. If the bitter lesson applies one level
+down, the language channel is the human-encoded prior that scale will
+eventually route around.
+
+The compute that powers that scale is no more neutral. In practice scale
+means the GPU, and the GPU is a human-engineered artifact built to
+rasterize triangles and decode video, not to represent meaning. The
+general methods that overtake hand-built knowledge run on hardware
+hand-built for graphics --- dense regular arithmetic at high throughput,
+where exact, lossless representation of structure was never a design
+goal. The substrate the bitter lesson runs on is itself a domain-specific
+human prior. Geometric machinery that means to ride the same hardware
+therefore carries a concrete obligation: stay numerically exact while
+fitting what a video card does well.
+
+Synoros was founded on the wager that this verdict can be acted on
+rather than accepted: that geometric and algorithmic structure can be
+made \emph{directly available} to learning --- as differentiable,
+composable primitives a model optimizes over and through --- instead of
+rediscovered through language. The working hypothesis of this substrate
+research program is that supplying correct geometric machinery, and
+letting scale and search act on it directly, reaches the structure that
+language models acquire slowly and as a side effect by a shorter and
+less wasteful route. The program is pursued in a sibling
+project (\code{synoros-substrate}) and shares the direction of an active
+literature on curvature-aware representation learning
+\citep{nickel2017poincare,gu2019learning,bachmann2020constant,digiovanni2022heterogeneous,guo2025graphmore}.
+A learner that operates on a geometric substrate, however, inherits
+every error in that substrate. The substrate has to be correct first.
+
+The case for curved geometry here is target-fidelity, not analogy
+\citep{vaught2026afteruniverse}. The familiar version --- spacetime is
+hyperbolic, so embeddings should be hyperbolic --- is loose enough that a
+careful reader dismisses it, and rightly. The stronger claim is that modeling meaning is, with one label
+peeled away, modeling the world that meaning describes, and an honest
+model must span the regimes that world presents rather than the single
+flat regime a linear-algebra default supplies. Aircraft engineers studied
+birds without claiming aircraft are birds: they took the features that
+make flight work and built systems that respect them. The analogue here
+is not a curved manifold because the universe is curved, but a substrate
+that spans curvature --- spherical, flat, hyperbolic, and the per-point
+mixtures and sign changes between them --- because a faithful model of
+the target cannot be confined to one. The target is the structure of
+relations, not sensory data: it can be learned from text, images, or
+concepts alike, since what is fit is the shape of those relations and not
+the semantics that express them.
+
+\code{holonomy\_lib} is that substrate layer. It consolidates the
+mathematics that geometric machine learning otherwise re-implements
+project by project: Riemannian manifolds (fixed-rank, SPD, the
+hyperboloid model, the $\kp$-stereographic model, the Lorentzian
+$(1,n{-}1)$ model, product manifolds, and a per-point-$\kp$
+heterogeneous manifold); hyperbolic graph operations (the Fr\'echet mean
+\citep{karcher1977riemannian}, manifold-aware inner products
+\citep{pennec2006intrinsic}, hyperbolic Laplacian eigenmaps, the
+$\Hyp^n$ heat kernel); spectral graph theory (combinatorial, normalized,
+signed and magnetic Laplacians, diffusion maps, effective resistance,
+spectral dimension); discrete Ricci curvature and flow; tensor
+decompositions; Riemannian optimization \citep{absil2008optimization};
+simplicial topology and batched
+persistent homology; cellular sheaves; \mbox{SO(3)} primitives; and a
+content-addressable provenance layer. Everything is GPU-native and
+batched-first; every numerical constant is either derived from inputs,
+marked as a universal invariant, or cataloged with a documented
+procedure and scale of validity; every public primitive carries a
+citation to the source that defines its mathematics; and a static audit
+enforces the constant discipline in continuous integration.
+
+Optimizing that substrate took work in seven specific places, each
+between mathematical correctness and implementation correctness under
+\code{float64}, automatic differentiation, and GPU execution. The claim
+is narrow and concrete: nonlinear, non-Euclidean embedding --- learnable
+curvature that is per-point and free to cross zero --- is practically
+viable, not only theoretically sound, because the primitives stay
+numerically exact and run at practical speed on commodity hardware (an
+AMD RX 9060 XT under ROCm, an NVIDIA RTX 3060 under CUDA; no datacenter
+accelerator). A substrate earns the trust to build on only once these
+gaps close, and the sections that follow close them: correctness
+(Section~\ref{sec:correctness}), precision and speed
+(Section~\ref{sec:precision}), new primitives
+(Section~\ref{sec:primitives}), and a provenance layer that keeps the
+substrate auditable (Section~\ref{sec:provenance}).
+Section~\ref{sec:discussion} returns to the framing.
+
+\paragraph{Artifacts.} Every result below is backed by a symbolic
+verification script, a numerical demonstration, and a consolidated
+write-up in the repository under \code{notes/verification/},
+\code{notes/strengthening/}, and \code{notes/validation/}. Specific
+paths appear inline.
+
+\section{Background}
+\label{sec:background}
+
+\paragraph{The $\kp$-stereographic model.} A single model of constant
+sectional curvature $\kp \in \R$ interpolates the sphere ($\kp > 0$),
+Euclidean space ($\kp = 0$), and hyperbolic space ($\kp < 0$). Distances
+and the exponential/logarithm maps are expressed through the
+curvature-dependent trigonometric functions
+$\tan_\kp$ and its inverse $\tan_\kp^{-1}$, built on M\"obius gyrovector
+operations \citep{ungar2008gyrovector}; \citet{bachmann2020constant}
+introduced this model to graph convolutional networks with $\kp$ a
+single learnable scalar per layer, recovering the Euclidean network as
+$\kp \to 0$. Mixed-curvature representations take products of such spaces
+with fixed per-factor curvatures \citep{gu2019learning,skopek2020mixed}.
+
+\paragraph{The hyperbolic heat kernel.} The heat kernel on $\Hyp^n$ is a
+radial function $k_t(r)$ solving the heat equation
+$\partial_t k = \Delta k$ with a point-mass initial condition
+\citep{davies1989heat}.
+\citet{daviesmandouvalos1988} give the $\Hyp^3$ closed form; across
+dimension, the kernel obeys a recursion that raises $n$ by two by
+applying the operator $\frac{1}{\sinh r}\,\partial_r$
+\citep{grigoryan1998heat,grigoryan2009heat,yu2018heat}; both appear in
+Sections~\ref{sec:c1} and~\ref{sec:c2}.
+
+\paragraph{Per-point curvature.} Beyond a single learnable $\kp$, several
+constructions allow curvature to vary: products with spherically
+symmetric factors \citep{digiovanni2022heterogeneous}, reinforcement-learning
+control of a global $\kp$ \citep{fu2021ace}, and --- closest to the
+per-node setting --- a mixture of Riemannian experts that gates each node
+over a \emph{discrete} bank of constant-curvature spaces
+\citep{guo2025graphmore}. Section~\ref{sec:c5} contrasts a continuous
+per-point $\kp$ against this discrete gating.
+
+\paragraph{Numerical setting.} All primitives are implemented on
+\code{torch.Tensor} with automatic differentiation
+\citep{paszke2019pytorch}. Where an established library exists, the
+implementation is checked against it: \code{geoopt} for Riemannian operations
+\citep{kochurov2020geoopt}, whose $\varepsilon$-clamp idiom appears in
+Section~\ref{sec:c3}, and the \code{safe\_*} helper pattern shared with
+PyTorch3D \citep{ravi2020pytorch3d}.
+
+\section{Implementation correctness}
+\label{sec:correctness}
+
+\subsection{An autograd pitfall in the heat-kernel dimension recursion}
+\label{sec:c1}
+
+The recursion that raises the hyperbolic heat kernel by two dimensions,
+stated correctly in the literature
+\citep{grigoryan1998heat,grigoryan2009heat,yu2018heat}, is
+\begin{equation}
+  k^{\,n+2}(t, r) \;=\; -\,\frac{e^{-n t}}{2\pi \sinh r}\,
+  \partial_r\, k^{\,n}(t, r).
+  \label{eq:recursion}
+\end{equation}
+The factor $e^{-n t}$ is a spectral shift: it is multiplicative and
+\emph{constant in $r$}. This is exactly what makes it easy to drop when
+porting~\eqref{eq:recursion} to automatic differentiation. The natural
+implementation,
+\begin{center}
+\code{grad = torch.autograd.grad(k\_n(t, r).sum(), r)[0];}\quad
+\code{return -grad / (2*math.pi*torch.sinh(r))},
+\end{center}
+computes $\partial_r k^{\,n}$ faithfully and then divides by
+$2\pi \sinh r$ --- but never multiplies by $e^{-nt}$, because that factor
+does not depend on the differentiated variable $r$ and so is invisible
+to \code{torch.autograd.grad}. The factor has to be applied by hand,
+outside the autograd call. The corrected kernel multiplies by
+$e^{-n_{\text{prev}} t}$ explicitly and clamps $\sinh r$ at
+\code{finfo.tiny} for the $r \to 0$ limit.
+
+The error has a clean signature. At a sample $(t, r) = (0.5, 1.0)$ the
+naive recursion returns exactly $e^{3 \cdot 0.5} = e^{1.5} \approx 4.4817$
+times the correct value --- the missing $e^{nt}$. Symbolic verification
+(\code{notes/verification/heat\_kernel\_recursion\_sympy.py}) confirms
+this algebraically: \code{sympy.simplify} reduces the heat-equation
+residual of the corrected $k^5$ to exact zero, while the naive $k^5$
+leaves a nonzero residual.
+
+The generalizable lesson: when porting an analytical formula to autograd
+code, any multiplicative factor that depends on a \emph{non-differentiated}
+variable --- here $t$ and the dimension $n$ --- must be applied by hand.
+Automatic differentiation reports only the derivative it computes, so a
+factor outside that derivative stays silently absent.
+
+\subsection{Equivalent mathematics, very different float behavior:
+arcsinh vs.\ arccosh}
+\label{sec:c3}
+
+The textbook curvature-$\kp$ hyperbolic distance
+$d_\kp(x,y) = \tfrac{1}{\sqrt{|\kp|}} \operatorname{arccosh}
+\!\big(\kp \langle x, y\rangle_{\mathcal{M}}\big)$ is exact on paper and
+unreliable in \code{float64} under autograd, for two distinct reasons:
+\begin{enumerate}\itemsep2pt
+  \item \emph{Boundary derivative singularity.}
+  $\frac{d}{dz}\operatorname{arccosh}(z) = 1/\sqrt{z^2-1}$ diverges at
+  $z = 1$, i.e.\ at the on-manifold self-pair $x = y$. The forward value
+  $\operatorname{arccosh}(1) = 0$ is finite, but the backward pass
+  propagates $\infty \cdot \partial z/\partial x = \code{NaN}$.
+  \item \emph{Catastrophic cancellation.} For $x \approx y$,
+  $z = \kp\langle x,y\rangle_{\mathcal M} = \cosh(\alpha) = 1 + \alpha^2/2 +
+  O(\alpha^4)$, so the information about a small distance $\alpha$ sits in
+  the last bits of a number near $1$; $\operatorname{arccosh}(1+\delta)
+  \approx \sqrt{2\delta}$ then amplifies the lost precision.
+\end{enumerate}
+The equivalent reparameterization
+\begin{equation}
+  d_\kp(x, y) \;=\; \frac{2}{\sqrt{|\kp|}}\,
+  \operatorname{arcsinh}\!\Big(\tfrac{1}{2}\sqrt{|\kp|}\;
+  \lVert y - x \rVert_{\mathcal M}\Big)
+  \label{eq:arcsinh}
+\end{equation}
+removes both. It computes $\lVert y - x\rVert_{\mathcal M}^2$ from
+coordinate differences (no subtraction near $1$), and $\operatorname{arcsinh}$
+is entire, with derivative $1/\sqrt{1+\arg^2}$ equal to $1$ at the origin
+--- no boundary singularity. The half-angle identity
+$\cosh A - 1 = 2\sinh^2(A/2)$ makes~\eqref{eq:arcsinh} algebraically
+identical to the textbook form
+(\code{notes/verification/arcsinh\_reparam\_sympy.py}).
+Table~\ref{tab:arcsinh} shows the practical difference in \code{float64}.
+
+\begin{table}[t]
+  \centering
+  \caption{Recovered distance at small geodesic separation $\alpha$,
+  three implementations. The textbook form loses all bits below
+  $\alpha \sim 10^{-8}$; the $\varepsilon$-clamp
+  (\code{geoopt}-style, $\varepsilon = 10^{-5}$) returns the constant
+  $\operatorname{arccosh}(1+\varepsilon) \approx \sqrt{2\varepsilon}
+  \approx 4.47\times10^{-3}$ for \emph{every} $\alpha$ below the clamp;
+  Eq.~\eqref{eq:arcsinh} tracks the true value to floating-point
+  precision. Source:
+  \code{notes/strengthening/C3\_arcsinh\_worked\_example\_results.md}.}
+  \label{tab:arcsinh}
+  \begin{tabular}{lccc}
+    \toprule
+    $\alpha$ & textbook arccosh & $\varepsilon$-clamp & arcsinh (Eq.~\ref{eq:arcsinh}) \\
+    \midrule
+    $10^{-4}$  & $1.00\times10^{-4}$            & $4.47\times10^{-3}$ & $1.00\times10^{-4}$ \\
+    $10^{-6}$  & $1.00\times10^{-6}$            & $4.47\times10^{-3}$ & $1.00\times10^{-6}$ \\
+    $10^{-8}$  & $0$ {\footnotesize(all bits lost)} & $4.47\times10^{-3}$ & $1.00\times10^{-8}$ \\
+    $10^{-10}$ & $0$ {\footnotesize(all bits lost)} & $4.47\times10^{-3}$ & $1.00\times10^{-10}$ \\
+    $0$ ($x=y$) & $0$ fwd, \code{NaN} bwd        & $4.47\times10^{-3}$ & $0$ fwd, $0$ bwd \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The $\varepsilon$-clamp removes the \code{NaN} at the price of a constant
+forward bias of $\sim\!4.5\times10^{-3}$ and an extra hyperparameter;
+Eq.~\eqref{eq:arcsinh} removes the \code{NaN} and keeps the value exact,
+with one \code{safe\_sqrt} (a \code{torch.where} guarding the $\sqrt{0}$
+derivative) as its only cost --- about $30\%$ per-call overhead in
+isolation (batch $10^4$, $n = 8$), shrinking to a small fraction of any
+realistic training step. The same reparameterization drives \code{log}.
+The \code{safe\_*} idiom is folklore in \code{geoopt} and PyTorch3D
+\citep{kochurov2020geoopt,ravi2020pytorch3d}; applied consistently across
+the manifold API it keeps every boundary autograd-safe, and it reframes
+the choice between the two distance forms as a precision decision.
+
+\subsection{A reference-free correctness gate for operator-semigroup
+primitives}
+\label{sec:c7}
+
+The bug in Section~\ref{sec:c1} was found by two checks that any correct
+operator semigroup $S_t$ satisfies internally, each computable from the
+object alone --- the only option for the higher-dimensional kernels,
+where no reference solution existed:
+\begin{description}\itemsep2pt
+  \item[Operator-equation residual.] $S_t$ solves an evolution equation
+  $\partial_t S = \mathcal{G} S$. Evaluate $\partial_t S - \mathcal{G} S$
+  by finite differences and report it relative to $\lVert \mathcal{G}S\rVert$.
+  A correct implementation sits at the finite-difference truncation
+  floor.
+  \item[Conserved-quantity check.] $S_t$ conserves a known quantity $Q$
+  (probability mass, row sum, trace, energy). Evaluate $Q(S_t) - Q$;
+  a correct implementation sits at machine precision.
+\end{description}
+Both are reference-free, which is what makes them usable for a
+\emph{new} primitive. Applying them to a structurally different object
+--- the graph heat kernel $K_t = e^{-tL}$ on a $24$-node graph, where the
+PDE becomes the ODE $\dot K = -LK$ and probability mass becomes row mass
+$K_t \mathbf{1} = \mathbf{1}$ (\code{notes/validation/graph\_heat\_kernel\_validation.py})
+--- shows the two checks cover distinct failure modes
+(Table~\ref{tab:dualcheck}).
+
+\begin{table}[t]
+  \centering
+  \caption{Three corruptions of the graph heat kernel against the two
+  checks. Each of the last two corruptions is invisible to one check and
+  caught by the other; the two together form the gate.}
+  \label{tab:dualcheck}
+  \begin{tabular}{lcc}
+    \toprule
+    Corruption & Operator residual & Mass conservation \\
+    \midrule
+    spectral-shift $K \to e^{\alpha t} K$ & fires (grows with $t$) & fires ($=e^{\alpha t}-1$) \\
+    constant rescale $K \to c\,K$         & \textbf{blind} (floor $\forall c$) & fires ($=|c-1|$) \\
+    mass-preserving $K \to K + \varepsilon L'$ & fires ($\propto \varepsilon$) & \textbf{blind} (machine $\forall \varepsilon$) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+A constant rescale is in the null space of the residual --- a scalar
+multiple of a solution to the homogeneous equation still solves it ---
+but mass conservation catches it immediately. A mass-preserving
+perturbation by another Laplacian $L'$ (so $L'\mathbf{1}=0$) leaves every
+row sum unchanged but no longer solves the heat ODE, so the residual
+fires. The spectral-shift bug of Section~\ref{sec:c1} happens to trip
+both, which is why one check sufficed to \emph{find} it; the table shows
+that in general both are needed. A closed-form spot check is a weaker
+third gate, constraining only the points evaluated, and serves as
+corroboration.
+
+\section{Precision and speed}
+\label{sec:precision}
+
+\subsection{A closed form for the $\Hyp^5$ heat kernel}
+\label{sec:c2}
+
+The operator-chain form for odd $n = 2m+1$
+\citep[Thm.~8.21]{grigoryan2009heat} is
+\(
+  p^{2m+1}(t,r) = \frac{(-1)^m}{(2\pi)^m}(4\pi t)^{-1/2}
+  \big(\tfrac{1}{\sinh r}\partial_r\big)^m e^{-m^2 t - r^2/4t}.
+\)
+Carrying out the two operator applications for $m = 2$ by hand
+(\code{notes/verification/heat\_kernel\_n5\_sympy.py}) gives the closed
+form
+\begin{equation}
+  k^5_t(r) = (4\pi t)^{-5/2}\, e^{-4t - r^2/4t}\,
+  \frac{r^2 \sinh r + 2t\,(r\cosh r - \sinh r)}{\sinh^3 r},
+  \label{eq:n5}
+\end{equation}
+with the $r \to 0$ limit
+$k^5_t(0) = (4\pi t)^{-5/2} e^{-4t}\,(1 + 2t/3)$. Symbolic verification
+confirms that~\eqref{eq:n5} equals one corrected application
+of~\eqref{eq:recursion} to $k^3$, satisfies the $\Hyp^5$ heat equation,
+and matches the limit, all with residual exactly zero.
+
+Using~\eqref{eq:n5} directly, rather than two autograd-based recursion
+steps from $n = 3$, is both faster and more precise: each
+\code{torch.autograd.grad} call accumulates floating-point noise, while
+the closed form is one straight evaluation. The PDE residual drops by
+about three orders of magnitude ($10^{-8}$--$10^{-6}$ versus
+$10^{-5}$--$10^{-3}$). Table~\ref{tab:heatperf} reports latency: the
+$n = 5$ closed form costs only slightly more than $n = 3$, an order of
+magnitude below the even-$n$ quadrature-plus-recursion paths.
+
+\begin{table}[t]
+  \centering
+  \caption{Heat-kernel latency, CPU \code{float64}, batch $4096$
+  (\code{notes/strengthening/C1\_C2\_heat\_kernel\_bench\_results.md}).
+  Commodity-GPU scaling is in Table~\ref{tab:gpuscale}
+  (Section~\ref{sec:gpuscale}).}
+  \label{tab:heatperf}
+  \begin{tabular}{clrr}
+    \toprule
+    $n$ & path & forward (ms) & fwd+bwd (ms) \\
+    \midrule
+    3 & Davies--Mandouvalos closed form & 0.11 & 0.32 \\
+    \textbf{5} & \textbf{hand-derived closed form (Eq.~\ref{eq:n5})} & \textbf{0.17} & \textbf{0.48} \\
+    \textbf{7} & \textbf{hand-derived closed form (Eq.~\ref{eq:n7})} & \textbf{0.19} & \textbf{0.53} \\
+    9 & recursion from $n=7$ (1 step) & 0.59 & 1.35 \\
+    6 & recursion from $n=2$ (2 steps) & 11.2 & 21.7 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{The same construction at $\Hyp^7$, and an independent check}
+\label{sec:c2b}
+
+One further operator step gives the $\Hyp^7$ closed form,
+\begin{equation}
+  k^7_t(r) = (4\pi t)^{-7/2}\, e^{-9t - r^2/4t}\,
+  \frac{r^3\sinh^2 r + 6r^2 t\,\sinh r\cosh r
+        + (8t^2 - 6t)\,r\sinh^2 r + 12t^2(r - \sinh r\cosh r)}{\sinh^5 r},
+  \label{eq:n7}
+\end{equation}
+with $r \to 0$ limit $(4\pi t)^{-7/2} e^{-9t}(1 + 2t + 16t^2/15)$. It
+equals one corrected application of~\eqref{eq:recursion} to $k^5$ and the
+operator chain at $m = 3$ --- verified symbolically and numerically to
+$\sim\!10^{-13}$, with an $\Hyp^7$ heat-equation residual $\sim\!10^{-12}$
+(\code{notes/verification/heat\_kernel\_n7\_sympy.py}). Used directly it
+costs essentially the same as the $n = 5$ closed form
+(Table~\ref{tab:heatperf}), and it seeds the odd-$n$ recursion at
+$n \ge 9$: one recursion step adds $\sim\!0.8$\,ms forward+backward
+(compare $n = 9$ at $1.35$\,ms to the $n = 7$ closed form at
+$0.53$\,ms), so the step's cost and its float-noise compounding are both
+avoided at $n = 7$.
+
+A Crank--Nicolson solver for the radial heat equation
+$\partial_t u = \partial_r^2 u + (n-1)\coth(r)\,\partial_r u$, sharing
+none of the operator-chain machinery, gives an independent confirmation:
+evolving each library kernel forward in time reproduces it to the
+scheme's truncation floor --- $7.8\times10^{-5}$ at $n = 5$,
+$1.8\times10^{-4}$ at $n = 7$, $3.9\times10^{-4}$ at $n = 9$
+(\code{notes/validation/heat\_kernel\_crank\_nicolson\_results.md}). A
+wrong coefficient, the kind of error the spectral shift of
+Section~\ref{sec:c1} introduced, would show an $O(1)$ mismatch rather
+than $10^{-4}$.
+
+\subsection{Letting a learnable curvature cross zero without retraining}
+\label{sec:c4}
+
+When $\kp$ is a learnable parameter on the $\kp$-stereographic model, the
+geometry (spherical / hyperbolic / Euclidean) can change during
+training. The map
+\begin{equation}
+  f(\kp, \alpha) = \frac{\tan_\kp^{-1}(\sqrt{|\kp|}\,\alpha)}{\sqrt{|\kp|}}
+  = \begin{cases}
+    \arctan(\sqrt{\kp}\,\alpha)/\sqrt{\kp}, & \kp > 0,\\
+    \alpha, & \kp = 0,\\
+    \operatorname{arctanh}(\sqrt{|\kp|}\,\alpha)/\sqrt{|\kp|}, & \kp < 0,
+  \end{cases}
+  \label{eq:fkappa}
+\end{equation}
+is a single analytic function of $\kp \in \R$, with Taylor series
+$f(\kp,\alpha) = \alpha\sum_{m\ge0}(-\kp\alpha^2)^m/(2m+1)
+= \alpha\,(1 - \kp\alpha^2/3 + \kp^2\alpha^4/5 - \cdots)$ converging for
+$|\kp|\alpha^2 < 1$, exactly the manifold's distance-formula domain.
+The two closed forms express one analytic function, one for each side of
+zero. Symbolic verification
+(\code{notes/verification/kappa\_crossing\_sympy.py}) confirms that the
+two branches' values, first and second $\kp$-derivatives all agree at
+$\kp = 0$, and that an integral representation
+$f(\kp,\alpha)/\alpha = \int_0^1 (1+\kp(t\alpha)^2)^{-1}\,dt$ bridges both
+signs without a conditional.
+
+Realizing this through \code{torch.autograd} needs three pieces, since
+autograd requires two finite expressions to mask between rather than one
+analytic function: (1) clamp $|\kp|$ at \code{finfo.tiny} before the
+square root, so $\sqrt{|\kp|}$ never vanishes and the scaled argument is
+tiny-but-nonzero; (2) \code{safe} versions of $\arctan(t)/t$ and
+$\operatorname{arctanh}(t)/t$ that short-circuit $t \le 0$ to the
+analytic limit $1$; (3) an outer \code{torch.where(}$\kp>0$\code{, ...)}
+selecting per element in forward and masking the gradient in backward.
+Inside the manifold's distance-formula domain, both branches are finite,
+so the dispatch is autograd-safe; outside it (an input the manifold's
+own domain restriction excludes) the masked-out \code{arctanh} branch
+can leak a \code{NaN} through the backward.
+
+A $100$-step stochastic-gradient trajectory whose target oscillates
+between $+0.7$ and $-0.7$ --- four sign crossings --- keeps $\kp$, its
+gradient, the distances, and the points all finite at every step, with
+no special-casing of $\kp = 0$
+(\code{notes/strengthening/C4\_kappa\_crossing\_stress\_results.md}).
+The alternatives are worse: a static-branch manifold that caches the
+sign at construction computes $\operatorname{arctanh}$ where it should
+compute $\arctan$ after a flip, a $1.38\%$ relative error ($0.4086$ vs.\
+the correct $0.4030$); and a truncated unified Taylor series, the natural
+\code{where}-free alternative, still leaves $\sim\!10^{-3}$ error with
+$32$ terms near the domain boundary ($\sqrt{|\kp|}\alpha = 0.95$) where
+the dispatch is exact. The dispatch evaluates both branches, but each is
+a single elementwise kernel and the M\"obius machinery dominates and is
+branch-independent, so the measured overhead is well below the
+worst-case $2\times$: CPU $\sim\!1.2$--$1.4\times$ (batch $16384$,
+$n=8$, \code{float64}), and on a consumer AMD Radeon RX 9060 XT (gfx1200,
+ROCm 6.4, batch $65536$, $n=8$), $1.27\times$ in \code{float64} and
+$1.58\times$ in \code{float32}. Curvature-as-learnable-scalar is
+established \citep{bachmann2020constant,skopek2020mixed}; those
+implementations leave the behavior \emph{at} $\kp = 0$ implicit,
+sidestepping it by initializing on one side and regularizing away from
+the boundary. The dispatch here crosses it, with the analyticity
+verified symbolically and the crossing exercised in training.
+
+\subsection{Scaling on a commodity GPU}
+\label{sec:gpuscale}
+
+The same kernels run at practical speed on consumer hardware. On an
+RTX 3060 (12\,GB, \code{float64}, CUDA), forward+backward latency is
+near-flat in batch while the same-machine CPU scales linearly: from a
+batch of $4096$ to $\sim\!10^6$ (a $256\times$ increase) the GPU time
+barely moves while the CPU time grows roughly proportionally
+(Table~\ref{tab:gpuscale}). A batch of a million hyperbolic heat-kernel
+evaluations costs on the GPU about what $4096$ does --- launch-bound, not
+compute-bound, well past $10^6$ points --- and the CPU/GPU ratio there
+reaches $\sim\!80$--$110\times$. With the $\kp$-crossing dispatch measured
+on an AMD RX 9060 XT under ROCm (Section~\ref{sec:c4}), the substrate's
+geometry runs on commodity cards of either vendor, no datacenter
+accelerator required.
+
+\begin{table}[t]
+  \centering
+  \caption{Heat-kernel forward+backward latency (ms), \code{float64},
+  same-machine CPU vs.\ CUDA on an RTX 3060. GPU latency is near-flat in
+  batch, CPU linear; the CPU/GPU ratio at $10^6$ is
+  $\sim\!80$--$110\times$. Source:
+  \code{notes/strengthening/gpu\_scaling\_results.md}.}
+  \label{tab:gpuscale}
+  \begin{tabular}{clrrrr}
+    \toprule
+    $n$ & path & CPU $4{\times}10^3$ & CPU $10^6$ & GPU $4{\times}10^3$ & GPU $10^6$ \\
+    \midrule
+    5 & closed form & 10.0 & 646 & 1.8 & 5.8 \\
+    7 & closed form & 19.5 & 627 & 6.8 & 8.0 \\
+    9 & recursion (from $n{=}7$) & 47 & 2320 & 9.7 & 24 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{New primitives}
+\label{sec:primitives}
+
+\subsection{Continuous per-point curvature}
+\label{sec:c5}
+
+\code{HeterogeneousKappaManifold} exposes each point's curvature as a
+continuous real-valued tensor: autograd flows through $\kp$ directly,
+any $\kp \in \R$ is representable, and there is no expert bank to choose.
+The closest prior art is discrete gating, in which each node mixes over a
+fixed bank $\{\kp_1,\dots,\kp_K\}$ of constant-curvature spaces
+\citep{guo2025graphmore}; its recovered curvature is confined to the
+convex hull of the bank, so the bank must be guessed before training. The
+class supplies the math --- per-point $\kp$-trig, exponential and
+logarithm maps, and pair distance --- and leaves the $\kp$
+parameterization to the caller. The $\kp$-field-plus-per-point-residual
+parameterization used downstream belongs to the substrate project; the
+library provides the geometry beneath it.
+
+A controlled identifiability task makes the comparison concrete
+(\code{notes/strengthening/C5\_C6\_synthetic\_task.py}): $90$ nodes in
+three regions with true curvatures $\{-1.0,\,0.0,\,+0.5\}$, ground-truth
+coordinates sampled per region, and pairwise distances under the true
+$\kp$-field as embedding targets. Variants recover $(\text{coords},
+\kp\text{-field})$ from distances (Table~\ref{tab:hetero}; mean $\pm$ std
+over three seeds, $1500$ epochs, dimension $3$, on an AMD ROCm GPU).
+
+\begin{table}[t]
+  \centering
+  \caption{Identifiability task: final fit loss and Pearson correlation
+  between recovered and true per-node $\kp$. Continuous per-point $\kp$
+  with the arithmetic-mean combiner attains the lowest loss and the best
+  $\kp$-recovery; the adversarial-bank discrete model pays a
+  bank-choice penalty of $\sim\!25\%$ in loss.}
+  \label{tab:hetero}
+  \begin{tabular}{llcc}
+    \toprule
+    Variant & combiner / bank & final loss & $\kp$-recovery corr. \\
+    \midrule
+    single $\kp$ baseline & --- & $0.0098 \pm 0.0046$ & N/A \\
+    discrete gating & friendly $\{-1,0,+0.5\}$ & $0.0099 \pm 0.0042$ & $+0.630 \pm 0.071$ \\
+    discrete gating & adversarial $\{-2,+1.5\}$ & $0.0124 \pm 0.0045$ & $+0.526 \pm 0.071$ \\
+    \textbf{continuous per-point $\kp$} & \textbf{arithmetic\_mean} & $\mathbf{0.0065 \pm 0.0061}$ & $\mathbf{+0.667 \pm 0.077}$ \\
+    continuous per-point $\kp$ & harmonic\_mean & $0.0092 \pm 0.0065$ & $-0.001 \pm 0.151$ \\
+    continuous per-point $\kp$ & max\_magnitude & $0.0069 \pm 0.0055$ & $+0.250 \pm 0.198$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Continuous-with-arithmetic-mean wins on both metrics in the
+truth-aligned case (the targets were generated under that combiner). The
+single-$\kp$ baseline ties the friendly-bank model on loss; with one
+degree of freedom it settles on a global $\kp \approx -0.84$ and
+represents no per-node variation. Two caveats bound the result. The
+$\kp$-recovery correlation tops out near $0.67$ because at dimension $3$
+with $90$ nodes several $(\text{coords},\kp)$ configurations fit the
+distances about equally well; the ranking across variants holds, while
+the absolute number reflects the task's identifiability limit rather
+than the primitive's capacity. And training continuous $\kp$ takes care:
+a soft coordinate barrier ($\lVert x\rVert < 0.85$), a hard $\kp$ clamp
+($|\kp| < 1.5$), gradient clipping, and cosine learning-rate decay keep
+momentum from driving points outside the domain into a forward-\code{NaN}.
+Autograd-safety governs the forward and backward passes; optimization
+stability is a separate requirement, met here by those four guards.
+
+\subsection{The pair-$\kp$ combiner abstraction}
+\label{sec:c6}
+
+Computing a pairwise distance between two points of different curvature
+requires combining $\kp_x$ and $\kp_y$ into one effective pair-curvature,
+and that rule remains a free choice in the literature. The library
+exposes it as a callable $(\kp_x, \kp_y) \mapsto \kp_{\text{eff}}$ with
+two built-in defaults and arbitrary override. Four combiners on the task above
+(Table~\ref{tab:combiner}) show the design axis: the empirical winners
+are smooth and well-defined at $\kp = 0$. \code{arithmetic\_mean} is both
+the well-motivated default and the best performer; \code{harmonic\_mean}
+collapses when the truth includes $\kp = 0$ because of the
+\code{finfo.tiny} guard; the non-smooth combiners
+(\code{signed\_geometric\_mean}'s $\operatorname{sign}$,
+\code{max\_magnitude}'s $|\cdot|$) are brittle under Adam, and a
+\code{safe\_sqrt} fixes the boundary derivative but not an upstream
+non-smooth $\operatorname{sign}$. The abstraction's value is in surfacing
+the choice: the combiner is a callable the user sets, with
+\code{arithmetic\_mean} as a smooth, well-motivated default.
+
+\begin{table}[t]
+  \centering
+  \caption{Combiner characterization. A combiner that is smooth and
+  well-defined at $\kp=0$ trains reliably; a non-smooth one trains poorly.}
+  \label{tab:combiner}
+  \begin{tabular}{lccc}
+    \toprule
+    combiner & behavior at $\kp = 0$ & smoothness & fit on truth \\
+    \midrule
+    \code{arithmetic\_mean} (default) & Euclidean, well-defined & $C^\infty$ & best (matches truth) \\
+    \code{harmonic\_mean} & needs \code{finfo.tiny} clamp & $C^\infty$ away from $0$ & collapses (clamp) \\
+    \code{signed\_geometric\_mean} & $\operatorname{sign}$ jump at sum $=0$ & non-smooth & brittle across seeds \\
+    \code{max\_magnitude} & jump at $|\kp_x|=|\kp_y|$ & non-smooth & mediocre \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Mixed-curvature product manifolds}
+\label{sec:c53}
+
+For completeness the library includes \code{ProductManifold}, the
+well-established construction of a product of constant-curvature factors
+with a per-factor metric \citep{gu2019learning,skopek2020mixed}. The
+projection and retraction compose factor-wise over the existing
+single-manifold API. It reuses established geometry so the substrate
+covers the mixed-curvature setting.
+
+\subsection{Spectral dimension as a collapse diagnostic}
+\label{sec:specdim}
+
+A representation that nominally occupies $\R^D$ can collapse onto a far
+lower-dimensional set; detecting that is one of the questions the
+substrate program raises directly. The spectral dimension reads it off a
+Laplacian spectrum: with return probability
+$p(t) = \tfrac1n\sum_i e^{-t\lambda_i} \sim t^{-d_s/2}$, the estimator
+$d_s = -2\,\mathrm{d}\log p / \mathrm{d}\log t$
+(\code{spectral.spectral\_dimension}, after \citet{rammal1983}) recovers
+a possibly non-integer dimension. Under one window rule --- the
+asymptotic tail of the return probability --- it recovers integer lattice
+dimensions and the Sierpinski gasket's fractional
+$2\ln 3/\ln 5 \approx 1.365$ (Table~\ref{tab:specdim};
+\code{notes/validation/spectral\_dimension\_results.md}). A point set
+collapsed to an effective line registers $d_s \approx 1$ whatever $D$ is
+--- the reading the substrate's observed drift toward low effective
+dimension calls for.
+
+\begin{table}[t]
+  \centering
+  \caption{\code{spectral\_dimension} against structures with known
+  $d_s$, one window rule for all. The Sierpinski gasket is the canonical
+  non-integer case \citep{rammal1983}; the lattice residuals are the
+  finite-$t$ approach of the return-probability slope to its asymptote.}
+  \label{tab:specdim}
+  \begin{tabular}{lcc}
+    \toprule
+    structure & known $d_s$ & recovered \\
+    \midrule
+    1-D ring (cycle) & 1.000 & 1.000 \\
+    2-D torus & 2.000 & 2.031 \\
+    3-D torus & 3.000 & 3.094 \\
+    Sierpinski gasket & 1.365 & 1.320 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Provenance: a content-addressable record for mechanistic interpretability}
+\label{sec:provenance}
+
+Studying whether and how geometric structure forms requires tracing which
+primitive produced which representation, and intervening on it. The
+library makes that native rather than an external instrumentation pass.
+Every primitive decorated with \code{@with\_provenance} emits, inside a
+\code{record()} context, a node in a content-addressable Merkle DAG keyed
+by
+\[
+  \mathrm{hex}(\text{call}) = \mathrm{sha256}\big(\text{op\_id}
+  + \text{version} + \mathrm{canonical}(\text{params})
+  + [\,\mathrm{hex}(\text{input})\,]\big),
+\]
+leaf tensors hashed by content (bytes, shape, dtype). The same operation
+on the same inputs yields the same hex, so identical sub-computations
+across runs share a node. The DAG exports to NetworkX for graph
+analysis, to a Pandas table of $(\text{op\_id}, \text{params},
+\text{hex}, \text{shape})$ records for \mbox{SAELens}-style feature
+training, and to JSON; substitution at a hex (\code{registry.substitute})
+applies activation patching --- the TransformerLens intervention --- to
+math primitives rather than network layers.
+
+The scope is deliberate. This is a record at the \emph{math-primitive}
+layer, complementary to neural-network hook libraries (TransformerLens,
+nnsight) rather than a replacement; substitution does not auto-replay
+downstream operations (the caller re-runs), and it is not an experiment
+tracker. What it enables, by design, is a set of interpretability
+operations expressed directly on the geometry: \emph{causal tracing} of a
+representation back through the primitives that built it; \emph{ablation}
+by substituting a node's output --- zeroing a curvature term, say --- and
+re-running to measure the downstream effect; content-addressed
+\emph{deduplication and caching} of repeated sub-computations; and
+feature analysis over the exported record table. These are the
+designed-for uses; demonstrating them at scale on a substrate model is
+downstream work, not a result claimed here.
+
+\section{Discussion}
+\label{sec:discussion}
+
+Across the seven results the mathematics was settled and the work lay in
+the implementation --- making a finite-precision, automatically
+differentiated, GPU-resident computation behave the way the mathematics
+prescribes: a multiplicative factor autograd cannot see
+(Section~\ref{sec:c1}), two algebraically identical distance formulas
+with opposite numerical fates (Section~\ref{sec:c3}), a kernel that is
+faster and more precise written out by hand than assembled by recursion
+(Sections~\ref{sec:c2},~\ref{sec:c2b}), an analytic function that autograd can only reach
+through a three-part safety net (Section~\ref{sec:c4}), and a per-point
+curvature primitive whose autograd-safety is necessary but not sufficient
+for stable optimization (Section~\ref{sec:c5}). The reference-free dual
+check (Section~\ref{sec:c7}) certifies such a substrate where no
+reference solution exists.
+
+The bitter lesson predicts that hand-engineering gives way to scale and
+general methods. This work acts on that prediction one level down. For
+geometric structure to be learned directly instead of laundered through
+language, the geometry it is learned on has to be correct, fast, and
+differentiable, so that scale and search operate on the structure
+itself. These results clear hand-engineering from the math layer --- the
+per-project re-derivation, the silent precision loss, the boundary
+\code{NaN}s, the curvature frozen at construction time --- and leave the
+layer above to optimization. The delivered result is smaller and
+checkable: a non-Euclidean embedding with learnable, per-point,
+sign-crossing curvature stays exact and scales on commodity GPUs --- the
+same video hardware the bitter lesson runs on, now carrying lossless
+geometric structure rather than pixels. Curved embedding is, in this
+concrete sense, practically viable and not only theoretically sound.
+Whether structure made directly available shortens the route language
+takes is the open wager Synoros was founded on; this work supplies the
+substrate and leaves the verdict to the experiments it enables.
+
+Three limits bound these claims. The empirical evidence is a controlled
+identifiability task; large-scale downstream benchmarks belong to the
+consuming project. The GPU figures come from two consumer cards, not a
+datacenter accelerator or a full-scale model. And the emergence thesis of Section~\ref{sec:intro} motivates the work
+while the seven substrate results are what it demonstrates --- they hold
+whichever way the larger wager resolves. These are peer contributions to
+an active direction
+\citep{digiovanni2022heterogeneous,guo2025graphmore,gu2019learning}.
+Natural next steps extend the substrate along the same line: a
+closed-form $\Hyp^9$ kernel from the same operator chain, the
+spectral-collapse diagnostic applied to a learned embedding rather than
+known lattices, and downstream tasks that exercise per-point curvature at
+scale.
+
+\paragraph{Reproducibility.} Each result is backed by a symbolic
+verification script (\code{notes/verification/}), a numerical
+demonstration with recorded results (\code{notes/strengthening/},
+\code{notes/validation/}), and a unit/property/comparison test suite in
+\code{tests/}. Every numerical constant in the source is derived, marked
+as a universal invariant, or cataloged in \code{notes/magic\_numbers.md},
+and a static audit enforces this in continuous integration.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
