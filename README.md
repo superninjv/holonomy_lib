@@ -8,7 +8,7 @@
 > mechanistic interpretability, all under one roof. Developed by
 > independent and Synoros researchers for the *substrate* research.
 
-[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
 [![tests: 1187 passing](https://img.shields.io/badge/tests-1187%20passing-brightgreen.svg)](#testing)
@@ -637,4 +637,8 @@ approach.
 
 ## License
 
-BSD 3-Clause. See [LICENSE](LICENSE).
+holonomy_lib is free software under the **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later). See [LICENSE](LICENSE). Note the AGPL's network clause (§13): anyone who runs a modified version to provide a network service must make their modified source available to that service's users.
+
+Copyright © 2026 John Vaught / Synoros.
+
+**Commercial licensing.** The AGPL is not the only option. The copyright holder offers holonomy_lib under separate commercial terms for uses the AGPL does not permit — for example, embedding it in a proprietary product or network service without the AGPL's source-disclosure obligations. For a commercial license, contact Synoros via [synoros.io](https://synoros.io).
